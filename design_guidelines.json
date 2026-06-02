@@ -1,0 +1,111 @@
+{
+  "theme": "dark",
+  "archetype": "Archetype 4 (Swiss & High-Contrast) - Modified for Dark Mode Enterprise Security",
+  "domain": "Enterprise Secure Messaging App",
+  "design_philosophy": "Professional, secure, authoritative, and efficient. Emphasizes functional beauty with absolute data clarity. Eliminates playful elements in favor of high-contrast, strict alignment, and tactile density. Relies heavily on deep slate/navy bases with sharp, purposeful cyan accents to signify security and action.",
+  "colors": {
+    "background": "#0f1419",
+    "surface": "#1a2332",
+    "surface_secondary": "#243042",
+    "primary": "#00d9ff",
+    "text_primary": "#e1e8ed",
+    "text_secondary": "#8b9eb0",
+    "success": "#00ba88",
+    "error": "#ff5757",
+    "warning": "#ffb340",
+    "border": "#2c3b4e",
+    "chat_bubble_received": "#1a2332",
+    "chat_bubble_sent": "#004b66"
+  },
+  "typography": {
+    "font_strategy": "The 'Old Money Tech' strategy combined with high-contrast utility.",
+    "headings_font": "Manrope",
+    "body_font": "IBM Plex Sans",
+    "scale": {
+      "h1": "text-4xl tracking-tight leading-none font-bold",
+      "h2": "text-2xl tracking-tight leading-snug font-semibold",
+      "h3": "text-xl tracking-tight leading-snug font-medium",
+      "body": "text-base leading-relaxed font-normal",
+      "small": "text-sm leading-normal font-normal",
+      "overline": "text-xs tracking-[0.2em] uppercase font-semibold text-[#8b9eb0]"
+    }
+  },
+  "spacing": {
+    "philosophy": "Generous Spacing: Prioritize breathing room within complex views to avoid 'data overwhelm'.",
+    "containers": "p-4 md:p-6",
+    "list_items": "py-4 px-4 gap-4",
+    "message_bubbles": "px-4 py-3 mb-2"
+  },
+  "surface_strategies": {
+    "nav_bar": "Solid background (#0f1419) with a 1px subtle border-bottom (#2c3b4e) separating content.",
+    "bottom_tabs": "Solid background (#1a2332) with a 1px solid top border. Unselected icons in #8b9eb0, selected in #00d9ff.",
+    "cards_and_lists": "Flat solid surfaces (#1a2332) with max 8px border-radius (rounded-md/rounded-lg). Avoid glassmorphism. Subtle 1px borders for structure.",
+    "modals_sheets": "Deepest slate (#1a2332) with heavy backdrop shadow. No blur for absolute visual clarity."
+  },
+  "components": {
+    "chat_bubble_received": {
+      "bg": "#1a2332",
+      "text": "#e1e8ed",
+      "border_radius": "rounded-2xl rounded-tl-sm",
+      "features": "Clear typography, left aligned."
+    },
+    "chat_bubble_sent": {
+      "bg": "#004b66",
+      "text": "#ffffff",
+      "border_radius": "rounded-2xl rounded-tr-sm",
+      "features": "Encrypted indicator (lock icon #00d9ff), double-tick read receipts."
+    },
+    "status_indicators": {
+      "online": "bg-[#00ba88] border-2 border-[#0f1419] rounded-full",
+      "busy": "bg-[#ff5757] border-2 border-[#0f1419] rounded-full",
+      "away": "bg-[#ffb340] border-2 border-[#0f1419] rounded-full"
+    },
+    "security_badges": {
+      "e2ee_indicator": "Small lock icon (Phosphor Icons or Lucide) placed next to timestamps or group names, styled with text-secondary or primary color."
+    },
+    "buttons": {
+      "primary": "bg-[#00d9ff] text-[#0f1419] rounded-md font-semibold py-3 px-6 hover:bg-[#00b0cc] transition-colors",
+      "secondary": "bg-transparent border border-[#00d9ff] text-[#00d9ff] rounded-md font-semibold py-3 px-6 hover:bg-[#004b66]/20 transition-colors"
+    },
+    "inputs": {
+      "chat_input": "bg-[#1a2332] text-[#e1e8ed] rounded-full py-3 px-5 border border-[#2c3b4e] focus:border-[#00d9ff] focus:ring-1 focus:ring-[#00d9ff]"
+    }
+  },
+  "icons": {
+    "library": "lucide-react",
+    "stroke_width": "1.5 for a sharp, precise, professional feel."
+  },
+  "accessibility_and_motion": {
+    "motion": "Minimalist micro-interactions. Snap-to-place sheets, subtle scaling on press (scale-95). Fade-in lists.",
+    "contrast": "Ensure #00d9ff text has sufficient contrast against #0f1419. If needed, use bold weights for cyan text to pass APCA standards.",
+    "testing": "All interactive elements MUST include data-testid (e.g., data-testid='chat-list-item', data-testid='send-message-button')."
+  },
+  "media_urls": {
+    "login_background": {
+      "url": "https://images.unsplash.com/photo-1554934991-78d3b7b533c6?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2OTF8MHwxfHNlYXJjaHwxfHxkYXJrJTIwYWJzdHJhY3QlMjBnZW9tZXRyaWMlMjBzZWN1cmUlMjB0ZWNobm9sb2d5fGVufDB8fHx8MTc3NzUwMzAxMXww&ixlib=rb-4.1.0&q=85",
+      "description": "Dark abstract geometric tech background for login/2FA screens. Overlay with #0f1419/80 for text contrast."
+    },
+    "avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1769636929388-99eff95d3bf1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAxODF8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc3NzUwMzAwNnww&ixlib=rb-4.1.0&q=85",
+        "description": "Contact avatar 1"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1762522926157-bcc04bf0b10a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAxODF8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc3NzUwMzAwNnww&ixlib=rb-4.1.0&q=85",
+        "description": "Contact avatar 2"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1576558656222-ba66febe3dec?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAxODF8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc3NzUwMzAwNnww&ixlib=rb-4.1.0&q=85",
+        "description": "Contact avatar 3"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Use the exact hex codes provided for the dark enterprise theme.",
+    "Implement bottom tab navigation (Chats, Contacts, Calls, Profile) mapping to Expo React Native standard routers.",
+    "Integrate Shadcn primitives heavily customized for this dark theme. Convert them effectively to React Native views/styles if utilizing NativeWind.",
+    "All status indicators must use exact success/error/warning hex codes layered over the dark background.",
+    "Utilize the Lucide icon library for lock symbols, double-ticks, and navigation tabs. Keep stroke-width consistent at 1.5.",
+    "Enforce 'data-testid' on all pressable, text-input, and navigable components."
+  ]
+}

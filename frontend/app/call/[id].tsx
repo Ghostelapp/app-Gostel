@@ -1,0 +1,855 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Platform,
+  Vibration,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import {
+  PhoneOff,
+  Mic,
+  MicOff,
+  ShieldCheck,
+  Volume2,
+  VolumeX,
+} from 'lucide-react-native';
+import Avatar from '../../src/Avatar';
+import { useAuth } from '../../src/auth';
+import { api, formatApiErrorDetail } from '../../src/api';
+import { useWebSocket } from '../../src/ws';
+import { theme } from '../../src/theme';
+import { getInCallManager } from '../../src/incall';
+import { markCallActive, endIncomingCallNative } from '../../src/callkeep';
+import { useCallRingback } from '../../src/callRingback';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+type CallStatus =
+  | 'init'        // bootstrapping (loading ICE, getting media)
+  | 'ringing'     // caller waiting for callee, or callee seeing incoming
+  | 'connecting'  // SDP exchange in progress
+  | 'connected'   // ICE connected — audio flowing
+  | 'failed'      // ICE failed / no media
+  | 'ended';      // hangup
+
+type IceServer = {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const RINGBACK = require('../../assets/audio/ringback.mp3');
+const CALL_TIMEOUT_MS = 45_000; // no-answer cutoff
+const READY_RETRY_MS = 1_000;   // callee retries call:ready every 1s
+const READY_RETRY_MAX = 15;     // 15s of retries — covers a slow caller bootstrap
+
+const FALLBACK_ICE: IceServer[] = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+];
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+export default function CallScreen() {
+  const params = useLocalSearchParams<{
+    id: string;
+    role?: string;
+    caller_id?: string;
+    conversation_id?: string;
+  }>();
+  const id = params.id;
+  const role = params.role;
+  const callerIdParam = params.caller_id;
+  const conversationIdParam = params.conversation_id;
+  const router = useRouter();
+  const { user } = useAuth();
+
+  const isCaller = role === 'caller';
+
+  // ---------- UI state ----------
+  const [callerName, setCallerName] = useState<string>(
+    isCaller ? 'Calling…' : 'Incoming call'
+  );
+  const [status, setStatus] = useState<CallStatus>('init');
+  const [muted, setMuted] = useState(false);
+  const [speakerOn, setSpeakerOn] = useState(false);
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  // ---------- refs ----------
+  const pcRef = useRef<any>(null);
+  const localStreamRef = useRef<any>(null);
+  const remoteStreamRef = useRef<any>(null);
+  const remoteAudioElRef = useRef<any>(null); // web only
+  const timerRef = useRef<any>(null);
+  const peerIdRef = useRef<string | null>(isCaller ? null : callerIdParam || null);
+  const iceServersRef = useRef<IceServer[]>(FALLBACK_ICE);
+  const pendingIceRef = useRef<any[]>([]);
+  const remoteSetRef = useRef(false);
+  const wsSendRef = useRef<((data: any) => void) | null>(null);
+  const timeoutTimerRef = useRef<any>(null);
+  const readyRetryRef = useRef<any>(null);
+  const endedRef = useRef(false);
+  const inCallStartedRef = useRef(false);
+  /** Caller side only: have we already created & sent the SDP offer? */
+  const offerSentRef = useRef(false);
+  /** Callee side only: have we already created & sent the SDP answer? */
+  const answerSentRef = useRef(false);
+
+  // ringback player (caller only)
+  const InCall = getInCallManager();
+  const { startRingback, stopRingback } = useCallRingback(RINGBACK, isCaller);
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+  const startTimer = useCallback(() => {
+    if (timerRef.current) return;
+    setElapsedSec(0);
+    timerRef.current = setInterval(
+      () => setElapsedSec((s) => s + 1),
+      1000
+    );
+  }, []);
+
+  const fmtElapsed = () => {
+    const m = Math.floor(elapsedSec / 60);
+    const s = elapsedSec % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const clearTimers = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (timeoutTimerRef.current) {
+      clearTimeout(timeoutTimerRef.current);
+      timeoutTimerRef.current = null;
+    }
+    if (readyRetryRef.current) {
+      clearTimeout(readyRetryRef.current);
+      readyRetryRef.current = null;
+    }
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // Cleanup + endCall
+  // ---------------------------------------------------------------------------
+  const cleanup = useCallback(async () => {
+    clearTimers();
+    stopRingback();
+    try {
+      localStreamRef.current?.getTracks?.().forEach((t: any) => {
+        try {
+          t.stop();
+        } catch {}
+      });
+    } catch {}
+    localStreamRef.current = null;
+    remoteStreamRef.current = null;
+    if (pcRef.current) {
+      try {
+        pcRef.current.close();
+      } catch {}
+      pcRef.current = null;
+    }
+    if (remoteAudioElRef.current && Platform.OS === 'web') {
+      try {
+        remoteAudioElRef.current.srcObject = null;
+        remoteAudioElRef.current.remove();
+      } catch {}
+      remoteAudioElRef.current = null;
+    }
+    if (inCallStartedRef.current) {
+      try {
+        InCall.stop();
+      } catch {}
+      inCallStartedRef.current = false;
+      // InCallManager.stop() may have swapped the AVAudioSession / Android
+      // audio mode back to voice-call defaults. Clear our cached "configured"
+      // flag so the next ringtone re-applies speaker routing.
+      try {
+        const Sounds = require('../../src/sounds');
+        Sounds.resetAudioMode?.();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      Vibration.cancel();
+    } catch {}
+  }, [clearTimers, stopRingback, InCall]);
+
+  const endCall = useCallback(
+    async (reason?: string) => {
+      if (endedRef.current) return;
+      endedRef.current = true;
+      setStatus('ended');
+      if (reason) setErrMsg(reason);
+
+      // Clear any native OS-level CallKeep entry for this call (foreground
+      // service notification, system call log). Safe no-op if the call was
+      // never registered with CallKeep (e.g. outgoing call from in-app).
+      try {
+        endIncomingCallNative(id);
+      } catch {
+        /* ignore */
+      }
+
+      // notify backend (best effort)
+      try {
+        await api.post(`/calls/${id}/end`);
+      } catch {}
+
+      // notify peer over WS (best effort)
+      if (peerIdRef.current) {
+        try {
+          wsSendRef.current?.({
+            type: 'call:end',
+            to: peerIdRef.current,
+            call_id: id,
+            conversation_id: conversationIdParam,
+          });
+        } catch {}
+      }
+
+      await cleanup();
+      setTimeout(() => {
+        try {
+          router.back();
+        } catch {
+          router.replace('/(tabs)/calls');
+        }
+      }, 800);
+    },
+    [id, cleanup, router]
+  );
+
+  // ---------------------------------------------------------------------------
+  // Media + PeerConnection setup
+  // ---------------------------------------------------------------------------
+  const fetchIceServers = useCallback(async () => {
+    try {
+      const { data } = await api.get('/calls/ice-servers');
+      if (data?.iceServers?.length) {
+        iceServersRef.current = data.iceServers;
+      }
+    } catch (e) {
+      console.warn('ice-servers fetch failed, using STUN fallback', e);
+    }
+  }, []);
+
+  const ensureMedia = useCallback(async (): Promise<any | null> => {
+    try {
+      if (Platform.OS === 'web') {
+        const stream = await (navigator as any).mediaDevices.getUserMedia({
+          audio: true,
+        });
+        return stream;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getWebRTC } = require('../../src/webrtc');
+      const WebRTC = getWebRTC();
+      if (!WebRTC) {
+        setErrMsg('Native WebRTC not loaded. Requires APK build.');
+        return null;
+      }
+      const stream = await WebRTC.mediaDevices.getUserMedia({ audio: true });
+      return stream;
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      setErrMsg(`Microphone error: ${msg}`);
+      return null;
+    }
+  }, []);
+
+  const attachRemoteStream = useCallback((stream: any) => {
+    remoteStreamRef.current = stream;
+    if (Platform.OS === 'web') {
+      const audio = (window as any).document.createElement('audio');
+      audio.srcObject = stream;
+      audio.autoplay = true;
+      audio.playsInline = true;
+      audio.style.display = 'none';
+      (window as any).document.body.appendChild(audio);
+      remoteAudioElRef.current = audio;
+      return;
+    }
+    // Native: audio plays automatically through MediaStream
+    // once InCallManager is started.
+  }, []);
+
+  const setupPeer = useCallback(
+    (stream: any): any => {
+      let pc: any;
+      const config = { iceServers: iceServersRef.current };
+
+      if (Platform.OS === 'web') {
+        pc = new (window as any).RTCPeerConnection(config);
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getWebRTC } = require('../../src/webrtc');
+        const WebRTC = getWebRTC();
+        if (!WebRTC) return null;
+        pc = new WebRTC.RTCPeerConnection(config);
+      }
+
+      // remote track → attach
+      pc.ontrack = (e: any) => {
+        if (e?.streams?.[0]) attachRemoteStream(e.streams[0]);
+      };
+      // ICE candidates → relay to peer
+      pc.onicecandidate = (e: any) => {
+        if (e?.candidate && peerIdRef.current && wsSendRef.current) {
+          try {
+            wsSendRef.current({
+              type: 'call:ice',
+              to: peerIdRef.current,
+              call_id: id,
+              conversation_id: conversationIdParam,
+              candidate: e.candidate.toJSON
+                ? e.candidate.toJSON()
+                : e.candidate,
+            });
+          } catch {}
+        }
+      };
+      // Connection state
+      pc.oniceconnectionstatechange = () => {
+        const st = pc.iceConnectionState;
+        if (st === 'connected' || st === 'completed') {
+          if (!endedRef.current) {
+            stopRingback();
+            // Start InCallManager audio routing on FIRST connect
+            if (!inCallStartedRef.current && Platform.OS !== 'web') {
+              try {
+                InCall.start({ media: 'audio', auto: true });
+                InCall.setKeepScreenOn(true);
+                inCallStartedRef.current = true;
+              } catch {}
+            }
+            startTimer();
+            setStatus('connected');
+            // Tell OS-level CallKeep that the call is active (so the system
+            // call log + foreground service notification show the right state).
+            try {
+              markCallActive(id);
+            } catch {
+              /* ignore */
+            }
+            if (timeoutTimerRef.current) {
+              clearTimeout(timeoutTimerRef.current);
+              timeoutTimerRef.current = null;
+            }
+          }
+        } else if (st === 'failed') {
+          setErrMsg('Network connection failed');
+          setStatus('failed');
+          setTimeout(() => endCall('Connection failed'), 1500);
+        } else if (st === 'disconnected') {
+          // brief blip — ICE may recover; if not, oniceconnectionstatechange fires 'failed'
+          setErrMsg('Reconnecting…');
+        }
+      };
+
+      // Add local audio tracks
+      if (stream) {
+        try {
+          stream.getTracks().forEach((t: any) => pc.addTrack(t, stream));
+        } catch {
+          // Older API: addStream
+          try {
+            pc.addStream?.(stream);
+          } catch {}
+        }
+      }
+      return pc;
+    },
+    [id, attachRemoteStream, stopRingback, startTimer, endCall, InCall]
+  );
+
+  const drainPendingIce = useCallback(async () => {
+    if (!pcRef.current) return;
+    const queue = pendingIceRef.current;
+    pendingIceRef.current = [];
+    for (const c of queue) {
+      try {
+        await pcRef.current.addIceCandidate(c);
+      } catch {
+        /* ignore individual errors */
+      }
+    }
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // WS message handler
+  // ---------------------------------------------------------------------------
+  const onWs = useCallback(
+    async (msg: any) => {
+      if (!msg || !msg.type) return;
+      // Only process messages for THIS call
+      if (msg.call_id && msg.call_id !== id) {
+        // not for us, but call:incoming has no call_id check — skip silently
+        if (msg.type !== 'call:incoming') return;
+      }
+
+      const pc = pcRef.current;
+
+      // ----- Caller side: callee is ready, can send offer -----
+      if (msg.type === 'call:ready' && isCaller) {
+        if (offerSentRef.current) return; // already sent offer for this call
+        const from = msg.from;
+        if (!from) return;
+        // Remember peer id even if pc isn't ready yet — the callee will retry
+        // sending call:ready until we (the caller) finally answer with an offer.
+        peerIdRef.current = from;
+        if (!pc) return; // PC not ready yet — wait for next retry
+        offerSentRef.current = true;
+        try {
+          setStatus('connecting');
+          const offer = await pc.createOffer({ offerToReceiveAudio: true });
+          await pc.setLocalDescription(offer);
+          wsSendRef.current?.({
+            type: 'call:offer',
+            to: from,
+            call_id: id,
+            conversation_id: conversationIdParam,
+            sdp: offer.sdp,
+          });
+        } catch (e: any) {
+          offerSentRef.current = false; // allow retry
+          setErrMsg(`Offer failed: ${e?.message || e}`);
+          setStatus('failed');
+          setTimeout(() => endCall('Offer failed'), 1500);
+        }
+        return;
+      }
+
+      // ----- Callee side: caller's SDP offer arrived -----
+      if (msg.type === 'call:offer' && !isCaller) {
+        if (answerSentRef.current) return; // already answered (duplicate offer)
+        const from = msg.from;
+        if (from && !peerIdRef.current) peerIdRef.current = from;
+        if (!pc) return; // PC not ready — caller will give up on no-answer timeout
+        answerSentRef.current = true;
+        try {
+          setStatus('connecting');
+          await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+          remoteSetRef.current = true;
+          await drainPendingIce();
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          if (peerIdRef.current) {
+            wsSendRef.current?.({
+              type: 'call:answer',
+              to: peerIdRef.current,
+              call_id: id,
+              conversation_id: conversationIdParam,
+              sdp: answer.sdp,
+            });
+          }
+        } catch (e: any) {
+          answerSentRef.current = false;
+          setErrMsg(`Answer failed: ${e?.message || e}`);
+          setStatus('failed');
+          setTimeout(() => endCall('Answer failed'), 1500);
+        }
+        return;
+      }
+
+      // ----- Caller side: callee's SDP answer arrived -----
+      if (msg.type === 'call:answer' && isCaller) {
+        try {
+          if (!pc) return;
+          await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+          remoteSetRef.current = true;
+          await drainPendingIce();
+        } catch (e: any) {
+          setErrMsg(`SetRemote failed: ${e?.message || e}`);
+        }
+        return;
+      }
+
+      // ----- Both: ICE candidates from peer -----
+      if (msg.type === 'call:ice') {
+        if (!pc) return;
+        if (!remoteSetRef.current) {
+          pendingIceRef.current.push(msg.candidate);
+        } else {
+          try {
+            await pc.addIceCandidate(msg.candidate);
+          } catch {
+            /* often invalid candidates — ignore */
+          }
+        }
+        return;
+      }
+
+      // ----- Both: peer cancelled / ended / rejected -----
+      if (
+        msg.type === 'call:end' ||
+        msg.type === 'call:reject' ||
+        msg.type === 'call:cancel' ||
+        // Server-side broadcast when /api/calls/{id}/end is called by either side.
+        msg.type === 'call:ended'
+      ) {
+        // Only react to events for THIS call.
+        const evCallId = msg.call_id ?? msg.data?.call_id;
+        if (evCallId && evCallId !== id) return;
+        endCall(
+          msg.type === 'call:reject'
+            ? 'Call rejected'
+            : msg.type === 'call:cancel'
+              ? 'Call cancelled'
+              : 'Call ended by peer'
+        );
+        return;
+      }
+    },
+    [id, isCaller, drainPendingIce, endCall]
+  );
+
+  const { send } = useWebSocket(onWs, !!user);
+  wsSendRef.current = send;
+
+  useEffect(() => {
+    if (isCaller || !id) return;
+    api.post(`/calls/${id}/accept`).catch(() => {});
+  }, [id, isCaller]);
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle: bootstrap the call when component mounts
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    let cancelled = false;
+
+    const sendReadyWithRetry = (attempt = 0) => {
+      if (endedRef.current || cancelled) return;
+      const target = peerIdRef.current; // for callee = caller_id from URL
+      if (target) {
+        try {
+          wsSendRef.current?.({
+            type: 'call:ready',
+            to: target,
+            call_id: id,
+            conversation_id: conversationIdParam,
+          });
+        } catch {}
+      }
+      if (attempt < READY_RETRY_MAX) {
+        readyRetryRef.current = setTimeout(
+          () => sendReadyWithRetry(attempt + 1),
+          READY_RETRY_MS
+        );
+      }
+    };
+
+    const bootstrap = async () => {
+      // 1. Fetch ICE servers (cached on backend)
+      await fetchIceServers();
+      if (cancelled || endedRef.current) return;
+
+      // 2. Get microphone access
+      const stream = await ensureMedia();
+      if (!stream) {
+        // ensureMedia already set errMsg; end the call
+        setTimeout(() => endCall('No microphone'), 1500);
+        return;
+      }
+      if (cancelled || endedRef.current) return;
+      localStreamRef.current = stream;
+
+      // 3. Setup PC
+      const pc = setupPeer(stream);
+      if (!pc) {
+        setTimeout(() => endCall('WebRTC unavailable'), 1500);
+        return;
+      }
+      pcRef.current = pc;
+
+      // 4. Set initial status
+      setStatus(isCaller ? 'ringing' : 'connecting');
+      if (isCaller) startRingback();
+
+      // 4b. RACE FIX (caller): if callee already sent `call:ready` while we
+      // were still fetching ICE / acquiring mic, the handler set peerIdRef but
+      // had to bail because pc wasn't ready. Trigger the offer now.
+      if (
+        isCaller &&
+        peerIdRef.current &&
+        !offerSentRef.current &&
+        pcRef.current
+      ) {
+        offerSentRef.current = true;
+        try {
+          setStatus('connecting');
+          const offer = await pcRef.current.createOffer({
+            offerToReceiveAudio: true,
+          });
+          await pcRef.current.setLocalDescription(offer);
+          wsSendRef.current?.({
+            type: 'call:offer',
+            to: peerIdRef.current,
+            call_id: id,
+            conversation_id: conversationIdParam,
+            sdp: offer.sdp,
+          });
+        } catch (e: any) {
+          offerSentRef.current = false;
+          setErrMsg(`Offer failed: ${e?.message || e}`);
+          setStatus('failed');
+          setTimeout(() => endCall('Offer failed'), 1500);
+          return;
+        }
+      }
+
+      // 5. Timeout for no-answer
+      timeoutTimerRef.current = setTimeout(() => {
+        if (!endedRef.current && status !== 'connected') {
+          endCall('No answer');
+        }
+      }, CALL_TIMEOUT_MS);
+
+      // 6. Callee: notify caller we're ready (will retry)
+      if (!isCaller) {
+        sendReadyWithRetry();
+      }
+    };
+
+    bootstrap();
+
+    return () => {
+      cancelled = true;
+      cleanup();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // UI actions
+  // ---------------------------------------------------------------------------
+  const toggleMute = () => {
+    setMuted((m) => {
+      const next = !m;
+      try {
+        localStreamRef.current?.getAudioTracks?.().forEach((t: any) => {
+          t.enabled = !next;
+        });
+        if (Platform.OS !== 'web') InCall.setMicrophoneMute(next);
+      } catch {}
+      return next;
+    });
+  };
+
+  const toggleSpeaker = () => {
+    setSpeakerOn((s) => {
+      const next = !s;
+      try {
+        if (Platform.OS !== 'web') {
+          InCall.setForceSpeakerphoneOn(next);
+          InCall.setSpeakerphoneOn(next);
+        }
+      } catch {}
+      return next;
+    });
+  };
+
+  const handleEndPress = () => {
+    if (status === 'ringing' && isCaller && peerIdRef.current) {
+      // Caller cancels before pickup
+      try {
+        wsSendRef.current?.({
+          type: 'call:cancel',
+          to: peerIdRef.current,
+          call_id: id,
+          conversation_id: conversationIdParam,
+        });
+      } catch {}
+    }
+    endCall('Hung up');
+  };
+
+  // ---------------------------------------------------------------------------
+  // Initial peer name (caller fetches call info)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    (async () => {
+      try {
+        if (isCaller) {
+          // Caller knows the conversation, we'll show generic until WS arrives
+          setCallerName('Calling…');
+        }
+        // Callee: caller name comes from IncomingCallProvider, already in route potentially
+        // We'd ideally fetch /calls/{id} but it's not implemented — fall back to placeholder
+      } catch (e) {
+        console.warn('call info fetch', formatApiErrorDetail(e));
+      }
+    })();
+  }, [isCaller]);
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+  const statusLine = (() => {
+    if (errMsg && (status === 'failed' || status === 'ended')) return errMsg;
+    switch (status) {
+      case 'init':
+        return 'Preparing…';
+      case 'ringing':
+        return isCaller ? 'Calling…' : 'Incoming call…';
+      case 'connecting':
+        return 'Connecting…';
+      case 'connected':
+        return fmtElapsed();
+      case 'failed':
+        return errMsg || 'Connection failed';
+      case 'ended':
+        return 'Call ended';
+      default:
+        return '';
+    }
+  })();
+
+  return (
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+      <View style={styles.bg} />
+
+      <View style={styles.content}>
+        <View style={styles.statusRow}>
+          <ShieldCheck color={theme.colors.primary} size={14} strokeWidth={2.5} />
+          <Text style={styles.encryptedText}>Secure call</Text>
+        </View>
+
+        <Avatar name={callerName} size={140} color={theme.colors.primary} />
+        <Text style={styles.name}>{callerName}</Text>
+        <Text style={styles.statusText}>{statusLine}</Text>
+
+        {errMsg && status !== 'ended' && status !== 'failed' && (
+          <Text style={styles.warnText}>{errMsg}</Text>
+        )}
+      </View>
+
+      <View style={styles.controls}>
+        <TouchableOpacity
+          testID="speaker-button"
+          onPress={toggleSpeaker}
+          style={[
+            styles.ctrlBtn,
+            speakerOn && { backgroundColor: theme.colors.primaryDark },
+          ]}
+          disabled={status !== 'connected'}
+        >
+          {speakerOn ? (
+            <Volume2 color={theme.colors.primary} size={22} strokeWidth={2} />
+          ) : (
+            <VolumeX color={theme.colors.textPrimary} size={22} strokeWidth={2} />
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          testID="end-call-button"
+          onPress={handleEndPress}
+          style={[styles.ctrlBtn, styles.endBtn]}
+        >
+          <PhoneOff color="#fff" size={26} strokeWidth={2.4} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          testID="mute-button"
+          onPress={toggleMute}
+          style={[
+            styles.ctrlBtn,
+            muted && { backgroundColor: theme.colors.warning },
+          ]}
+          disabled={status !== 'connected' && status !== 'connecting'}
+        >
+          {muted ? (
+            <MicOff color={theme.colors.background} size={22} strokeWidth={2} />
+          ) : (
+            <Mic color={theme.colors.textPrimary} size={22} strokeWidth={2} />
+          )}
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: theme.colors.background },
+  bg: { ...StyleSheet.absoluteFillObject, backgroundColor: theme.colors.background },
+  content: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: theme.colors.surface,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.primaryDark,
+    marginBottom: 30,
+  },
+  encryptedText: {
+    color: theme.colors.primary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  name: {
+    color: theme.colors.textPrimary,
+    fontSize: 26,
+    fontWeight: '700',
+    marginTop: 24,
+  },
+  statusText: {
+    color: theme.colors.textSecondary,
+    fontSize: 15,
+    marginTop: 8,
+  },
+  warnText: {
+    color: theme.colors.warning,
+    fontSize: 12,
+    marginTop: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  controls: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    paddingHorizontal: 40,
+    paddingBottom: 36,
+    paddingTop: 12,
+  },
+  ctrlBtn: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: theme.colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  endBtn: {
+    backgroundColor: theme.colors.error,
+    borderColor: theme.colors.error,
+  },
+});
