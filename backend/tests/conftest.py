@@ -63,6 +63,39 @@ def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
+TEST_E2EE_KEYS = {
+    "admin": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=",
+    "demo": "YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=",
+}
+
+
+def ensure_e2ee_keys(*token_key_pairs: tuple[str, str]):
+    for token, key_name in token_key_pairs:
+        public_key = TEST_E2EE_KEYS[key_name]
+        r = requests.post(
+            f"{BASE_URL}/api/e2ee/keys",
+            json={"public_key": public_key, "algorithm": "nacl-box-v1"},
+            headers=auth_headers(token),
+            timeout=20,
+        )
+        assert r.status_code == 200, r.text
+
+
+def e2ee_payload(sender_key_name: str, recipient_ids: list[str]) -> dict:
+    return {
+        "version": 1,
+        "algorithm": "nacl-box-v1",
+        "sender_public_key": TEST_E2EE_KEYS[sender_key_name],
+        "recipients": {
+            user_id: {
+                "nonce": "bm9uY2Vfbm9uY2Vfbm9uY2Vfbm9uY2U=",
+                "ciphertext": f"Y2lwaGVydGV4dF9mb3Jfe3VzZXJfaWR9",
+            }
+            for user_id in recipient_ids
+        },
+    }
+
+
 def ensure_contact(source_token: str, source_user: dict, target_token: str, target_user: dict):
     contacts = requests.get(
         f"{BASE_URL}/api/contacts",

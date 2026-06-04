@@ -58,6 +58,21 @@ Python 3.12+
 MongoDB running on 127.0.0.1:27017
 ```
 
+Linux quick start:
+
+```bash
+./scripts/check-test-env.sh
+sudo docker run -d --name ghostel-mongo -p 27017:27017 mongo:7
+./backend/setup-linux.sh
+./backend/start-backend-local.sh
+```
+
+Run backend tests from another terminal:
+
+```bash
+./backend/test-backend-local.sh
+```
+
 Windows quick start:
 
 ```powershell
@@ -101,6 +116,21 @@ npm
 Android Studio
 Android SDK
 Java from Android Studio JBR
+```
+
+Linux quick start:
+
+```bash
+./frontend/setup-linux.sh
+./frontend/serve-web-local.sh
+```
+
+The current Firebase packages require Node.js 20 or newer. If Ubuntu installs Node 18, upgrade it locally:
+
+```bash
+sudo npm install -g n
+sudo n 20
+hash -r
 ```
 
 Install:
@@ -184,4 +214,3 @@ Start a new Codex conversation on the new computer and say:
 ```text
 Kontynuujemy projekt Ghostel z repo Ghostelapp/app-Gostel. Backend to FastAPI/MongoDB na porcie 8000, frontend to Expo/React Native Android. Ostatnio naprawiliśmy Android Network Error przez usesCleartextTraffic i wypchnęliśmy pierwszy commit na GitHuba. Przeczytaj HANDOFF.md i pomóż uruchomić projekt lokalnie.
 ```
-

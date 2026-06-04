@@ -3,6 +3,8 @@ import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build
 import android.os.Bundle
+import android.content.Intent
+import android.view.WindowManager
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -20,7 +22,14 @@ class MainActivity : ReactActivity() {
     // @generated begin expo-splashscreen - expo prebuild (DO NOT MODIFY) sync-f3ff59a738c56c9a6119210cb55f0b613eb8b6af
     SplashScreenManager.registerOnActivity(this)
     // @generated end expo-splashscreen
+    applyIncomingCallWindowFlags(intent)
     super.onCreate(null)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    applyIncomingCallWindowFlags(intent)
   }
 
   /**
@@ -44,6 +53,30 @@ class MainActivity : ReactActivity() {
           ){})
   }
 
+  private fun applyIncomingCallWindowFlags(intent: Intent?) {
+    if (intent?.action != GhostelCallNotificationModule.ACTION_INCOMING_CALL &&
+      intent?.getBooleanExtra("ghostel_incoming_call", false) != true
+    ) {
+      return
+    }
+
+    synchronized(MainActivity::class.java) {
+      pendingIncomingCallIntent = Intent(intent)
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+      setShowWhenLocked(true)
+      setTurnScreenOn(true)
+    } else {
+      @Suppress("DEPRECATION")
+      window.addFlags(
+        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+          WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+          WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+      )
+    }
+  }
+
   /**
     * Align the back button behavior with Android S
     * where moving root activities to background instead of finishing activities.
@@ -61,5 +94,16 @@ class MainActivity : ReactActivity() {
       // Use the default back button implementation on Android S
       // because it's doing more than [Activity.moveTaskToBack] in fact.
       super.invokeDefaultOnBackPressed()
+  }
+
+  companion object {
+    private var pendingIncomingCallIntent: Intent? = null
+
+    fun consumePendingIncomingCallIntent(): Intent? =
+      synchronized(MainActivity::class.java) {
+        val intent = pendingIncomingCallIntent
+        pendingIncomingCallIntent = null
+        intent
+      }
   }
 }

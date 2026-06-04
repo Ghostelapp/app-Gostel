@@ -100,3 +100,9 @@ memory/test_credentials.md
 # Mobile development
 android-sdk/
 frontend/android/app/debug.keystore
+frontend/android/app/upload-keystore.jks
+frontend/android/keystore.properties
+IOS/GhostelIOS/GoogleService-Info.plist
+IOS/GhostelIOS/ios/Ghostel/GoogleService-Info.plist
+IOS/GhostelIOS/dist-ios/
+IOS/GhostelIOS/.metro-cache/

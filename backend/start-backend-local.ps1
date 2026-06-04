@@ -4,8 +4,19 @@ Set-Location $PSScriptRoot
 
 if (!(Test-Path -LiteralPath ".\.env")) {
   Copy-Item -LiteralPath ".\.env.example" -Destination ".\.env"
-  Write-Host "Created backend\.env. Fill it in, especially ADMIN_PASSWORD and JWT_SECRET, then run this script again."
-  exit 1
+  $bytes = New-Object byte[] 32
+  [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+  $jwtSecret = -join ($bytes | ForEach-Object { $_.ToString("x2") })
+  $adminPassword = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
+  $demoPassword = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
+  (Get-Content -LiteralPath ".\.env") `
+    -replace "JWT_SECRET=replace-with-a-long-random-secret", "JWT_SECRET=$jwtSecret" `
+    -replace "ADMIN_PASSWORD=replace-with-a-strong-password", "ADMIN_PASSWORD=$adminPassword" `
+    -replace "DEMO_PASSWORD=replace-with-a-strong-password", "DEMO_PASSWORD=$demoPassword" |
+    Set-Content -LiteralPath ".\.env"
+  Write-Host "Created backend\.env with generated local credentials."
+  Write-Host "Admin password: $adminPassword"
+  Write-Host "Demo password: $demoPassword"
 }
 
 if (!(Test-Path -LiteralPath ".\.venv\Scripts\python.exe")) {

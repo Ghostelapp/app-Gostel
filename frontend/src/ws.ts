@@ -22,7 +22,7 @@ export function useWebSocket(onMessage: Listener, enabled: boolean = true) {
     const connect = async () => {
       const token = await getStoredToken();
       if (!token || cancelled) return;
-      const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/^http/, 'ws');
+      const base = (process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.88.9:8000').replace(/^http/, 'ws');
       const url = `${base}/api/ws?token=${encodeURIComponent(token)}`;
       try {
         const ws = new WebSocket(url);

@@ -9,6 +9,8 @@ from conftest import (
     DEMO_PASSWORD,
     auth_headers,
     ensure_contact,
+    ensure_e2ee_keys,
+    e2ee_payload,
 )
 
 ADMIN_PW = ADMIN_PASSWORD
@@ -227,6 +229,7 @@ class TestRegression:
     def test_create_conversation_and_message(self):
         admin = _login(ADMIN_EMAIL, ADMIN_PW)
         demo = _login(DEMO_EMAIL, DEMO_PW)
+        ensure_e2ee_keys((admin["access_token"], "admin"), (demo["access_token"], "demo"))
         ensure_contact(admin["access_token"], admin["user"], demo["access_token"], demo["user"])
         r = requests.post(f"{BASE_URL}/api/conversations",
                           headers=_h(admin["access_token"]),
@@ -238,9 +241,11 @@ class TestRegression:
                           headers=_h(admin["access_token"]),
                           json={"conversation_id": cid,
                                 "content": f"TEST iter4 {uuid.uuid4().hex[:6]}",
-                                "kind": "text"}, timeout=20)
+                                "kind": "text",
+                                "encrypted": True,
+                                "e2ee": e2ee_payload("admin", [admin["user"]["id"], demo["user"]["id"]])}, timeout=20)
         assert m.status_code == 200
-        assert m.json()["content"].startswith("TEST iter4")
+        assert m.json()["content"] == "[encrypted message]"
 
     def test_push_register(self):
         token = _login(DEMO_EMAIL, DEMO_PW)["access_token"]
@@ -255,7 +260,7 @@ class TestRegression:
         token = _login(DEMO_EMAIL, DEMO_PW)["access_token"]
         r = requests.post(f"{BASE_URL}/api/uploads",
                           headers=_h(token),
-                          json={"filename": "TEST_iter4.txt", "mime": "text/plain",
+                          json={"filename": "TEST_iter4.ghostel", "mime": "application/octet-stream",
                                 "data": "aGVsbG8=", "size": 5}, timeout=20)
         assert r.status_code == 200
-        assert r.json()["filename"] == "TEST_iter4.txt"
+        assert r.json()["filename"] == "TEST_iter4.ghostel"

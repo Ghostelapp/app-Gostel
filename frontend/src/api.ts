@@ -3,7 +3,7 @@ import { getStoredToken, TOKEN_KEY } from './tokenStorage';
 
 export { TOKEN_KEY };
 
-const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.88.9:8000';
 
 export const api: AxiosInstance = axios.create({
   baseURL: `${BASE_URL}/api`,

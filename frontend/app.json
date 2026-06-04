@@ -20,6 +20,7 @@
     "android": {
       "package": "app.ghostel",
       "googleServicesFile": "./google-services.json",
+      "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#0f1419"
@@ -79,7 +80,6 @@
       "@config-plugins/react-native-webrtc",
       "./plugins/withWebRtcEventTargetShimFix",
       "./plugins/withWakeScreenAndroidActivity",
-      "./plugins/withCallKeepAndroid",
       "expo-localization",
       "expo-font",
       "@react-native-firebase/app",

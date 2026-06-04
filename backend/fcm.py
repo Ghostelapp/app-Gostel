@@ -55,9 +55,12 @@ def _load_credentials():
 
     raw_info: dict | None = None
     raw_json = os.environ.get("FCM_SERVICE_ACCOUNT_JSON", "").strip()
-    file_path = os.environ.get(
-        "FCM_SERVICE_ACCOUNT_PATH", "/app/backend/firebase-service-account.json"
-    )
+    file_path = os.environ.get("FCM_SERVICE_ACCOUNT_PATH", "").strip()
+    candidate_paths = [
+        file_path,
+        os.path.join(os.path.dirname(__file__), "firebase-service-account.json"),
+        "/app/backend/firebase-service-account.json",
+    ]
 
     if raw_json:
         try:
@@ -66,19 +69,23 @@ def _load_credentials():
             _config_error = f"FCM_SERVICE_ACCOUNT_JSON invalid: {e}"
             logger.warning(_config_error)
             return
-    elif os.path.exists(file_path):
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                raw_info = json.load(f)
-        except Exception as e:
-            _config_error = f"Failed to read {file_path}: {e}"
-            logger.warning(_config_error)
-            return
     else:
+        for candidate in [p for p in candidate_paths if p]:
+            if not os.path.exists(candidate):
+                continue
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    raw_info = json.load(f)
+                break
+            except Exception as e:
+                _config_error = f"Failed to read {candidate}: {e}"
+                logger.warning(_config_error)
+                return
+    if raw_info is None:
         _config_error = (
             "No Firebase service account configured. "
             "Set FCM_SERVICE_ACCOUNT_JSON env var OR place JSON at "
-            "/app/backend/firebase-service-account.json"
+            "backend/firebase-service-account.json"
         )
         logger.warning(_config_error)
         return

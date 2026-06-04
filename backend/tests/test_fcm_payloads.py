@@ -11,6 +11,8 @@ def test_call_push_is_android_data_only_for_lock_screen_handler():
         ttl_seconds=30,
         data={
             "type": "incoming_call",
+            "kind": "call",
+            "push_kind": "call",
             "screen": "call",
             "call_id": "call-123",
             "conversation_id": "conv-123",
@@ -22,6 +24,8 @@ def test_call_push_is_android_data_only_for_lock_screen_handler():
 
     message = payload["message"]
     assert message["data"]["type"] == "incoming_call"
+    assert message["data"]["kind"] == "call"
+    assert message["data"]["push_kind"] == "call"
     assert message["data"]["call_id"] == "call-123"
     assert message["android"]["priority"] == "high"
     assert message["android"]["ttl"] == "30s"

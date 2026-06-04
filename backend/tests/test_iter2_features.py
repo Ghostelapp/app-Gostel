@@ -8,7 +8,7 @@ import uuid
 import pytest
 import requests
 import websockets
-from conftest import auth_headers, BASE_URL, ensure_contact
+from conftest import auth_headers, BASE_URL, ensure_contact, ensure_e2ee_keys, e2ee_payload
 
 
 def _ws_url() -> str:
@@ -20,19 +20,19 @@ def _ws_url() -> str:
 # ---------------- Uploads ----------------
 class TestUploads:
     def test_upload_and_fetch(self, api_client, admin_token):
-        data_b = b"hello-silentel-upload-test"
+        data_b = b"encrypted-upload-test"
         b64 = base64.b64encode(data_b).decode()
         payload = {
-            "filename": "TEST_hello.txt",
-            "mime": "text/plain",
+            "filename": "TEST_hello.ghostel",
+            "mime": "application/octet-stream",
             "data": b64,
             "size": len(data_b),
         }
         r = api_client.post(f"{BASE_URL}/api/uploads", json=payload, headers=auth_headers(admin_token))
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["filename"] == "TEST_hello.txt"
-        assert body["mime"] == "text/plain"
+        assert body["filename"] == "TEST_hello.ghostel"
+        assert body["mime"] == "application/octet-stream"
         assert body["size"] == len(data_b)
         assert "id" in body
         pytest.attachment_id = body["id"]
@@ -43,7 +43,7 @@ class TestUploads:
         gb = g.json()
         assert gb["owner_id"]
         assert gb["data"] == b64
-        assert gb["filename"] == "TEST_hello.txt"
+        assert gb["filename"] == "TEST_hello.ghostel"
 
     def test_upload_requires_auth(self, api_client):
         r = api_client.post(f"{BASE_URL}/api/uploads", json={
@@ -57,7 +57,7 @@ class TestUploads:
         # OR 413 if validation passes. Both indicate proper rejection.
         size = 9 * 1024 * 1024
         r = api_client.post(f"{BASE_URL}/api/uploads", json={
-            "filename": "big.bin", "mime": "application/octet-stream",
+            "filename": "big.ghostel", "mime": "application/octet-stream",
             "data": "QQ==", "size": size
         }, headers=auth_headers(admin_token))
         assert r.status_code in (413, 422), f"got {r.status_code}: {r.text}"
@@ -69,6 +69,7 @@ class TestMessageKinds:
     def conv_id(self, admin_token, demo_token):
         admin = requests.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(admin_token)).json()
         demo = requests.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(demo_token)).json()
+        ensure_e2ee_keys((admin_token, "admin"), (demo_token, "demo"))
         ensure_contact(admin_token, admin, demo_token, demo)
         r = requests.post(
             f"{BASE_URL}/api/conversations",
@@ -78,8 +79,8 @@ class TestMessageKinds:
         assert r.status_code == 200
         return r.json()["id"]
 
-    def _upload(self, token, name="att.bin", mime="application/octet-stream"):
-        data_b = b"binary-payload"
+    def _upload(self, token, name="att.ghostel", mime="application/octet-stream"):
+        data_b = b"encrypted-binary-payload"
         b64 = base64.b64encode(data_b).decode()
         r = requests.post(
             f"{BASE_URL}/api/uploads",
@@ -94,16 +95,29 @@ class TestMessageKinds:
         ("voice", "audio/m4a"),
         ("file", "application/pdf"),
     ])
-    def test_send_message_with_attachment(self, api_client, admin_token, conv_id, kind, mime):
-        att_id = self._upload(admin_token, name=f"TEST_{kind}.bin", mime=mime)
+    def test_send_message_with_attachment(self, api_client, admin_token, demo_token, conv_id, kind, mime):
+        admin = api_client.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(admin_token)).json()
+        demo = api_client.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(demo_token)).json()
+        att_id = self._upload(admin_token, name=f"TEST_{kind}.ghostel")
         extra = {"duration_ms": 2500} if kind == "voice" else {}
+        attachment_e2ee = {
+            "version": 1,
+            "algorithm": "nacl-secretbox-v1",
+            "nonce": "bm9uY2Vfbm9uY2Vfbm9uY2Vfbm9uY2U=",
+            "mime": mime,
+            "size": 128,
+            "key_recipients": e2ee_payload("admin", [admin["id"], demo["id"]])["recipients"],
+        }
         r = api_client.post(
             f"{BASE_URL}/api/messages",
             json={
                 "conversation_id": conv_id,
-                "content": "",
+                "content": "[encrypted message]",
                 "kind": kind,
                 "attachment_id": att_id,
+                "encrypted": True,
+                "e2ee": e2ee_payload("admin", [admin["id"], demo["id"]]),
+                "e2ee_attachment": attachment_e2ee,
                 **extra,
             },
             headers=auth_headers(admin_token),
@@ -139,6 +153,7 @@ class TestCalls:
     def conv_id(self, admin_token, demo_token):
         admin = requests.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(admin_token)).json()
         demo = requests.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(demo_token)).json()
+        ensure_e2ee_keys((admin_token, "admin"), (demo_token, "demo"))
         ensure_contact(admin_token, admin, demo_token, demo)
         r = requests.post(
             f"{BASE_URL}/api/conversations",
@@ -160,6 +175,9 @@ class TestCalls:
         assert call["caller_name"]
         assert call["conversation_id"] == conv_id
         assert isinstance(call["member_ids"], list) and len(call["member_ids"]) == 2
+        assert call["encrypted"] is True
+        assert call["e2ee_required"] is True
+        assert call["e2ee_media"] == "webrtc-dtls-srtp"
 
         e = api_client.post(
             f"{BASE_URL}/api/calls/{call['id']}/end",
@@ -222,6 +240,7 @@ class TestWebSocket:
         demo = requests.get(
             f"{BASE_URL}/api/auth/me", headers=auth_headers(demo_token)
         ).json()
+        ensure_e2ee_keys((admin_token, "admin"), (demo_token, "demo"))
         ensure_contact(admin_token, admin, demo_token, demo)
         conv = requests.post(
             f"{BASE_URL}/api/conversations",
@@ -243,7 +262,16 @@ class TestWebSocket:
                 "type": "call:offer",
                 "to": demo["id"],
                 "conversation_id": conv_id,
-                "sdp": "TEST_SDP",
+                "call_id": "TEST_CALL_ID",
+                "encrypted": True,
+                "e2ee_signal": {
+                    "version": 1,
+                    "algorithm": "nacl-box-v1",
+                    "sender_public_key": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=",
+                    "nonce": "bm9uY2Vfbm9uY2Vfbm9uY2Vfbm9uY2U=",
+                    "ciphertext": "Y2lwaGVydGV4dF9jYWxsX29mZmVy",
+                },
+                "sdp": "TEST_SDP_SHOULD_NOT_FORWARD",
             }
             await ws_a.send(json.dumps(offer))
 
@@ -251,7 +279,9 @@ class TestWebSocket:
             data = json.loads(raw)
             assert data["type"] == "call:offer"
             assert data["from"] == admin["id"]
-            assert data["sdp"] == "TEST_SDP"
+            assert data["encrypted"] is True
+            assert data["e2ee_signal"]["ciphertext"] == "Y2lwaGVydGV4dF9jYWxsX29mZmVy"
+            assert "sdp" not in data
 
     async def test_ws_message_broadcast_on_send(self, admin_token, demo_token):
         admin = requests.get(
@@ -260,6 +290,7 @@ class TestWebSocket:
         demo = requests.get(
             f"{BASE_URL}/api/auth/me", headers=auth_headers(demo_token)
         ).json()
+        ensure_e2ee_keys((admin_token, "admin"), (demo_token, "demo"))
         ensure_contact(admin_token, admin, demo_token, demo)
         # ensure conversation exists
         conv = requests.post(
@@ -279,7 +310,12 @@ class TestWebSocket:
             await asyncio.sleep(0.2)
             requests.post(
                 f"{BASE_URL}/api/messages",
-                json={"conversation_id": conv_id, "content": "TEST_ws_broadcast"},
+                json={
+                    "conversation_id": conv_id,
+                    "content": "TEST_ws_broadcast",
+                    "encrypted": True,
+                    "e2ee": e2ee_payload("admin", [admin["id"], demo["id"]]),
+                },
                 headers=auth_headers(admin_token),
             )
 
@@ -295,4 +331,4 @@ class TestWebSocket:
                 except asyncio.TimeoutError:
                     break
             assert got is not None, "Did not receive WS message broadcast"
-            assert got["data"]["content"] == "TEST_ws_broadcast"
+            assert got["data"]["content"] == "[encrypted message]"

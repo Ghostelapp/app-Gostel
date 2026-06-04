@@ -73,8 +73,49 @@ def create_access_token(user_id: str, email: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 
+def user_has_push_token(u: dict) -> bool:
+    return bool(u.get("push_tokens") or u.get("push_token") or u.get("expo_push_token"))
+
+
+def user_push_targets(u: dict) -> list[dict]:
+    """Return all registered push targets, including legacy single-token fields."""
+    targets: list[dict] = []
+    seen: set[str] = set()
+    for entry in u.get("push_tokens") or []:
+        if not isinstance(entry, dict):
+            continue
+        token = (entry.get("token") or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        targets.append(
+            {
+                "token": token,
+                "token_type": (entry.get("token_type") or "fcm").strip().lower(),
+                "platform": entry.get("platform") or "unknown",
+                "device_model": entry.get("device_model") or "",
+                "os_version": entry.get("os_version") or "",
+                "source": entry.get("source") or "",
+                "registered_at": entry.get("registered_at") or "",
+            }
+        )
+    legacy = (u.get("push_token") or u.get("expo_push_token") or "").strip()
+    if legacy and legacy not in seen:
+        targets.append(
+            {
+                "token": legacy,
+                "token_type": (u.get("push_token_type") or "fcm").strip().lower(),
+                "platform": u.get("push_platform") or "unknown",
+                "device_model": "",
+                "os_version": "",
+                "source": "legacy",
+                "registered_at": "",
+            }
+        )
+    return targets
+
+
 def public_user(u: dict) -> dict:
-    has_push_token = bool(u.get("push_token") or u.get("expo_push_token"))
     return {
         "id": u["id"],
         "email": u["email"],
@@ -90,7 +131,7 @@ def public_user(u: dict) -> dict:
         "created_at": u.get("created_at"),
         "last_seen": u.get("last_seen"),
         "last_active": u.get("last_active") or u.get("last_seen"),
-        "push_registered": has_push_token,
+        "push_registered": user_has_push_token(u),
         "e2ee_public_key": u.get("e2ee_public_key") or None,
         "e2ee_key_updated_at": u.get("e2ee_key_updated_at") or None,
     }
@@ -157,6 +198,44 @@ async def ensure_direct_conversation_not_blocked(
         await ensure_not_blocked_between(user, other_id, action=action)
 
 
+async def require_conversation_e2ee_ready(conv: dict, *, action: str) -> list[dict]:
+    member_ids = list(conv.get("member_ids") or [])
+    if len(member_ids) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 members required")
+    members = await db.users.find(
+        {"id": {"$in": member_ids}},
+        {"_id": 0, "id": 1, "name": 1, "username": 1, "e2ee_public_key": 1},
+    ).to_list(1000)
+    by_id = {m.get("id"): m for m in members}
+    missing = [
+        by_id.get(member_id, {}).get("name")
+        or by_id.get(member_id, {}).get("username")
+        or member_id
+        for member_id in member_ids
+        if not by_id.get(member_id, {}).get("e2ee_public_key")
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{action} require E2EE device keys for all participants. Waiting for: {', '.join(missing)}",
+        )
+    return members
+
+
+async def conversation_e2ee_ready(conv_id: str, user_id: str, target_id: str) -> bool:
+    conv = await db.conversations.find_one(
+        {"id": conv_id, "member_ids": {"$all": [user_id, target_id]}},
+        {"_id": 0, "id": 1, "member_ids": 1},
+    )
+    if not conv:
+        return False
+    try:
+        await require_conversation_e2ee_ready(conv, action="Calls")
+        return True
+    except HTTPException:
+        return False
+
+
 async def user_can_signal_target(user_id: str, target_id: str, data: dict) -> bool:
     if not target_id or target_id == user_id:
         return False
@@ -165,9 +244,13 @@ async def user_can_signal_target(user_id: str, target_id: str, data: dict) -> bo
     if call_id:
         call = await db.calls.find_one(
             {"id": call_id, "member_ids": {"$all": [user_id, target_id]}},
-            {"_id": 0, "id": 1},
+            {"_id": 0, "id": 1, "conversation_id": 1, "e2ee_required": 1},
         )
         if call:
+            if not call.get("e2ee_required"):
+                return False
+            if call.get("conversation_id") and not await conversation_e2ee_ready(call["conversation_id"], user_id, target_id):
+                return False
             user = await db.users.find_one({"id": user_id}, {"_id": 0})
             if not user:
                 return False
@@ -181,9 +264,11 @@ async def user_can_signal_target(user_id: str, target_id: str, data: dict) -> bo
     if conv_id:
         conv = await db.conversations.find_one(
             {"id": conv_id, "member_ids": {"$all": [user_id, target_id]}},
-            {"_id": 0, "id": 1, "type": 1},
+            {"_id": 0, "id": 1, "type": 1, "member_ids": 1},
         )
         if conv:
+            if not await conversation_e2ee_ready(conv_id, user_id, target_id):
+                return False
             user = await db.users.find_one({"id": user_id}, {"_id": 0})
             if not user:
                 return False
@@ -330,6 +415,9 @@ class PushTokenIn(BaseModel):
     # Accepts both raw Expo-style names ('android'/'ios') and explicit names
     # ('fcm'/'apns'). 'expo' kept for legacy ExpoPushToken[...] tokens.
     token_type: Literal["fcm", "apns", "expo", "android", "ios"] = "fcm"
+    device_model: Optional[str] = None
+    os_version: Optional[str] = None
+    source: Optional[str] = None
 
 
 class CallStartIn(BaseModel):
@@ -763,6 +851,113 @@ async def export_user_data(user: dict = Depends(get_current_user)):
             "calls": len(calls_out),
         },
     }
+
+
+async def delete_user_account_data(user_id: str) -> bool:
+    """Delete a user account and remove or anonymize related personal data."""
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        return False
+
+    now = now_utc().isoformat()
+    email = user.get("email")
+
+    conv_docs = await db.conversations.find(
+        {"member_ids": user_id}, {"_id": 0, "id": 1, "member_ids": 1}
+    ).to_list(5000)
+    conv_ids = [c["id"] for c in conv_docs if c.get("id")]
+
+    await db.contact_invitations.delete_many(
+        {"$or": [{"from_user_id": user_id}, {"to_user_id": user_id}]}
+    )
+    await db.users.update_many(
+        {},
+        {
+            "$pull": {
+                "contact_ids": user_id,
+                "blocked_user_ids": user_id,
+            },
+            "$unset": {f"muted_users.{user_id}": ""},
+        },
+    )
+    await db.conversations.update_many(
+        {"member_ids": user_id},
+        {"$pull": {"member_ids": user_id, "admin_ids": user_id}},
+    )
+
+    if conv_ids:
+        empty_docs = await db.conversations.find(
+            {"id": {"$in": conv_ids}, "member_ids": {"$size": 0}},
+            {"_id": 0, "id": 1},
+        ).to_list(5000)
+        empty_conv_ids = [c["id"] for c in empty_docs if c.get("id")]
+        if empty_conv_ids:
+            await db.messages.delete_many({"conversation_id": {"$in": empty_conv_ids}})
+            await db.conversations.delete_many({"id": {"$in": empty_conv_ids}})
+
+    await db.messages.update_many(
+        {"sender_id": user_id},
+        {
+            "$set": {
+                "sender_id": "deleted-user",
+                "sender_name": "Deleted account",
+                "content": "",
+                "deleted": True,
+                "deleted_at": now,
+            },
+            "$unset": {
+                "attachment_id": "",
+                "e2ee": "",
+                "e2ee_attachment": "",
+                "reply_to": "",
+            },
+        },
+    )
+
+    async for msg in db.messages.find(
+        {"reactions": {"$exists": True}}, {"_id": 0, "id": 1, "reactions": 1}
+    ):
+        reactions = msg.get("reactions") or {}
+        if not isinstance(reactions, dict):
+            continue
+        changed = False
+        cleaned: dict = {}
+        for emoji, ids in reactions.items():
+            if not isinstance(ids, list):
+                cleaned[emoji] = ids
+                continue
+            next_ids = [uid for uid in ids if uid != user_id]
+            if len(next_ids) != len(ids):
+                changed = True
+            if next_ids:
+                cleaned[emoji] = next_ids
+        if changed and msg.get("id"):
+            await db.messages.update_one(
+                {"id": msg["id"]}, {"$set": {"reactions": cleaned}}
+            )
+
+    await db.attachments.delete_many({"owner_id": user_id})
+    await db.calls.delete_many(
+        {
+            "$or": [
+                {"member_ids": user_id},
+                {"caller_id": user_id},
+                {"callee_ids": user_id},
+            ]
+        }
+    )
+    if email:
+        await db.login_attempts.delete_many({"email": email})
+    await db.users.delete_one({"id": user_id})
+    return True
+
+
+@api.delete("/users/me")
+async def delete_my_account(user: dict = Depends(get_current_user)):
+    deleted = await delete_user_account_data(user["id"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"deleted": True}
 
 
 # ----------------- Contacts -----------------
@@ -1706,6 +1901,8 @@ async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_
     await ensure_direct_conversation_not_blocked(conv, user, action="send messages to")
 
     e2ee_doc: Optional[dict] = None
+    if not payload.e2ee:
+        raise HTTPException(status_code=400, detail="Messages must be end-to-end encrypted")
     if payload.encrypted and not payload.e2ee:
         raise HTTPException(status_code=400, detail="Encrypted messages require an E2EE payload")
     if payload.e2ee:
@@ -2018,7 +2215,7 @@ def admin_user(u: dict) -> dict:
     return {
         **public_user(u),
         "last_seen": u.get("last_seen"),
-        "push_registered": bool(u.get("push_token") or u.get("expo_push_token")),
+        "push_registered": user_has_push_token(u),
     }
 
 
@@ -2059,6 +2256,7 @@ async def admin_stats(admin: dict = Depends(require_admin)):
     push_ready = await db.users.count_documents(
         {
             "$or": [
+                {"push_tokens.0": {"$exists": True}},
                 {"push_token": {"$exists": True, "$ne": None}},
                 {"expo_push_token": {"$exists": True, "$ne": None}},
             ]
@@ -2089,13 +2287,9 @@ async def admin_update_role(user_id: str, payload: RoleUpdateIn, admin: dict = D
 async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)):
     if user_id == admin["id"]:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
-    result = await db.users.delete_one({"id": user_id})
-    if result.deleted_count == 0:
+    deleted = await delete_user_account_data(user_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="User not found")
-    # Pull user out of any conversations they were a member of
-    await db.conversations.update_many(
-        {"member_ids": user_id}, {"$pull": {"member_ids": user_id}}
-    )
     return {"deleted": True}
 
 
@@ -2113,6 +2307,8 @@ async def upload_attachment(payload: UploadIn, user: dict = Depends(get_current_
         raise HTTPException(status_code=413, detail="File too large (max 8MB)")
 
     filename = Path(payload.filename).name.strip()[:200] or "attachment"
+    if payload.mime != "application/octet-stream" or not filename.endswith(".ghostel"):
+        raise HTTPException(status_code=400, detail="Attachments must be encrypted before upload")
     att = {
         "id": str(uuid.uuid4()),
         "owner_id": user["id"],
@@ -2177,6 +2373,19 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
             status_code=400,
             detail="Empty push token.",
         )
+    token_entry = {
+        "token": token,
+        "token_type": token_type,
+        "platform": platform or "unknown",
+        "device_model": (payload.device_model or "").strip()[:120],
+        "os_version": (payload.os_version or "").strip()[:80],
+        "source": (payload.source or "").strip()[:80],
+        "registered_at": now_utc().isoformat(),
+    }
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$pull": {"push_tokens": {"token": token}}},
+    )
     await db.users.update_one(
         {"id": user["id"]},
         {
@@ -2185,7 +2394,8 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
                 "push_token": token,
                 "push_token_type": token_type,
                 "push_platform": platform or "unknown",
-            }
+            },
+            "$addToSet": {"push_tokens": token_entry},
         },
     )
     logger.info(
@@ -2194,11 +2404,45 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
     return {"registered": True, "platform": platform, "token_type": token_type}
 
 
+@api.get("/push/devices")
+async def list_push_devices(user: dict = Depends(get_current_user)):
+    """Return masked push-token registrations for the current account."""
+    devices = []
+    for idx, target in enumerate(user_push_targets(user), start=1):
+        token = target.get("token") or ""
+        devices.append(
+            {
+                "id": idx,
+                "platform": target.get("platform") or "unknown",
+                "token_type": target.get("token_type") or "unknown",
+                "token_prefix": token[:18],
+                "token_suffix": token[-6:] if len(token) > 6 else "",
+                "device_model": target.get("device_model") or "",
+                "os_version": target.get("os_version") or "",
+                "source": target.get("source") or "",
+                "registered_at": target.get("registered_at") or "",
+            }
+        )
+    return {
+        "count": len(devices),
+        "devices": devices,
+        "last_diag": user.get("push_diag") or None,
+    }
+
+
 @api.post("/push/unregister")
 async def unregister_push(user: dict = Depends(get_current_user)):
     await db.users.update_one(
         {"id": user["id"]},
-        {"$unset": {"expo_push_token": "", "push_platform": ""}},
+        {
+            "$unset": {
+                "expo_push_token": "",
+                "push_platform": "",
+                "push_token": "",
+                "push_token_type": "",
+            },
+            "$set": {"push_tokens": []},
+        },
     )
     return {"unregistered": True}
 
@@ -2235,9 +2479,8 @@ async def send_test_push(
     Optional body: {"kind": "call" | "message" | "notification"}"""
     from fcm import is_configured as fcm_is_configured, send_fcm, get_config_error
 
-    token = user.get("push_token") or user.get("expo_push_token")
-    token_type = user.get("push_token_type") or "fcm"
-    if not token:
+    targets = user_push_targets(user)
+    if not targets:
         return {
             "sent": False,
             "reason": "no_token",
@@ -2263,81 +2506,136 @@ async def send_test_push(
         channel = "notifications"
         sound = "notification"
 
-    result: dict = {"kind": kind, "channel": channel, "token_type": token_type}
+    result: dict = {
+        "kind": kind,
+        "channel": channel,
+        "registered_tokens": len(targets),
+        "sent_count": 0,
+        "failed_count": 0,
+        "targets": [],
+    }
 
-    if token_type in ("fcm", "apns"):
+    fcm_targets = [t for t in targets if (t.get("token_type") or "fcm") in ("fcm", "apns")]
+    expo_targets = [t for t in targets if (t.get("token_type") or "") == "expo"]
+
+    if fcm_targets:
         if not fcm_is_configured():
             result["sent"] = False
             result["error"] = "fcm_not_configured"
             result["detail"] = get_config_error()
             return result
+        push_data = {"type": "test", "kind": kind, "push_kind": kind}
+        if kind == "call":
+            test_call_id = str(uuid.uuid4())
+            push_data = {
+                "type": "incoming_call",
+                "kind": "call",
+                "push_kind": "call",
+                "screen": "call",
+                "call_id": test_call_id,
+                "message_id": test_call_id,
+                "conversation_id": "",
+                "caller_id": "ghostel-test",
+                "caller_name": "Ghostel Test",
+                "mode": "audio",
+            }
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                fcm_res = await send_fcm(
-                    client,
-                    token=token,
-                    title=title,
-                    body=body,
-                    channel_id=channel,
-                    sound=sound,
-                    priority="high",
-                    ttl_seconds=30,
-                    data={"type": "test", "kind": kind},
-                    is_call=(kind == "call"),
-                )
-                result.update(fcm_res)
-                result["sent"] = bool(fcm_res.get("ok"))
-                if not fcm_res.get("ok") and fcm_res.get("fcm_error_code") in (
-                    "UNREGISTERED",
-                    "INVALID_ARGUMENT",
-                    "NOT_FOUND",
-                ):
-                    await db.users.update_one(
-                        {"id": user["id"]},
-                        {"$unset": {"push_token": "", "push_token_type": "", "push_platform": "", "expo_push_token": ""}},
+                for target in fcm_targets:
+                    token = target["token"]
+                    fcm_res = await send_fcm(
+                        client,
+                        token=token,
+                        title=title,
+                        body=body,
+                        channel_id=channel,
+                        sound=sound,
+                        priority="high",
+                        ttl_seconds=30,
+                        data=push_data,
+                        is_call=(kind == "call"),
                     )
-                    result["token_cleared"] = True
+                    ok = bool(fcm_res.get("ok"))
+                    result["sent_count" if ok else "failed_count"] += 1
+                    target_result = {
+                        "token_type": target.get("token_type"),
+                        "platform": target.get("platform"),
+                        "device_model": target.get("device_model") or "",
+                        "token_prefix": token[:18],
+                        "ok": ok,
+                    }
+                    if not ok:
+                        target_result["error"] = fcm_res.get("fcm_error_code") or fcm_res.get("error")
+                    result["targets"].append(target_result)
+                    if not ok and fcm_res.get("fcm_error_code") in (
+                        "UNREGISTERED",
+                        "INVALID_ARGUMENT",
+                        "NOT_FOUND",
+                    ):
+                        await db.users.update_one(
+                            {"id": user["id"]},
+                            {
+                                "$pull": {"push_tokens": {"token": token}},
+                                "$unset": {
+                                    "push_token": "",
+                                    "push_token_type": "",
+                                    "push_platform": "",
+                                    "expo_push_token": "",
+                                },
+                            },
+                        )
+                        target_result["token_cleared"] = True
         except Exception as e:
-            result["sent"] = False
+            result["failed_count"] += len(fcm_targets)
             result["error"] = str(e)
-        return result
 
     # Legacy Expo token path
-    msg_payload = [
-        {
-            "to": token,
-            "title": title,
-            "body": body,
-            "sound": sound,
-            "priority": "high",
-            "channelId": channel,
-            "ttl": 30,
-            "data": {"type": "test", "kind": kind},
-        }
-    ]
-    result["sent"] = False
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(EXPO_PUSH_URL, json=msg_payload)
-            try:
-                data = resp.json()
-            except Exception:
-                data = None
-            result["expo_status_code"] = resp.status_code
-            result["expo_response"] = data
-            if resp.status_code in (200, 201):
-                tickets = data.get("data", []) if isinstance(data, dict) else []
-                if tickets and isinstance(tickets[0], dict):
-                    t0 = tickets[0]
-                    result["ticket_status"] = t0.get("status")
-                    if t0.get("status") == "ok":
-                        result["sent"] = True
-                        result["ticket_id"] = t0.get("id")
-                    else:
-                        result["error"] = t0.get("message")
-                        result["error_detail"] = t0.get("details")
-    except Exception as e:
-        result["error"] = str(e)
+    if expo_targets:
+        msg_payload = [
+            {
+                "to": target["token"],
+                "title": title,
+                "body": body,
+                "sound": sound,
+                "priority": "high",
+                "channelId": channel,
+                "ttl": 30,
+                "data": {"type": "test", "kind": kind},
+            }
+            for target in expo_targets
+        ]
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(EXPO_PUSH_URL, json=msg_payload)
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = None
+                result["expo_status_code"] = resp.status_code
+                if resp.status_code in (200, 201):
+                    tickets = data.get("data", []) if isinstance(data, dict) else []
+                    for target, ticket in zip(expo_targets, tickets):
+                        ok = isinstance(ticket, dict) and ticket.get("status") == "ok"
+                        result["sent_count" if ok else "failed_count"] += 1
+                        result["targets"].append(
+                            {
+                                "token_type": "expo",
+                                "platform": target.get("platform"),
+                                "device_model": target.get("device_model") or "",
+                                "token_prefix": target["token"][:18],
+                                "ok": ok,
+                                "error": None if ok else ticket.get("message") if isinstance(ticket, dict) else "expo_failed",
+                            }
+                        )
+                    if len(tickets) < len(expo_targets):
+                        result["failed_count"] += len(expo_targets) - len(tickets)
+                else:
+                    result["failed_count"] += len(expo_targets)
+                    result["expo_response"] = data
+        except Exception as e:
+            result["failed_count"] += len(expo_targets)
+            result["error"] = str(e)
+    result["sent"] = result["sent_count"] > 0 and result["failed_count"] == 0
     return result
 
 
@@ -2355,14 +2653,20 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         recipients_full = await db.users.find(
             {
                 "id": {"$in": targets},
-                "push_token": {"$exists": True, "$ne": None},
+                "$or": [
+                    {"push_tokens.0": {"$exists": True}},
+                    {"push_token": {"$exists": True, "$ne": None}},
+                    {"expo_push_token": {"$exists": True, "$ne": None}},
+                ],
             },
             {
                 "_id": 0,
                 "id": 1,
+                "push_tokens": 1,
                 "push_token": 1,
                 "push_token_type": 1,
                 "push_platform": 1,
+                "expo_push_token": 1,
                 "blocked_user_ids": 1,
                 "muted_conversation_ids": 1,
                 "muted_users": 1,
@@ -2420,6 +2724,8 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
             "message_id": msg.get("id", ""),
             "call_id": msg.get("id", "") if is_call else "",
             "screen": "call" if is_call else "chat",
+            "kind": "call" if is_call else str(msg.get("kind") or "message"),
+            "push_kind": "call" if is_call else "message",
             # `incoming_call` is what the Android Headless JS handler matches on
             # (src/fcmBackground.ts). Older clients accepted "call" too — both
             # values are honored on the client.
@@ -2433,16 +2739,23 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
             "mode": msg.get("mode", "audio") if is_call else "",
         }
 
-        # Split recipients by token type
-        fcm_recipients = [r for r in recipients if (r.get("push_token_type") or "fcm") in ("fcm", "apns")]
-        expo_recipients = [r for r in recipients if r.get("push_token_type") == "expo"]
+        # Split all registered devices by token type. A user may be logged in
+        # on multiple phones, so never rely on the legacy single push_token.
+        push_targets: list[dict] = []
+        for r in recipients:
+            for target in user_push_targets(r):
+                push_targets.append({**target, "user_id": r.get("id")})
+        fcm_recipients = [
+            r for r in push_targets if (r.get("token_type") or "fcm") in ("fcm", "apns")
+        ]
+        expo_recipients = [r for r in push_targets if r.get("token_type") == "expo"]
 
         # ---- Direct FCM path ----
         fcm_ok = fcm_err = 0
         if fcm_recipients and fcm_is_configured():
             async with httpx.AsyncClient(timeout=10) as client:
                 for r in fcm_recipients:
-                    token = r["push_token"]
+                    token = r["token"]
                     result = await send_fcm(
                         client,
                         token=token,
@@ -2466,8 +2779,16 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                         # Clean up unregistered tokens
                         if err_code in ("UNREGISTERED", "INVALID_ARGUMENT", "NOT_FOUND"):
                             await db.users.update_many(
-                                {"push_token": token},
-                                {"$unset": {"push_token": "", "push_token_type": "", "push_platform": "", "expo_push_token": ""}},
+                                {"$or": [{"push_token": token}, {"push_tokens.token": token}]},
+                                {
+                                    "$pull": {"push_tokens": {"token": token}},
+                                    "$unset": {
+                                        "push_token": "",
+                                        "push_token_type": "",
+                                        "push_platform": "",
+                                        "expo_push_token": "",
+                                    },
+                                },
                             )
             logger.info(
                 f"FCM push: {fcm_ok} ok / {fcm_err} err, conv={conv.get('id', '?')[:8]}, kind={msg.get('kind', 'msg')}"
@@ -2481,7 +2802,7 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         if expo_recipients:
             messages_payload = [
                 {
-                    "to": r["push_token"],
+                    "to": r["token"],
                     "title": title,
                     "body": body_preview,
                     "sound": sound,
@@ -2607,6 +2928,14 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     await ensure_direct_conversation_not_blocked(conv, user, action="call")
+    members = await require_conversation_e2ee_ready(conv, action="Calls")
+    member_keys = {
+        m["id"]: {
+            "public_key": m.get("e2ee_public_key"),
+            "name": m.get("name") or m.get("username") or m["id"],
+        }
+        for m in members
+    }
     call = {
         "id": str(uuid.uuid4()),
         "conversation_id": conv["id"],
@@ -2619,6 +2948,10 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
         "answered_at": None,
         "ended_at": None,
         "duration_sec": 0,
+        "encrypted": True,
+        "e2ee_required": True,
+        "e2ee_media": "webrtc-dtls-srtp",
+        "e2ee_member_keys": member_keys,
     }
 
     # Persist only when caller's privacy setting allows it.
@@ -2675,7 +3008,7 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
     ended_iso = now_utc().isoformat()
-    update_doc: dict = {"ended_at": ended_iso}
+    update_doc: dict = {"ended_at": ended_iso, "ended_by": user["id"]}
     answered = call.get("answered_at")
     if answered:
         try:
@@ -2687,17 +3020,53 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
         except Exception:
             update_doc["status"] = "ended"
     else:
-        # Never answered — mark as missed
-        update_doc["status"] = "missed"
+        # Never answered. If the caller ends it, it is a cancellation; if the
+        # callee ends it, it is an explicit rejection rather than a missed call.
+        update_doc["status"] = "cancelled" if user["id"] == call.get("caller_id") else "rejected"
     await db.calls.update_one({"id": call_id}, {"$set": update_doc})
     await broadcast_to_members(
         call["member_ids"],
-        {"type": "call:ended", "data": {"call_id": call_id}},
+        {
+            "type": "call:ended",
+            "data": {
+                "call_id": call_id,
+                "ended_by": user["id"],
+                "status": update_doc.get("status", "ended"),
+            },
+        },
     )
-    return {"ended": True}
+    return {"ended": True, "status": update_doc.get("status", "ended")}
 
 
 # ----------------- Call history -----------------
+async def enrich_call_for_user(call: dict, user_id: str) -> dict:
+    """Attach lightweight participant data used by the call UI."""
+    call["direction"] = "outgoing" if call.get("caller_id") == user_id else "incoming"
+    member_ids = [m for m in call.get("member_ids", []) if m]
+    if not member_ids:
+        call["participants"] = []
+        return call
+
+    cursor = db.users.find(
+        {"id": {"$in": member_ids}},
+        {
+            "_id": 0,
+            "id": 1,
+            "name": 1,
+            "username": 1,
+            "avatar_color": 1,
+            "status": 1,
+        },
+    )
+    by_id = {u["id"]: u async for u in cursor if u.get("id")}
+    call["participants"] = [
+        by_id[m]
+        for m in member_ids
+        if m in by_id
+    ]
+    return call
+
+
 @api.get("/calls")
 async def list_calls(
     user: dict = Depends(get_current_user),
@@ -2729,8 +3098,7 @@ async def list_calls(
     async for c in cursor:
         if c.get("id") in hidden:
             continue
-        c["direction"] = "outgoing" if c.get("caller_id") == user["id"] else "incoming"
-        items.append(c)
+        items.append(await enrich_call_for_user(c, user["id"]))
         if len(items) >= limit:
             break
     return items
@@ -2777,6 +3145,17 @@ async def mark_missed_as_seen(user: dict = Depends(get_current_user)):
             {"$addToSet": {"seen_call_ids": {"$each": ids}}},
         )
     return {"marked": len(ids)}
+
+
+@api.get("/calls/{call_id}")
+async def get_call(call_id: str, user: dict = Depends(get_current_user)):
+    """Return one call history entry for the current user."""
+    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    if user["id"] not in call.get("member_ids", []):
+        raise HTTPException(status_code=403, detail="Not a participant")
+    return await enrich_call_for_user(call, user["id"])
 
 
 @api.delete("/calls/{call_id}")
@@ -2980,6 +3359,19 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
                 "call:cancel",   # caller cancelled before answer
             }:
                 target = data.get("to")
+                if mtype in {"call:offer", "call:answer", "call:ice"}:
+                    signal = data.get("e2ee_signal")
+                    if not data.get("encrypted") or not isinstance(signal, dict):
+                        await websocket.send_text(
+                            json.dumps({"type": "error", "data": "call signal must be end-to-end encrypted"})
+                        )
+                        continue
+                    # Do not forward accidental plaintext SDP/ICE material.
+                    data = {
+                        k: v
+                        for k, v in data.items()
+                        if k not in {"sdp", "candidate"}
+                    }
                 if target and await user_can_signal_target(user_id, target, data):
                     await ws_manager.send_to(target, {**data, "from": user_id})
                 elif target:
@@ -3282,7 +3674,19 @@ async def on_startup():
 
     # Seed a demo user for testing
     demo_email = os.environ.get("DEMO_EMAIL", "demo@silentel.app").lower()
-    demo_password = os.environ.get("DEMO_PASSWORD", "Demo@2026!")
+    demo_password = os.environ.get("DEMO_PASSWORD")
+    if not demo_password:
+        if os.environ.get("ALLOW_INSECURE_DEFAULT_DEMO", "").lower() == "true":
+            demo_password = "Demo@2026!"
+            logger.warning(
+                "Using the insecure default demo password because "
+                "ALLOW_INSECURE_DEFAULT_DEMO=true. Do not use this in production."
+            )
+        else:
+            raise RuntimeError(
+                "DEMO_PASSWORD must be set. Refusing to create a default demo "
+                "with a public password."
+            )
     await _seed_user_safely(
         {"email": demo_email},
         {

@@ -143,15 +143,44 @@ class TestChat:
         assert pytest.group_conv_id in ids
 
     def test_send_message_and_list(self, api_client, admin_token, demo_token):
+        admin = api_client.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(admin_token)).json()
+        demo = api_client.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(demo_token)).json()
+        admin_pub = "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="
+        demo_pub = "YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI="
+        for token, public_key in [(admin_token, admin_pub), (demo_token, demo_pub)]:
+            key = api_client.post(
+                f"{BASE_URL}/api/e2ee/keys",
+                json={"public_key": public_key, "algorithm": "nacl-box-v1"},
+                headers=auth_headers(token),
+            )
+            assert key.status_code == 200, key.text
+
+        plaintext = f"TEST_hello_secure_{uuid.uuid4().hex[:8]}"
+        pytest.search_plaintext = plaintext
+        payload = {
+            "version": 1,
+            "algorithm": "nacl-box-v1",
+            "sender_public_key": admin_pub,
+            "recipients": {
+                admin["id"]: {"nonce": "bm9uY2Vfbm9uY2Vfbm9uY2Vfbm9uY2U=", "ciphertext": "Y2lwaGVydGV4dF9mb3JfYWRtaW4="},
+                demo["id"]: {"nonce": "bm9uY2Vfbm9uY2Vfbm9uY2Vfbm9uY2U=", "ciphertext": "Y2lwaGVydGV4dF9mb3JfZGVtbw=="},
+            },
+        }
         send = api_client.post(
             f"{BASE_URL}/api/messages",
-            json={"conversation_id": pytest.direct_conv_id, "content": "TEST_hello secure world"},
+            json={
+                "conversation_id": pytest.direct_conv_id,
+                "content": plaintext,
+                "encrypted": True,
+                "e2ee": payload,
+            },
             headers=auth_headers(admin_token),
         )
         assert send.status_code == 200, send.text
         msg = send.json()
-        assert msg["content"] == "TEST_hello secure world"
-        assert msg.get("encrypted") is False
+        assert msg["content"] == "[encrypted message]"
+        assert msg.get("encrypted") is True
+        assert plaintext not in str(msg)
         pytest.msg_id = msg["id"]
 
         # Demo user lists messages and marks as read
@@ -161,7 +190,7 @@ class TestChat:
         )
         assert lst.status_code == 200
         contents = [m["content"] for m in lst.json()]
-        assert "TEST_hello secure world" in contents
+        assert "[encrypted message]" in contents
 
     def test_reaction_toggle(self, api_client, demo_token):
         # add
@@ -183,12 +212,12 @@ class TestChat:
 
     def test_search(self, api_client, admin_token):
         r = api_client.get(
-            f"{BASE_URL}/api/search?q=TEST_hello",
+            f"{BASE_URL}/api/search?q={pytest.search_plaintext}",
             headers=auth_headers(admin_token),
         )
         assert r.status_code == 200
         results = r.json()
-        assert any("TEST_hello" in m["content"] for m in results)
+        assert not any(pytest.search_plaintext in m["content"] for m in results)
 
     def test_send_e2ee_message_does_not_store_plaintext(self, api_client, admin_token, demo_token, ids):
         admin_pub = "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="
