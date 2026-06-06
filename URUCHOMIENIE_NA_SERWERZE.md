@@ -236,6 +236,38 @@ Uprawnienia:
 chmod 600 ~/apps/app-Gostel/backend/firebase-service-account.json
 ```
 
+### Produkcyjny TURN dla polaczen glosowych
+
+Odleglosc miedzy telefonami nie ma znaczenia. Jednak telefony w roznych sieciach
+Wi-Fi/LTE czesto nie moga nawiazac bezposredniego polaczenia WebRTC. Produkcja
+musi miec niezawodny serwer TURN. Publiczny fallback w aplikacji sluzy tylko do
+testow i moze powodowac ciagle `Connecting`.
+
+Najprostszy wariant to Cloudflare Calls TURN. Po utworzeniu klucza TURN dodaj do
+`backend/.env`:
+
+```env
+CLOUDFLARE_TURN_APP_ID=ID_KLUCZA_TURN
+CLOUDFLARE_TURN_API_TOKEN=TOKEN_API_TURN
+```
+
+Alternatywnie mozesz uzyc wlasnego lub zewnetrznego serwera TURN:
+
+```env
+TURN_URLS=turn:turn.ghostel.app:3478?transport=udp,turn:turn.ghostel.app:3478?transport=tcp,turns:turn.ghostel.app:5349?transport=tcp
+TURN_USERNAME=ghostel
+TURN_CREDENTIAL=TU_MOCNE_HASLO_TURN
+```
+
+Po zmianie konfiguracji zrestartuj backend:
+
+```bash
+sudo systemctl restart ghostel-app
+journalctl -u ghostel-app -n 100 --no-pager
+```
+
+Nie zapisuj prawdziwego tokenu ani hasla TURN w repozytorium.
+
 Test backendu:
 
 ```bash

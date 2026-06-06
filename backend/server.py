@@ -2827,9 +2827,28 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
 
 
 # ----------------- Calls (signaling + record) -----------------
-# ICE servers cache (TTL 50min — Cloudflare creds valid 1h, we refresh every 50min)
-_ice_cache = {"servers": None, "expires_at": 0.0}
+# ICE servers cache (TTL 50min — Cloudflare creds valid 1h, refresh every 50min)
+_ice_cache = {"servers": None, "source": None, "expires_at": 0.0}
 import time as _time
+
+
+def _configured_turn_servers():
+    """Return operator-provided TURN servers from environment variables."""
+    urls = [
+        item.strip()
+        for item in os.environ.get("TURN_URLS", "").split(",")
+        if item.strip()
+    ]
+    if not urls:
+        return None
+    server = {"urls": urls}
+    username = os.environ.get("TURN_USERNAME", "").strip()
+    credential = os.environ.get("TURN_CREDENTIAL", "").strip()
+    if username:
+        server["username"] = username
+    if credential:
+        server["credential"] = credential
+    return [server]
 
 
 async def _fetch_cloudflare_ice_servers():
@@ -2872,7 +2891,8 @@ async def _fetch_cloudflare_ice_servers():
         return None
 
 
-# Public Open Relay TURN (free fallback — slow but works without credentials)
+# Public Open Relay TURN is best-effort only. Production should configure
+# TURN_URLS or Cloudflare TURN because public relay capacity is not guaranteed.
 _OPEN_RELAY_SERVERS = [
     {"urls": "stun:openrelay.metered.ca:80"},
     {
@@ -2899,25 +2919,31 @@ _GOOGLE_STUN_SERVERS = [
 
 @api.get("/calls/ice-servers")
 async def get_ice_servers(user: dict = Depends(get_current_user)):
-    """Returns ICE servers (STUN + TURN) for WebRTC. Tries Cloudflare first,
-    falls back to Open Relay + Google STUN. Cached for ~50 minutes."""
+    """Return ICE servers for WebRTC with relay diagnostics."""
     now = _time.time()
     if _ice_cache["servers"] and now < _ice_cache["expires_at"]:
-        return {"iceServers": _ice_cache["servers"]}
+        return {
+            "iceServers": _ice_cache["servers"],
+            "source": _ice_cache["source"],
+            "relayAvailable": True,
+        }
 
-    servers = []
-    cf = await _fetch_cloudflare_ice_servers()
-    if cf:
+    configured = _configured_turn_servers()
+    if configured:
+        servers = list(configured) + list(_GOOGLE_STUN_SERVERS)
+        source = "configured"
+    elif cf := await _fetch_cloudflare_ice_servers():
         servers = list(cf)
-        # Append Google STUN as additional candidates
         servers.extend(_GOOGLE_STUN_SERVERS)
+        source = "cloudflare"
     else:
-        # Fallback: STUN + Open Relay
         servers = list(_GOOGLE_STUN_SERVERS) + list(_OPEN_RELAY_SERVERS)
+        source = "public-fallback"
 
     _ice_cache["servers"] = servers
+    _ice_cache["source"] = source
     _ice_cache["expires_at"] = now + 50 * 60  # 50 minutes
-    return {"iceServers": servers}
+    return {"iceServers": servers, "source": source, "relayAvailable": True}
 
 
 @api.post("/calls/start")
@@ -2954,14 +2980,14 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
         "e2ee_member_keys": member_keys,
     }
 
-    # Persist only when caller's privacy setting allows it.
+    # Active signaling requires the call to be queryable by both peers. Calls
+    # with history disabled are stored only for their active lifetime.
     caller_save = user.get("save_call_history")
     if caller_save is None:
         caller_save = True
-    if caller_save:
-        await db.calls.insert_one(call)
-    else:
+    if not caller_save:
         call["ephemeral"] = True
+    await db.calls.insert_one(call)
     call.pop("_id", None)
 
     # notify other members
@@ -3035,6 +3061,8 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
             },
         },
     )
+    if call.get("ephemeral"):
+        await db.calls.delete_one({"id": call_id})
     return {"ended": True, "status": update_doc.get("status", "ended")}
 
 
@@ -3082,7 +3110,7 @@ async def list_calls(
     limit = max(1, min(int(limit or 50), 200))
     skip = max(0, int(skip or 0))
     hidden = set(user.get("hidden_call_ids", []) or [])
-    query: dict = {"member_ids": user["id"]}
+    query: dict = {"member_ids": user["id"], "ephemeral": {"$ne": True}}
     if conversation_id:
         query["$or"] = [
             {"conv_id": conversation_id},

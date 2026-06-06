@@ -77,6 +77,25 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     [user?.id, startVibration],
   );
 
+  const handleNativeCallAction = useCallback(
+    async (call: IncomingCallPayload): Promise<boolean> => {
+      if (!call.action) return false;
+      await clearPendingIncomingCall(call.id).catch(() => {});
+      await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
+      stopVibration();
+      if (call.action === 'decline') {
+        await api.post(`/calls/${call.id}/end`).catch(() => {});
+        return true;
+      }
+      await api.post(`/calls/${call.id}/accept`).catch(() => {});
+      router.push(
+        `/call/${call.id}?role=callee&conversation_id=${call.conversation_id}&caller_id=${call.caller_id}`,
+      );
+      return true;
+    },
+    [router, stopVibration],
+  );
+
   const onMessage = useCallback(
     (msg: any) => {
       if (msg?.type === 'call:incoming' && msg.data && msg.data.caller_id !== user?.id) {
@@ -128,13 +147,16 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     if (!user) return;
     let mounted = true;
     const consume = async () => {
+      const nativeCall = normalizeIncomingCallPayload(await consumeInitialNativeIncomingCall());
+      if (mounted && nativeCall) {
+        if (!(await handleNativeCallAction(nativeCall))) showIncoming(nativeCall);
+        return;
+      }
       const call = await consumePendingIncomingCall();
       if (mounted && call) {
         showIncoming(call);
         return;
       }
-      const nativeCall = normalizeIncomingCallPayload(await consumeInitialNativeIncomingCall());
-      if (mounted && nativeCall) showIncoming(nativeCall);
     };
     consume().catch(() => {});
     const unsubIncoming = subscribeToIncomingCallEvents((call) => showIncoming(call));
@@ -148,7 +170,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       unsubIncoming();
       sub.remove();
     };
-  }, [user, showIncoming]);
+  }, [user, showIncoming, handleNativeCallAction]);
 
   // Stop vibration AND ringtone whenever incoming clears
   useEffect(() => {

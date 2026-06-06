@@ -4,7 +4,21 @@ type NativeCallNotification = {
   showIncomingCall?: (data: Record<string, string>) => Promise<boolean>;
   cancelIncomingCall?: (callId: string) => Promise<boolean>;
   consumeInitialIncomingCall?: () => Promise<Record<string, string> | null>;
+  getCapabilities?: () => Promise<AndroidCallCapabilities>;
+  openSettings?: (kind: AndroidSettingsKind) => Promise<boolean>;
 };
+
+export type AndroidCallCapabilities = {
+  notificationsEnabled: boolean;
+  fullScreenIntentAllowed: boolean;
+  batteryUnrestricted: boolean;
+};
+
+export type AndroidSettingsKind =
+  | 'app'
+  | 'fullScreen'
+  | 'callChannel'
+  | 'battery';
 
 function getModule(): NativeCallNotification | null {
   if (Platform.OS !== 'android') return null;
@@ -32,4 +46,16 @@ export async function consumeInitialNativeIncomingCall(): Promise<Record<string,
   const mod = getModule();
   if (!mod?.consumeInitialIncomingCall) return null;
   return mod.consumeInitialIncomingCall();
+}
+
+export async function getAndroidCallCapabilities(): Promise<AndroidCallCapabilities | null> {
+  const mod = getModule();
+  if (!mod?.getCapabilities) return null;
+  return mod.getCapabilities();
+}
+
+export async function openAndroidSettings(kind: AndroidSettingsKind): Promise<boolean> {
+  const mod = getModule();
+  if (!mod?.openSettings) return false;
+  return Boolean(await mod.openSettings(kind));
 }

@@ -6,18 +6,25 @@ type Listener = (msg: any) => void;
 export function useWebSocket(onMessage: Listener, enabled: boolean = true) {
   const wsRef = useRef<WebSocket | null>(null);
   const listenerRef = useRef<Listener>(onMessage);
+  const queueRef = useRef<any[]>([]);
   listenerRef.current = onMessage;
 
   const send = useCallback((data: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(data));
+      return;
     }
+    // Signaling messages (especially early ICE candidates) must not disappear
+    // while the socket is still connecting or briefly reconnecting.
+    queueRef.current.push(data);
+    if (queueRef.current.length > 200) queueRef.current.shift();
   }, []);
 
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
     let reconnectTimer: any = null;
+    let pingTimer: any = null;
 
     const connect = async () => {
       const token = await getStoredToken();
@@ -27,6 +34,26 @@ export function useWebSocket(onMessage: Listener, enabled: boolean = true) {
       try {
         const ws = new WebSocket(url);
         wsRef.current = ws;
+        ws.onopen = () => {
+          const queued = queueRef.current;
+          queueRef.current = [];
+          for (let index = 0; index < queued.length; index += 1) {
+            try {
+              ws.send(JSON.stringify(queued[index]));
+            } catch {
+              queueRef.current = [
+                ...queued.slice(index),
+                ...queueRef.current,
+              ].slice(-200);
+              break;
+            }
+          }
+          pingTimer = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'ping' }));
+            }
+          }, 20_000);
+        };
         ws.onmessage = (e) => {
           try {
             const data = JSON.parse(e.data);
@@ -36,6 +63,10 @@ export function useWebSocket(onMessage: Listener, enabled: boolean = true) {
           }
         };
         ws.onclose = () => {
+          if (pingTimer) {
+            clearInterval(pingTimer);
+            pingTimer = null;
+          }
           wsRef.current = null;
           if (!cancelled) {
             reconnectTimer = setTimeout(connect, 3000);
@@ -55,8 +86,10 @@ export function useWebSocket(onMessage: Listener, enabled: boolean = true) {
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (pingTimer) clearInterval(pingTimer);
       wsRef.current?.close();
       wsRef.current = null;
+      queueRef.current = [];
     };
   }, [enabled]);
 

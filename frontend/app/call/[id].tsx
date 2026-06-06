@@ -66,6 +66,7 @@ const RINGBACK = require('../../assets/audio/ringback.mp3');
 const CALL_TIMEOUT_MS = 45_000; // no-answer cutoff
 const READY_RETRY_MS = 1_000;   // callee retries call:ready every 1s
 const READY_RETRY_MAX = 15;     // 15s of retries — covers a slow caller bootstrap
+const CONNECTION_RECOVERY_MS = 12_000;
 
 const FALLBACK_ICE: IceServer[] = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
@@ -115,12 +116,16 @@ export default function CallScreen() {
   const peerPublicKeyRef = useRef<string | null>(null);
   const timeoutTimerRef = useRef<any>(null);
   const readyRetryRef = useRef<any>(null);
+  const reconnectTimerRef = useRef<any>(null);
   const endedRef = useRef(false);
   const inCallStartedRef = useRef(false);
   /** Caller side only: have we already created & sent the SDP offer? */
   const offerSentRef = useRef(false);
   /** Callee side only: have we already created & sent the SDP answer? */
   const answerSentRef = useRef(false);
+  const restartAttemptedRef = useRef(false);
+  const relayCandidateRef = useRef(false);
+  const iceSourceRef = useRef<string>('fallback');
 
   // ringback player (caller only)
   const InCall = getInCallManager();
@@ -235,6 +240,10 @@ export default function CallScreen() {
     if (readyRetryRef.current) {
       clearTimeout(readyRetryRef.current);
       readyRetryRef.current = null;
+    }
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
     }
   }, []);
 
@@ -364,6 +373,10 @@ export default function CallScreen() {
       const { data } = await api.get('/calls/ice-servers');
       if (data?.iceServers?.length) {
         iceServersRef.current = data.iceServers;
+        iceSourceRef.current = data.source || 'server';
+      }
+      if (data?.relayAvailable === false) {
+        setErrMsg('TURN relay unavailable - calls between mobile networks may fail');
       }
     } catch (e) {
       console.warn('ice-servers fetch failed, using STUN fallback', e);
@@ -410,10 +423,99 @@ export default function CallScreen() {
     // once InCallManager is started.
   }, []);
 
+  const markConnected = useCallback(() => {
+    if (endedRef.current) return;
+    stopRingback();
+    setErrMsg(null);
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (!inCallStartedRef.current && Platform.OS !== 'web') {
+      try {
+        InCall.start({ media: 'audio', auto: true });
+        InCall.setKeepScreenOn(true);
+        inCallStartedRef.current = true;
+      } catch {}
+    }
+    startTimer();
+    setStatus('connected');
+    try {
+      markCallActive(id);
+    } catch {
+      /* ignore */
+    }
+    if (timeoutTimerRef.current) {
+      clearTimeout(timeoutTimerRef.current);
+      timeoutTimerRef.current = null;
+    }
+  }, [InCall, id, startTimer, stopRingback]);
+
+  const attemptIceRestart = useCallback(async (): Promise<boolean> => {
+    const pc = pcRef.current;
+    const peerId = peerIdRef.current;
+    if (!isCaller || restartAttemptedRef.current || !pc || !peerId) return false;
+    restartAttemptedRef.current = true;
+    remoteSetRef.current = false;
+    pendingIceRef.current = [];
+    setStatus('connecting');
+    setErrMsg('Reconnecting through TURN…');
+    try {
+      pc.restartIce?.();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        iceRestart: true,
+      });
+      await pc.setLocalDescription(offer);
+      return await sendEncryptedSignal('call:offer', peerId, {
+        sdp: offer.sdp,
+        sdp_type: offer.type || 'offer',
+        ice_restart: true,
+      });
+    } catch (e: any) {
+      setErrMsg(`Reconnect failed: ${e?.message || e}`);
+      return false;
+    }
+  }, [isCaller, sendEncryptedSignal]);
+
+  const scheduleConnectionRecovery = useCallback(
+    (pc: any) => {
+      if (endedRef.current || reconnectTimerRef.current) return;
+      setErrMsg('Reconnecting…');
+      reconnectTimerRef.current = setTimeout(async () => {
+        reconnectTimerRef.current = null;
+        if (
+          pc.connectionState === 'connected' ||
+          pc.iceConnectionState === 'connected' ||
+          pc.iceConnectionState === 'completed'
+        ) {
+          markConnected();
+          return;
+        }
+        const restartSent = await attemptIceRestart();
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          if (
+            pc.connectionState !== 'connected' &&
+            pc.iceConnectionState !== 'connected' &&
+            pc.iceConnectionState !== 'completed'
+          ) {
+            endCall(
+              relayCandidateRef.current
+                ? 'Connection failed'
+                : 'Connection failed - TURN relay did not respond',
+            );
+          }
+        }, restartSent || !isCaller ? CONNECTION_RECOVERY_MS : CONNECTION_RECOVERY_MS / 2);
+      }, 3_000);
+    },
+    [attemptIceRestart, endCall, isCaller, markConnected],
+  );
+
   const setupPeer = useCallback(
     (stream: any): any => {
       let pc: any;
-      const config = { iceServers: iceServersRef.current };
+      const config = { iceServers: iceServersRef.current, iceCandidatePoolSize: 10 };
 
       if (Platform.OS === 'web') {
         pc = new (window as any).RTCPeerConnection(config);
@@ -432,6 +534,8 @@ export default function CallScreen() {
       // ICE candidates → relay to peer
       pc.onicecandidate = (e: any) => {
         if (e?.candidate && peerIdRef.current && wsSendRef.current) {
+          const candidateText = String(e.candidate?.candidate || e.candidate || '');
+          if (candidateText.includes(' typ relay ')) relayCandidateRef.current = true;
           sendEncryptedSignal('call:ice', peerIdRef.current, {
             candidate: e.candidate.toJSON
               ? e.candidate.toJSON()
@@ -439,41 +543,29 @@ export default function CallScreen() {
           }).catch(() => {});
         }
       };
+      pc.onicegatheringstatechange = () => {
+        if (
+          pc.iceGatheringState === 'complete' &&
+          iceSourceRef.current === 'public-fallback' &&
+          !relayCandidateRef.current &&
+          !endedRef.current
+        ) {
+          setErrMsg('TURN relay did not respond; trying direct connection…');
+        }
+      };
       // Connection state
       pc.oniceconnectionstatechange = () => {
         const st = pc.iceConnectionState;
         if (st === 'connected' || st === 'completed') {
-          if (!endedRef.current) {
-            stopRingback();
-            // Start InCallManager audio routing on FIRST connect
-            if (!inCallStartedRef.current && Platform.OS !== 'web') {
-              try {
-                InCall.start({ media: 'audio', auto: true });
-                InCall.setKeepScreenOn(true);
-                inCallStartedRef.current = true;
-              } catch {}
-            }
-            startTimer();
-            setStatus('connected');
-            // Tell OS-level CallKeep that the call is active (so the system
-            // call log + foreground service notification show the right state).
-            try {
-              markCallActive(id);
-            } catch {
-              /* ignore */
-            }
-            if (timeoutTimerRef.current) {
-              clearTimeout(timeoutTimerRef.current);
-              timeoutTimerRef.current = null;
-            }
-          }
-        } else if (st === 'failed') {
-          setErrMsg('Network connection failed');
-          setStatus('failed');
-          setTimeout(() => endCall('Connection failed'), 1500);
-        } else if (st === 'disconnected') {
-          // brief blip — ICE may recover; if not, oniceconnectionstatechange fires 'failed'
-          setErrMsg('Reconnecting…');
+          markConnected();
+        } else if (st === 'failed' || st === 'disconnected') {
+          scheduleConnectionRecovery(pc);
+        }
+      };
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') markConnected();
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          scheduleConnectionRecovery(pc);
         }
       };
 
@@ -490,7 +582,7 @@ export default function CallScreen() {
       }
       return pc;
     },
-    [attachRemoteStream, stopRingback, startTimer, endCall, InCall, sendEncryptedSignal]
+    [attachRemoteStream, markConnected, scheduleConnectionRecovery, sendEncryptedSignal]
   );
 
   const drainPendingIce = useCallback(async () => {
@@ -550,14 +642,18 @@ export default function CallScreen() {
 
       // ----- Callee side: caller's SDP offer arrived -----
       if (msg.type === 'call:offer' && !isCaller) {
-        if (answerSentRef.current) return; // already answered (duplicate offer)
         const from = msg.from;
         if (from && !peerIdRef.current) peerIdRef.current = from;
         if (!pc) return; // PC not ready — caller will give up on no-answer timeout
-        answerSentRef.current = true;
         try {
           const signal = await decryptPeerSignal(msg);
           if (!signal?.sdp) throw new Error('Encrypted offer unavailable');
+          const isRestart = signal.ice_restart === true;
+          if (answerSentRef.current && !isRestart) return;
+          answerSentRef.current = true;
+          if (isRestart) {
+            remoteSetRef.current = false;
+          }
           setStatus('connecting');
           await pc.setRemoteDescription({ type: 'offer', sdp: String(signal.sdp) });
           remoteSetRef.current = true;
@@ -568,6 +664,7 @@ export default function CallScreen() {
             const sent = await sendEncryptedSignal('call:answer', peerIdRef.current, {
               sdp: answer.sdp,
               sdp_type: answer.type || 'answer',
+              ice_restart: isRestart,
             });
             if (!sent) throw new Error('Encrypted answer not sent');
           }

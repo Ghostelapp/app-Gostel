@@ -31,6 +31,7 @@ import {
   Trash2,
   Volume2,
   VolumeX,
+  ListChecks,
 } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import Avatar from '../../src/Avatar';
@@ -408,6 +409,14 @@ export default function ProfileScreen() {
               );
             }}
             testID="menu-notifications"
+          />
+          <Divider />
+          <MenuRow
+            icon={<ListChecks color={theme.colors.primary} size={18} strokeWidth={1.8} />}
+            label={t('permissions.title')}
+            value=""
+            onPress={() => router.push('/settings/permissions')}
+            testID="menu-permissions"
           />
         </View>
 

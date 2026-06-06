@@ -7,6 +7,7 @@ export type IncomingCallPayload = {
   caller_name: string;
   conversation_id: string;
   mode: string;
+  action?: 'answer' | 'decline' | '';
 };
 
 const PENDING_INCOMING_CALL_KEY = 'ghostel_pending_incoming_call_v1';
@@ -24,6 +25,9 @@ export function normalizeIncomingCallPayload(data: any): IncomingCallPayload | n
     caller_name: String(data.caller_name || data.sender_name || 'Unknown'),
     conversation_id,
     mode: String(data.mode || 'audio'),
+    action: ['answer', 'decline'].includes(String(data.action || ''))
+      ? data.action
+      : '',
   };
 }
 

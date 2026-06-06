@@ -84,7 +84,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
     )
 
     val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      Notification.Builder(this, CHANNEL_ID)
+      Notification.Builder(this, GhostelCallNotificationModule.CHANNEL_ID)
     } else {
       @Suppress("DEPRECATION")
       Notification.Builder(this)
@@ -100,9 +100,10 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
       .setOngoing(true)
       .setAutoCancel(false)
       .setContentIntent(pendingIntent)
-      .setFullScreenIntent(pendingIntent, true)
+      .setFullScreenIntent(pendingIntent, canUseFullScreenIntent(nm))
       .setSound(ringtoneUri(), audioAttrs())
       .setVibrate(longArrayOf(0, 1000, 500, 1000, 500, 1000))
+      .setTimeoutAfter(45_000)
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       val caller = Person.Builder()
@@ -123,13 +124,16 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
     val notification = builder.build()
 
     nm.notify(notificationId(callId), notification)
-    Log.i(TAG, "Posted full-screen call notification channel=$CHANNEL_ID callId=$callId")
+    Log.i(
+      TAG,
+      "Posted full-screen call notification channel=${GhostelCallNotificationModule.CHANNEL_ID} callId=$callId"
+    )
   }
 
   private fun ensureChannel(nm: NotificationManager) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     val channel = NotificationChannel(
-      CHANNEL_ID,
+      GhostelCallNotificationModule.CHANNEL_ID,
       "Ghostel full-screen calls",
       NotificationManager.IMPORTANCE_MAX
     ).apply {
@@ -174,6 +178,13 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
   private fun ringtoneUri(): Uri =
     Uri.parse("android.resource://$packageName/raw/ringtone")
 
+  private fun canUseFullScreenIntent(nm: NotificationManager): Boolean =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+      nm.canUseFullScreenIntent()
+    } else {
+      true
+    }
+
   private fun audioAttrs(): AudioAttributes =
     AudioAttributes.Builder()
       .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
@@ -185,6 +196,5 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
 
   companion object {
     private const val TAG = "GhostelFCM"
-    private const val CHANNEL_ID = "ghostel_calls_native_v4"
   }
 }

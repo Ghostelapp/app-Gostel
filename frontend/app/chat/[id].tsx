@@ -206,6 +206,9 @@ export default function ChatScreen() {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const listRef = useRef<FlatList>(null);
+  const scrollToLatest = useCallback((animated = true) => {
+    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated }));
+  }, []);
 
   const [conv, setConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -225,10 +228,25 @@ export default function ChatScreen() {
   const [emojiCat, setEmojiCat] = useState(0);
   const [tick, setTick] = useState(0);
   const [e2eeTrust, setE2eeTrust] = useState<E2EEKeyTrustStatus | null>(null);
+  const lastMessageId = messages[messages.length - 1]?.id;
   const hasExpiringMessages = useMemo(
     () => messages.some((m) => !!m.expires_at),
     [messages],
   );
+
+  // FlatList may need more than one layout pass after decrypting a message,
+  // rendering an attachment, or resizing the keyboard. Follow the newest
+  // message after those layout passes instead of scrolling too early.
+  useEffect(() => {
+    if (loading || !lastMessageId) return;
+    scrollToLatest(true);
+    const short = setTimeout(() => scrollToLatest(true), 80);
+    const final = setTimeout(() => scrollToLatest(false), 260);
+    return () => {
+      clearTimeout(short);
+      clearTimeout(final);
+    };
+  }, [lastMessageId, loading, scrollToLatest]);
 
   // Update countdown badges only while the current chat actually has expiring messages.
   useEffect(() => {
@@ -379,9 +397,7 @@ export default function ChatScreen() {
               if (prev.find((m) => m.id === displayMessage.id)) return prev;
               return [...prev, displayMessage];
             });
-            requestAnimationFrame(() =>
-              listRef.current?.scrollToEnd({ animated: true })
-            );
+            scrollToLatest(true);
             // Play in-app "new message" sound (only for messages from others).
             if (displayMessage.sender_id && displayMessage.sender_id !== user?.id) {
               import('../../src/sounds').then((s) => s.playSound('message')).catch(() => {});
@@ -415,7 +431,7 @@ export default function ChatScreen() {
           );
         }
       },
-      [id, user?.id]
+      [id, scrollToLatest, user?.id]
     )
   );
 
@@ -500,7 +516,7 @@ export default function ChatScreen() {
       import('../../src/sounds')
         .then((s) => s.playSound('sent', 0.3))
         .catch(() => {});
-      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
+      scrollToLatest(true);
       return true;
     } catch (e) {
       Alert.alert(t('common.error'), formatApiErrorDetail(e));
@@ -1047,9 +1063,8 @@ export default function ChatScreen() {
           updateCellsBatchingPeriod={80}
           windowSize={9}
           removeClippedSubviews={Platform.OS === 'android'}
-          onContentSizeChange={() =>
-            listRef.current?.scrollToEnd({ animated: false })
-          }
+          onContentSizeChange={() => scrollToLatest(false)}
+          onLayout={() => scrollToLatest(false)}
           ListHeaderComponent={
             <>
               {keyChanged ? (

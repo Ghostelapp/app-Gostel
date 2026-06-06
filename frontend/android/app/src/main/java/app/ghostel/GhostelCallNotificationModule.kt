@@ -90,9 +90,10 @@ class GhostelCallNotificationModule(
         .setOngoing(true)
         .setAutoCancel(false)
         .setContentIntent(pendingIntent)
-        .setFullScreenIntent(pendingIntent, true)
+        .setFullScreenIntent(pendingIntent, canUseFullScreenIntent(nm))
         .setSound(ringtoneUri(), audioAttrs())
         .setVibrate(longArrayOf(0, 1000, 500, 1000, 500, 1000))
+        .setTimeoutAfter(45_000)
 
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         val caller = Person.Builder()
@@ -150,6 +151,7 @@ class GhostelCallNotificationModule(
         putString("caller_name", intent?.getStringExtra("caller_name").orEmpty())
         putString("conversation_id", intent?.getStringExtra("conversation_id").orEmpty())
         putString("mode", intent?.getStringExtra("mode").orEmpty().ifBlank { "audio" })
+        putString("action", intent?.getStringExtra("ghostel_call_action").orEmpty())
         putString("type", "incoming_call")
         putString("kind", "call")
         putString("push_kind", "call")
@@ -157,6 +159,54 @@ class GhostelCallNotificationModule(
       promise.resolve(map)
     } catch (e: Exception) {
       promise.reject("ghostel_call_notification_initial_failed", e)
+    }
+  }
+
+  @ReactMethod
+  fun getCapabilities(promise: Promise) {
+    try {
+      val nm = reactContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      val power = reactContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+      val map = Arguments.createMap().apply {
+        putBoolean("notificationsEnabled", nm.areNotificationsEnabled())
+        putBoolean("fullScreenIntentAllowed", canUseFullScreenIntent(nm))
+        putBoolean(
+          "batteryUnrestricted",
+          power.isIgnoringBatteryOptimizations(reactContext.packageName)
+        )
+      }
+      promise.resolve(map)
+    } catch (e: Exception) {
+      promise.reject("ghostel_call_capabilities_failed", e)
+    }
+  }
+
+  @ReactMethod
+  fun openSettings(kind: String, promise: Promise) {
+    try {
+      val packageUri = Uri.parse("package:${reactContext.packageName}")
+      val intent = when (kind) {
+        "fullScreen" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+          Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, packageUri)
+        } else {
+          Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, reactContext.packageName)
+        }
+        "callChannel" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, reactContext.packageName)
+            .putExtra(Settings.EXTRA_CHANNEL_ID, CHANNEL_ID)
+        } else {
+          Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, reactContext.packageName)
+        }
+        "battery" -> Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        else -> Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
+      }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      reactContext.startActivity(intent)
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("ghostel_open_settings_failed", e)
     }
   }
 
@@ -179,6 +229,13 @@ class GhostelCallNotificationModule(
 
   private fun ringtoneUri(): Uri =
     Uri.parse("android.resource://${reactContext.packageName}/raw/ringtone")
+
+  private fun canUseFullScreenIntent(nm: NotificationManager): Boolean =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+      nm.canUseFullScreenIntent()
+    } else {
+      true
+    }
 
   private fun audioAttrs(): AudioAttributes =
     AudioAttributes.Builder()
@@ -204,7 +261,7 @@ class GhostelCallNotificationModule(
     callId.hashCode().let { if (it == Int.MIN_VALUE) 1 else kotlin.math.abs(it) }
 
   companion object {
-    const val CHANNEL_ID = "ghostel_calls_fullscreen_v4"
+    const val CHANNEL_ID = "ghostel_calls_fullscreen_v5"
     const val ACTION_INCOMING_CALL = "app.ghostel.INCOMING_CALL"
     private const val TAG = "GhostelCallNotification"
   }
