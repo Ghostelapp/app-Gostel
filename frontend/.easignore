@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+.metro-cache/
+desktop-dist/
+dist-web/
+android/.gradle/
+android/build/
+android/app/build/
+*.log
+.env
