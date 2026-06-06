@@ -1,0 +1,25 @@
+# EAS archives from the repository root, even when the Expo project is in frontend/.
+.git/
+.vscode/
+.emergent/
+website-GhostelAPPweb/
+backend/
+IOS/
+memory/
+tests/
+test_reports/
+
+frontend/node_modules/
+frontend/.expo/
+frontend/.metro-cache/
+frontend/.eas-inspect/
+frontend/desktop-dist/
+frontend/dist-web/
+frontend/android/.gradle/
+frontend/android/build/
+frontend/android/app/build/
+
+*.log
+.env
+.env.*
+!.env.example
