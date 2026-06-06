@@ -1,5 +1,11 @@
 {
-  "name": "frontend",
+  "name": "ghostel",
+  "productName": "Ghostel",
+  "description": "Ghostel private messaging desktop client",
+  "author": {
+    "name": "Ghostel",
+    "email": "support@ghostel.app"
+  },
   "main": "./index.js",
   "version": "1.4.0",
   "scripts": {
@@ -10,6 +16,10 @@
     "web": "expo start --web",
     "web:build": "expo export --platform web --output-dir dist-web --clear",
     "web:serve": "python serve_static.py --host 127.0.0.1 --port 19006 --directory dist-web",
+    "desktop": "electron desktop/main.cjs",
+    "desktop:build:web": "expo export --platform web --output-dir dist-web --clear",
+    "desktop:pack": "yarn desktop:build:web && electron-builder --dir",
+    "desktop:build": "yarn desktop:build:web && electron-builder --win nsis",
     "lint": "expo lint",
     "postinstall": "node ./scripts/patch-webrtc.js && node ./scripts/patch-callkeep.js"
   },
@@ -77,6 +87,8 @@
   "devDependencies": {
     "@babel/core": "^7.25.2",
     "@types/react": "~19.1.0",
+    "electron": "^42.3.3",
+    "electron-builder": "^26.15.0",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
     "typescript": "~5.9.3"
@@ -104,6 +116,46 @@
   },
   "resolutions": {
     "**/@react-navigation/native": "7.2.5"
+  },
+  "build": {
+    "appId": "app.ghostel.desktop",
+    "productName": "Ghostel",
+    "copyright": "Copyright © 2026 Ghostel",
+    "extraMetadata": {
+      "main": "desktop/main.cjs"
+    },
+    "directories": {
+      "output": "desktop-dist"
+    },
+    "files": [
+      "desktop/**/*",
+      "dist-web/**/*",
+      "assets/images/icon.png",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "npmRebuild": false,
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/images/icon.png",
+      "artifactName": "Ghostel-Desktop-${version}-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Ghostel",
+      "deleteAppDataOnUninstall": false
+    }
   },
   "private": true,
   "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
