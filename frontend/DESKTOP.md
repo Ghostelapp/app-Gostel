@@ -24,17 +24,17 @@ corepack yarn desktop:build
 The installer is generated in:
 
 ```text
-frontend/desktop-dist/Ghostel-Desktop-1.4.0-Setup.exe
+frontend/desktop-dist/Ghostel-Desktop-1.4.1-Setup.exe
 ```
 
-To publish the latest installer on the website:
+Publish the installer as a GitHub release asset named:
 
-```bash
-sudo mkdir -p /var/www/ghostel/downloads
-sudo cp Ghostel-Desktop-1.4.0-Setup.exe \
-  /var/www/ghostel/downloads/ghostel-desktop-latest.exe
-sudo chmod 644 /var/www/ghostel/downloads/ghostel-desktop-latest.exe
+```text
+Ghostel-Desktop-Windows-Setup.exe
 ```
+
+The landing page uses the stable
+`releases/latest/download/Ghostel-Desktop-Windows-Setup.exe` URL.
 
 Until the installer is code-signed, Windows SmartScreen may show a warning on
 the first launch.
