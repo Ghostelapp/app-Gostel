@@ -643,6 +643,15 @@ yarn build
 sudo systemctl reload nginx
 ```
 
+Pelne wdrozenie backendu, aplikacji webowej i strony glownej mozesz tez
+wykonac jednym skryptem:
+
+```bash
+cd ~/apps/app-Gostel
+git pull --ff-only origin main
+bash scripts/deploy-vps-release.sh
+```
+
 ## 19. Aplikacja przegladarkowa
 
 Dodaj w DNS rekord:
