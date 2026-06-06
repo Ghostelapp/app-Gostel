@@ -169,7 +169,13 @@ export default function RegisterScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: theme.colors.background },
   flex: { flex: 1 },
-  scroll: { padding: 24, paddingBottom: 32 },
+  scroll: {
+    width: '100%',
+    maxWidth: 560,
+    alignSelf: 'center',
+    padding: 24,
+    paddingBottom: 32,
+  },
   backBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 16 },
   backText: { color: theme.colors.textPrimary, fontSize: 14 },
   title: {

@@ -3,7 +3,7 @@
 Ten plik jest napisany najprosciej jak sie da. Celem jest postawienie:
 
 - backendu aplikacji Ghostel,
-- strony WWW i panelu z repo `webapp1`,
+- strony WWW i panelu z repo `Ghostelapp/GhostelAPPweb`,
 - MongoDB,
 - Nginx + HTTPS,
 - konfiguracji pod aplikacje mobilna.
@@ -171,7 +171,7 @@ git clone ADRES_REPO_APP_GHOSTEL app-Gostel
 Pobierz strone:
 
 ```bash
-git clone https://github.com/Ghostelapp/webapp1.git webapp1
+git clone --branch GhostelWebApp --single-branch https://github.com/Ghostelapp/GhostelAPPweb.git GhostelAPPweb
 ```
 
 Jesli repo aplikacji jest prywatne, uzyj adresu SSH z GitHuba.
@@ -295,10 +295,10 @@ Logi:
 journalctl -u ghostel-app -f
 ```
 
-## 10. Backend strony i panelu `webapp1`
+## 10. Backend strony i panelu `GhostelAPPweb`
 
 ```bash
-cd ~/apps/webapp1/backend
+cd ~/apps/GhostelAPPweb/backend
 python3 -m venv .venv
 . .venv/bin/activate
 pip install --upgrade pip wheel setuptools
@@ -352,9 +352,9 @@ After=network.target docker.service
 
 [Service]
 User=ghostel
-WorkingDirectory=/home/ghostel/apps/webapp1/backend
-EnvironmentFile=/home/ghostel/apps/webapp1/backend/.env
-ExecStart=/home/ghostel/apps/webapp1/backend/.venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8001
+WorkingDirectory=/home/ghostel/apps/GhostelAPPweb/backend
+EnvironmentFile=/home/ghostel/apps/GhostelAPPweb/backend/.env
+ExecStart=/home/ghostel/apps/GhostelAPPweb/backend/.venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8001
 Restart=always
 RestartSec=5
 
@@ -373,7 +373,7 @@ sudo systemctl status ghostel-web-api
 ## 11. Frontend strony WWW
 
 ```bash
-cd ~/apps/webapp1/frontend
+cd ~/apps/GhostelAPPweb/frontend
 yarn install
 nano .env
 ```
@@ -394,7 +394,7 @@ yarn build
 Build bedzie w:
 
 ```text
-~/apps/webapp1/frontend/build
+~/apps/GhostelAPPweb/frontend/build
 ```
 
 ## 12. Nginx
@@ -412,7 +412,7 @@ server {
     listen 80;
     server_name ghostel.app www.ghostel.app;
 
-    root /home/ghostel/apps/webapp1/frontend/build;
+    root /home/ghostel/apps/GhostelAPPweb/frontend/build;
     index index.html;
 
     location / {
@@ -515,7 +515,7 @@ nano .env
 Wpisz:
 
 ```env
-EXPO_PUBLIC_BACKEND_URL=https://api.ghostel.app/api
+EXPO_PUBLIC_BACKEND_URL=https://api.ghostel.app
 ```
 
 Potem zbuduj nowa aplikacje:
@@ -598,7 +598,7 @@ sudo systemctl restart ghostel-app
 Strona:
 
 ```bash
-cd ~/apps/webapp1
+cd ~/apps/GhostelAPPweb
 git pull
 cd backend
 . .venv/bin/activate
@@ -611,7 +611,48 @@ yarn build
 sudo systemctl reload nginx
 ```
 
-## 19. Najczestsze problemy
+## 19. Aplikacja przegladarkowa
+
+Dodaj w DNS rekord:
+
+```text
+Typ: A
+Subdomena: app
+Cel: 194.110.4.129
+```
+
+Na VPS zbuduj aplikacje webowa:
+
+```bash
+cd ~/apps/app-Gostel
+git pull
+cd frontend
+export EXPO_PUBLIC_BACKEND_URL=https://api.ghostel.app
+corepack yarn install
+corepack yarn web:build
+sudo mkdir -p /var/www/ghostel-web-app
+sudo cp -r dist-web/* /var/www/ghostel-web-app/
+sudo chown -R www-data:www-data /var/www/ghostel-web-app
+```
+
+Dodaj konfiguracje Nginx:
+
+```bash
+sudo cp deploy/app.ghostel.app.nginx /etc/nginx/sites-available/ghostel-web-app
+sudo ln -s /etc/nginx/sites-available/ghostel-web-app /etc/nginx/sites-enabled/ghostel-web-app
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot --nginx -d app.ghostel.app
+```
+
+Test:
+
+```bash
+curl -I https://app.ghostel.app
+curl https://app.ghostel.app/manifest.webmanifest
+```
+
+## 20. Najczestsze problemy
 
 ### Domena nie dziala
 
@@ -634,7 +675,7 @@ journalctl -u ghostel-app -n 100
 Sprawdz, czy w buildzie aplikacji jest:
 
 ```env
-EXPO_PUBLIC_BACKEND_URL=https://api.ghostel.app/api
+EXPO_PUBLIC_BACKEND_URL=https://api.ghostel.app
 ```
 
 Potem przebuduj i zainstaluj aplikacje ponownie.
@@ -661,7 +702,7 @@ sudo ufw status
 sudo nginx -t
 ```
 
-## 20. Co zrobic przed prawdziwa produkcja
+## 21. Co zrobic przed prawdziwa produkcja
 
 Przed publicznym startem:
 
@@ -674,7 +715,7 @@ Przed publicznym startem:
 - nie pisz, ze aplikacja ma SOC 2, dopoki nie ma zewnetrznego audytu,
 - zrob test na dwoch telefonach: wiadomosci, push, polaczenia, wygaszony ekran, odrzucanie polaczen.
 
-## 21. Najprostsza decyzja
+## 22. Najprostsza decyzja
 
 Gdybym mial wybrac teraz bez komplikowania:
 

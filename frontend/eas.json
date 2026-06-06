@@ -15,7 +15,7 @@
         "simulator": false
       },
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://collab-platform-41.preview.emergentagent.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://api.ghostel.app"
       }
     },
     "preview": {
@@ -24,7 +24,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://collab-platform-41.preview.emergentagent.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://api.ghostel.app"
       }
     },
     "production": {
@@ -33,7 +33,7 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://collab-platform-41.preview.emergentagent.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://api.ghostel.app"
       }
     }
   },

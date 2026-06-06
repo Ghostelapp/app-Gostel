@@ -32,12 +32,14 @@ import {
 } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as Crypto from 'expo-crypto';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Delete, LogOut } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import { theme } from './theme';
 
 const PIN_KEY = 'ghostel.pinHash.v1';
 const AUTO_LOCK_MS = 30_000; // re-lock when app has been backgrounded for >30s
+const canUseSecureStore = Platform.OS !== 'web';
 
 type PinLockState = {
   pinSet: boolean;
@@ -62,6 +64,27 @@ async function hashPin(pin: string): Promise<string> {
   );
 }
 
+async function getStoredPinHash(): Promise<string | null> {
+  if (!canUseSecureStore) return AsyncStorage.getItem(PIN_KEY);
+  return SecureStore.getItemAsync(PIN_KEY);
+}
+
+async function setStoredPinHash(hash: string): Promise<void> {
+  if (!canUseSecureStore) {
+    await AsyncStorage.setItem(PIN_KEY, hash);
+    return;
+  }
+  await SecureStore.setItemAsync(PIN_KEY, hash);
+}
+
+async function removeStoredPinHash(): Promise<void> {
+  if (!canUseSecureStore) {
+    await AsyncStorage.removeItem(PIN_KEY);
+    return;
+  }
+  await SecureStore.deleteItemAsync(PIN_KEY);
+}
+
 export function PinLockProvider({ children }: { children: React.ReactNode }) {
   const [pinSet, setPinSet] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
@@ -73,7 +96,7 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     (async () => {
       try {
-        const stored = await SecureStore.getItemAsync(PIN_KEY);
+        const stored = await getStoredPinHash();
         const has = !!stored;
         setPinSet(has);
         setIsLocked(has); // cold launch with PIN → require unlock
@@ -107,13 +130,13 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
 
   const setPin = useCallback(async (pin: string) => {
     const hash = await hashPin(pin);
-    await SecureStore.setItemAsync(PIN_KEY, hash);
+    await setStoredPinHash(hash);
     setPinSet(true);
     setIsLocked(false);
   }, []);
 
   const verifyPin = useCallback(async (pin: string) => {
-    const stored = await SecureStore.getItemAsync(PIN_KEY);
+    const stored = await getStoredPinHash();
     if (!stored) return true; // nothing to verify against
     const h = await hashPin(pin);
     return h === stored;
@@ -122,7 +145,7 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
   const clearPin = useCallback(async (currentPin: string) => {
     const ok = await verifyPin(currentPin);
     if (!ok) return false;
-    await SecureStore.deleteItemAsync(PIN_KEY);
+    await removeStoredPinHash();
     setPinSet(false);
     setIsLocked(false);
     return true;
@@ -130,7 +153,7 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
 
   const forceClearForLogout = useCallback(async () => {
     try {
-      await SecureStore.deleteItemAsync(PIN_KEY);
+      await removeStoredPinHash();
     } catch {
       /* noop */
     }
