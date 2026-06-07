@@ -20,7 +20,6 @@
     "android": {
       "package": "app.ghostel",
       "googleServicesFile": "./google-services.json",
-      "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#0f1419"
@@ -88,14 +87,6 @@
     ],
     "experiments": {
       "typedRoutes": true
-    },
-    "autolinking": {
-      "exclude": [
-        "expo-dev-client",
-        "expo-dev-launcher",
-        "expo-dev-menu",
-        "expo-dev-menu-interface"
-      ]
     },
     "extra": {
       "eas": {
