@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -11,9 +11,21 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Link, useRouter } from 'expo-router';
-import { ArrowLeft, AtSign, Briefcase, Lock, Mail, User } from 'lucide-react-native';
+import {
+  ArrowLeft,
+  AtSign,
+  Briefcase,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  Lock,
+  Mail,
+  User,
+  XCircle,
+} from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../../src/auth';
+import { api } from '../../src/api';
 import { theme } from '../../src/theme';
 
 export default function RegisterScreen() {
@@ -24,13 +36,38 @@ export default function RegisterScreen() {
   const [title, setTitle] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
+  useEffect(() => {
+    const un = username.trim().toLowerCase().replace(/^@/, '');
+    if (!/^[a-z0-9_]{3,20}$/.test(un)) {
+      setUsernameAvailable(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api
+        .get('/auth/username-available', { params: { username: un } })
+        .then(({ data }) => {
+          if (!cancelled) setUsernameAvailable(data?.available === true);
+        })
+        .catch(() => {
+          if (!cancelled) setUsernameAvailable(null);
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [username]);
+
   const handleSubmit = async () => {
     setError('');
-    if (!name || !email || !password) {
-      setError('Name, email and password are required');
+    if (!username || !name || !email || !password) {
+      setError('Username, name, email and password are required');
       return;
     }
     if (password.length < 8) {
@@ -40,6 +77,10 @@ export default function RegisterScreen() {
     const un = username.trim().toLowerCase().replace(/^@/, '');
     if (un && !/^[a-z0-9_]{3,20}$/.test(un)) {
       setError('Username: 3-20 chars, lowercase letters, numbers or _');
+      return;
+    }
+    if (un && usernameAvailable === false) {
+      setError('Username is already taken');
       return;
     }
     setBusy(true);
@@ -76,6 +117,37 @@ export default function RegisterScreen() {
           </Text>
 
           <View style={styles.field}>
+            <AtSign color={theme.colors.textSecondary} size={18} />
+            <TextInput
+              testID="register-username-input"
+              value={username}
+              onChangeText={setUsername}
+              placeholder="Username (optional, e.g. jan_kowalski)"
+              placeholderTextColor={theme.colors.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.input}
+            />
+            {usernameAvailable === true ? (
+              <CheckCircle2 color={theme.colors.success} size={19} />
+            ) : usernameAvailable === false ? (
+              <XCircle color={theme.colors.error} size={19} />
+            ) : null}
+          </View>
+          <View style={styles.field}>
+            <Mail color={theme.colors.textSecondary} size={18} />
+            <TextInput
+              testID="register-email-input"
+              value={email}
+              onChangeText={setEmail}
+              placeholder="Work email"
+              placeholderTextColor={theme.colors.textMuted}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              style={styles.input}
+            />
+          </View>
+          <View style={styles.field}>
             <User color={theme.colors.textSecondary} size={18} />
             <TextInput
               testID="register-name-input"
@@ -98,32 +170,6 @@ export default function RegisterScreen() {
             />
           </View>
           <View style={styles.field}>
-            <AtSign color={theme.colors.textSecondary} size={18} />
-            <TextInput
-              testID="register-username-input"
-              value={username}
-              onChangeText={setUsername}
-              placeholder="Username (optional, e.g. jan_kowalski)"
-              placeholderTextColor={theme.colors.textMuted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={styles.input}
-            />
-          </View>
-          <View style={styles.field}>
-            <Mail color={theme.colors.textSecondary} size={18} />
-            <TextInput
-              testID="register-email-input"
-              value={email}
-              onChangeText={setEmail}
-              placeholder="Work email"
-              placeholderTextColor={theme.colors.textMuted}
-              autoCapitalize="none"
-              keyboardType="email-address"
-              style={styles.input}
-            />
-          </View>
-          <View style={styles.field}>
             <Lock color={theme.colors.textSecondary} size={18} />
             <TextInput
               testID="register-password-input"
@@ -131,9 +177,20 @@ export default function RegisterScreen() {
               onChangeText={setPassword}
               placeholder="Password (min 8 chars)"
               placeholderTextColor={theme.colors.textMuted}
-              secureTextEntry
+              secureTextEntry={!showPassword}
               style={styles.input}
             />
+            <TouchableOpacity
+              testID="register-password-visibility"
+              onPress={() => setShowPassword((value) => !value)}
+              hitSlop={10}
+            >
+              {showPassword ? (
+                <EyeOff color={theme.colors.textSecondary} size={19} />
+              ) : (
+                <Eye color={theme.colors.textSecondary} size={19} />
+              )}
+            </TouchableOpacity>
           </View>
 
           {!!error && (

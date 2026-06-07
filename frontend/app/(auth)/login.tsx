@@ -12,7 +12,7 @@ import {
   Image,
 } from 'react-native';
 import { Link, useRouter } from 'expo-router';
-import { Lock, Mail, ShieldCheck } from 'lucide-react-native';
+import { Eye, EyeOff, Lock, ShieldCheck, UserRound } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../src/auth';
@@ -22,8 +22,9 @@ export default function LoginScreen() {
   const { login } = useAuth();
   const router = useRouter();
   const { t } = useTranslation();
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [totp, setTotp] = useState('');
   const [require2FA, setRequire2FA] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -31,13 +32,13 @@ export default function LoginScreen() {
 
   const handleLogin = async () => {
     setError('');
-    if (!email || !password) {
+    if (!identifier || !password) {
       setError(t('auth.email_password_required'));
       return;
     }
     setBusy(true);
     try {
-      const res = await login(email.trim(), password, totp || undefined);
+      const res = await login(identifier.trim(), password, totp || undefined);
       if (res.requires_2fa) {
         setRequire2FA(true);
       } else {
@@ -81,15 +82,15 @@ export default function LoginScreen() {
             <Text style={styles.cardSub}>{t('auth.private_tagline')}</Text>
 
             <View style={styles.field}>
-              <Mail color={theme.colors.textSecondary} size={18} />
+              <UserRound color={theme.colors.textSecondary} size={18} />
               <TextInput
                 testID="login-email-input"
-                value={email}
-                onChangeText={setEmail}
-                placeholder={t('auth.email_placeholder')}
+                value={identifier}
+                onChangeText={setIdentifier}
+                placeholder="nick/e-mail"
                 placeholderTextColor={theme.colors.textMuted}
                 autoCapitalize="none"
-                keyboardType="email-address"
+                autoCorrect={false}
                 style={styles.input}
               />
             </View>
@@ -101,9 +102,20 @@ export default function LoginScreen() {
                 onChangeText={setPassword}
                 placeholder={t('auth.password')}
                 placeholderTextColor={theme.colors.textMuted}
-                secureTextEntry
+                secureTextEntry={!showPassword}
                 style={styles.input}
               />
+              <TouchableOpacity
+                testID="login-password-visibility"
+                onPress={() => setShowPassword((value) => !value)}
+                hitSlop={10}
+              >
+                {showPassword ? (
+                  <EyeOff color={theme.colors.textSecondary} size={19} />
+                ) : (
+                  <Eye color={theme.colors.textSecondary} size={19} />
+                )}
+              </TouchableOpacity>
             </View>
 
             {require2FA && (

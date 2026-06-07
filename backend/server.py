@@ -311,7 +311,8 @@ class RegisterIn(BaseModel):
 
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    email: Optional[str] = None
+    identifier: Optional[str] = None
     password: str
     totp_code: Optional[str] = None
 
@@ -484,14 +485,19 @@ async def register(payload: RegisterIn):
 
 @api.post("/auth/login")
 async def login(payload: LoginIn):
-    email = payload.email.lower().strip()
-    user = await db.users.find_one({"email": email}, {"_id": 0})
+    identifier = (payload.identifier or payload.email or "").lower().strip().lstrip("@")
+    if not identifier:
+        raise HTTPException(status_code=422, detail="Username or email is required")
+    user = await db.users.find_one(
+        {"email": identifier} if "@" in identifier else {"username": normalize_username(identifier)},
+        {"_id": 0},
+    )
     if not user or not verify_password(payload.password, user["password_hash"]):
         # brute force tracking
         await db.login_attempts.insert_one({
-            "email": email, "at": now_utc().isoformat(), "success": False
+            "identifier": identifier, "at": now_utc().isoformat(), "success": False
         })
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=401, detail="Invalid username/email or password")
 
     if user.get("two_factor_enabled"):
         if not payload.totp_code:
@@ -506,6 +512,17 @@ async def login(payload: LoginIn):
     )
     token = create_access_token(user["id"], user["email"])
     return {"access_token": token, "token_type": "bearer", "user": public_user(user)}
+
+
+@api.get("/auth/username-available")
+async def username_available(username: str):
+    normalized = normalize_username(username)
+    valid = bool(_USERNAME_RE.match(normalized))
+    return {
+        "username": normalized,
+        "valid": valid,
+        "available": valid and not await is_username_taken(normalized),
+    }
 
 
 @api.get("/auth/me")

@@ -31,6 +31,29 @@ class TestAuth:
         assert body["user"]["email"] == ADMIN_EMAIL
         assert body["user"]["role"] == "admin"
 
+    def test_admin_login_by_username(self, api_client):
+        r = api_client.post(f"{BASE_URL}/api/auth/login", json={
+            "identifier": "admin", "password": ADMIN_PASSWORD
+        })
+        assert r.status_code == 200, r.text
+        assert r.json()["user"]["username"] == "admin"
+
+    def test_username_availability(self, api_client):
+        taken = api_client.get(
+            f"{BASE_URL}/api/auth/username-available",
+            params={"username": "admin"},
+        )
+        assert taken.status_code == 200
+        assert taken.json()["available"] is False
+
+        candidate = f"test_{uuid.uuid4().hex[:8]}"
+        available = api_client.get(
+            f"{BASE_URL}/api/auth/username-available",
+            params={"username": candidate},
+        )
+        assert available.status_code == 200
+        assert available.json()["available"] is True
+
     def test_login_wrong_password(self, api_client):
         r = api_client.post(f"{BASE_URL}/api/auth/login", json={
             "email": ADMIN_EMAIL, "password": "WRONG"

@@ -45,7 +45,7 @@ export default {
     create_one: 'Utwórz teraz',
     sign_in_link: 'Zaloguj się',
     secure_footer: 'Chronione przez TLS • E2EE dla wiadomości',
-    email_password_required: 'Email i hasło są wymagane',
+    email_password_required: 'Nick/e-mail i hasło są wymagane',
     login_failed: 'Logowanie nieudane',
   },
   tabs: {

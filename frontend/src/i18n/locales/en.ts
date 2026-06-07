@@ -45,7 +45,7 @@ export default {
     create_one: 'Create one',
     sign_in_link: 'Sign in',
     secure_footer: 'TLS protected • E2EE for messages',
-    email_password_required: 'Email and password are required',
+    email_password_required: 'Username/email and password are required',
     login_failed: 'Login failed',
   },
   tabs: {

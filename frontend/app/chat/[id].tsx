@@ -13,6 +13,7 @@ import {
   Modal,
   ScrollView,
   KeyboardAvoidingView,
+  Linking,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -741,6 +742,9 @@ export default function ChatScreen() {
     }
 
     const isMine = item.sender_id === user?.id;
+    const sender = isMine
+      ? user
+      : conv?.members.find((member: any) => member.id === item.sender_id);
     const reactions = item.reactions || {};
     const reactionEntries = Object.entries(reactions).filter(
       ([, ids]) => ids.length > 0
@@ -763,8 +767,13 @@ export default function ChatScreen() {
 
     return (
       <View style={[styles.msgRow, isMine ? styles.msgRight : styles.msgLeft]}>
-        {!isMine && conv?.type === 'group' && (
-          <Avatar name={item.sender_name} size={28} color={theme.colors.primary} />
+        {!isMine && (
+          <Avatar
+            name={item.sender_name}
+            size={26}
+            color={sender?.avatar_color || theme.colors.primary}
+            photo={sender?.avatar}
+          />
         )}
         <View style={{ maxWidth: '80%' }}>
           {!isMine && conv?.type === 'group' && (
@@ -895,6 +904,14 @@ export default function ChatScreen() {
             </View>
           )}
         </View>
+        {isMine && (
+          <Avatar
+            name={user?.name || item.sender_name}
+            size={26}
+            color={user?.avatar_color || theme.colors.primary}
+            photo={user?.avatar}
+          />
+        )}
       </View>
     );
   };
@@ -1358,14 +1375,27 @@ function MessageBody({ msg, isMine }: { msg: Message; isMine: boolean }) {
   if (msg.kind === 'file' && msg.attachment_id) {
     return <FileCard msg={msg} isMine={isMine} />;
   }
+  return <LinkedMessageText content={msg.content} isMine={isMine} />;
+}
+
+function LinkedMessageText({ content, isMine }: { content: string; isMine: boolean }) {
+  const parts = content.split(/((?:https?:\/\/|www\.)[^\s<]+)/gi);
   return (
-    <Text
-      style={[
-        styles.bubbleText,
-        isMine ? styles.bubbleTextMine : styles.bubbleTextOther,
-      ]}
-    >
-      {msg.content}
+    <Text style={[styles.bubbleText, isMine ? styles.bubbleTextMine : styles.bubbleTextOther]}>
+      {parts.map((part, index) => {
+        const isLink = /^(?:https?:\/\/|www\.)/i.test(part);
+        if (!isLink) return <React.Fragment key={index}>{part}</React.Fragment>;
+        const href = part.toLowerCase().startsWith('www.') ? `https://${part}` : part;
+        return (
+          <Text
+            key={`${part}-${index}`}
+            style={[styles.messageLink, isMine && styles.messageLinkMine]}
+            onPress={() => Linking.openURL(href).catch(() => {})}
+          >
+            {part}
+          </Text>
+        );
+      })}
     </Text>
   );
 }
@@ -1717,6 +1747,12 @@ const styles = StyleSheet.create({
   bubbleText: { fontSize: 15, lineHeight: 20 },
   bubbleTextMine: { color: '#ffffff' },
   bubbleTextOther: { color: theme.colors.textPrimary },
+  messageLink: {
+    color: theme.colors.primary,
+    textDecorationLine: 'underline',
+    fontWeight: '600',
+  },
+  messageLinkMine: { color: '#ffffff' },
   bubbleMeta: {
     flexDirection: 'row',
     alignItems: 'center',

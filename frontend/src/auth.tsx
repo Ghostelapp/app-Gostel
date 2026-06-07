@@ -32,7 +32,7 @@ export type User = {
 type AuthState = {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string, totp?: string) => Promise<{ requires_2fa?: boolean }>;
+  login: (identifier: string, password: string, totp?: string) => Promise<{ requires_2fa?: boolean }>;
   register: (email: string, password: string, name: string, title?: string, username?: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -75,10 +75,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Periodically ping /heartbeat while in foreground to keep `last_active` fresh.
   useHeartbeat(!!user, 60_000);
 
-  const login = async (email: string, password: string, totp?: string) => {
+  const login = async (identifier: string, password: string, totp?: string) => {
     try {
       const { data } = await api.post('/auth/login', {
-        email,
+        identifier,
         password,
         totp_code: totp,
       });
