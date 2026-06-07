@@ -25,6 +25,7 @@ import { useWebSocket } from '../../src/ws';
 import { theme } from '../../src/theme';
 import { getInCallManager } from '../../src/incall';
 import { markCallActive, endIncomingCallNative } from '../../src/callkeep';
+import { cancelFullScreenIncomingCallNotification } from '../../src/androidCallNotification';
 import { useCallRingback } from '../../src/callRingback';
 import {
   decryptCallSignalFromUser,
@@ -112,6 +113,7 @@ export default function CallScreen() {
   const iceServersRef = useRef<IceServer[]>(FALLBACK_ICE);
   const pendingIceRef = useRef<any[]>([]);
   const pendingSignalMessagesRef = useRef<any[]>([]);
+  const processedSignalIdsRef = useRef<Set<string>>(new Set());
   const remoteSetRef = useRef(false);
   const wsSendRef = useRef<((data: any) => void) | null>(null);
   const peerPublicKeyRef = useRef<string | null>(null);
@@ -628,6 +630,16 @@ export default function CallScreen() {
         }
         return;
       }
+      const signalId = String(msg.signal_id || '');
+      if (signalId) {
+        if (processedSignalIdsRef.current.has(signalId)) return;
+        processedSignalIdsRef.current.add(signalId);
+        if (processedSignalIdsRef.current.size > 500) {
+          processedSignalIdsRef.current = new Set(
+            Array.from(processedSignalIdsRef.current).slice(-250),
+          );
+        }
+      }
 
       // ----- Caller side: callee is ready, can send offer -----
       if (msg.type === 'call:ready' && isCaller) {
@@ -758,6 +770,34 @@ export default function CallScreen() {
     if (isCaller || !id) return;
     api.post(`/calls/${id}/accept`).catch(() => {});
   }, [id, isCaller]);
+
+  useEffect(() => {
+    cancelFullScreenIncomingCallNotification(id).catch(() => {});
+    import('../../src/sounds').then((s) => s.stopRingtone()).catch(() => {});
+  }, [id]);
+
+  useEffect(() => {
+    if (!id || !user) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const { data } = await api.get(`/calls/${id}/signals`);
+        const signals = Array.isArray(data) ? data : [];
+        for (const signal of signals) {
+          if (cancelled) return;
+          await onWs(signal);
+        }
+      } catch {
+        /* WebSocket remains the primary signaling path. */
+      }
+    };
+    poll().catch(() => {});
+    const timer = setInterval(() => poll().catch(() => {}), 750);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [id, onWs, user]);
 
   // ---------------------------------------------------------------------------
   // Lifecycle: bootstrap the call when component mounts

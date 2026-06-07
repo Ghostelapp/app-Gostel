@@ -3026,6 +3026,73 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
     return {"accepted": True}
 
 
+@api.post("/calls/{call_id}/signals")
+async def persist_call_signal(
+    call_id: str,
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    """Persist encrypted WebRTC signaling briefly as a WebSocket fallback."""
+    signal_type = str(payload.get("type") or "")
+    allowed = {
+        "call:offer", "call:answer", "call:ice", "call:ready",
+        "call:accept", "call:reject", "call:end", "call:cancel",
+    }
+    target = str(payload.get("to") or "")
+    if signal_type not in allowed or not target:
+        raise HTTPException(status_code=400, detail="Invalid call signal")
+    signal = {**payload, "call_id": call_id}
+    if signal_type in {"call:offer", "call:answer", "call:ice"}:
+        if not signal.get("encrypted") or not isinstance(signal.get("e2ee_signal"), dict):
+            raise HTTPException(status_code=400, detail="Call signal must be encrypted")
+        signal.pop("sdp", None)
+        signal.pop("candidate", None)
+    if not await user_can_signal_target(user["id"], target, signal):
+        raise HTTPException(status_code=403, detail="Unauthorized call signal")
+
+    signal_id = str(signal.get("signal_id") or uuid.uuid4())
+    forwarded = {
+        **signal,
+        "signal_id": signal_id,
+        "from": user["id"],
+    }
+    await db.call_signals.delete_many(
+        {"created_at": {"$lt": (now_utc() - timedelta(minutes=10)).isoformat()}}
+    )
+    await db.call_signals.update_one(
+        {"signal_id": signal_id},
+        {
+            "$setOnInsert": {
+                **forwarded,
+                "to": target,
+                "created_at": now_utc().isoformat(),
+            }
+        },
+        upsert=True,
+    )
+    await ws_manager.send_to(target, forwarded)
+    return {"stored": True, "signal_id": signal_id}
+
+
+@api.get("/calls/{call_id}/signals")
+async def list_call_signals(call_id: str, user: dict = Depends(get_current_user)):
+    """Return recent signaling addressed to this participant."""
+    call = await db.calls.find_one({"id": call_id}, {"_id": 0, "member_ids": 1})
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    if user["id"] not in call.get("member_ids", []):
+        raise HTTPException(status_code=403, detail="Not a participant")
+    return await (
+        db.call_signals.find(
+            {"call_id": call_id, "to": user["id"]},
+            {"_id": 0},
+        )
+        .sort("created_at", 1)
+        .limit(500)
+        .to_list(500)
+    )
+
+
 @api.post("/calls/{call_id}/end")
 async def end_call(call_id: str, user: dict = Depends(get_current_user)):
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})

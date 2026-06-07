@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { getStoredToken } from './tokenStorage';
+import { api } from './api';
 
 type Listener = (msg: any) => void;
 
@@ -10,6 +11,18 @@ export function useWebSocket(onMessage: Listener, enabled: boolean = true) {
   listenerRef.current = onMessage;
 
   const send = useCallback((data: any) => {
+    const isCallSignal =
+      typeof data?.type === 'string' &&
+      data.type.startsWith('call:') &&
+      data.call_id &&
+      data.to;
+    if (isCallSignal) {
+      data = {
+        ...data,
+        signal_id: data.signal_id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      };
+      api.post(`/calls/${data.call_id}/signals`, data).catch(() => {});
+    }
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(data));
       return;

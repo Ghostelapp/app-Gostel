@@ -41,6 +41,7 @@ try {
 let _enabled = true;
 let _hydrated = false;
 let _ringtonePlayer: any = null;
+let _ringtoneGeneration = 0;
 let _audioModeConfigured = false;
 
 export async function hydrateSoundPrefs(): Promise<boolean> {
@@ -150,16 +151,23 @@ export async function playSound(key: SoundKey, volume = 0.6): Promise<void> {
  * call is accepted, rejected, or times out.
  */
 export async function startRingtone(volume = 0.85): Promise<void> {
+  const generation = ++_ringtoneGeneration;
   await hydrateSoundPrefs();
   if (!_enabled) return;
   if (Platform.OS === 'web') return;
-  await stopRingtone(); // ensure previous instance is fully torn down
+  await stopRingtone(false); // ensure previous instance is fully torn down
+  if (generation !== _ringtoneGeneration) return;
   try {
     await ensureAudioMode();
+    if (generation !== _ringtoneGeneration) return;
     const Audio: any = await import('expo-audio');
     const asset = FILES.ringtone;
     if (!asset) return;
     const player = Audio.createAudioPlayer(asset);
+    if (generation !== _ringtoneGeneration) {
+      player.remove?.();
+      return;
+    }
     _ringtonePlayer = player;
     try {
       player.loop = true;
@@ -177,7 +185,8 @@ export async function startRingtone(volume = 0.85): Promise<void> {
   }
 }
 
-export async function stopRingtone(): Promise<void> {
+export async function stopRingtone(invalidatePending = true): Promise<void> {
+  if (invalidatePending) _ringtoneGeneration += 1;
   const p = _ringtonePlayer;
   _ringtonePlayer = null;
   if (!p) return;
