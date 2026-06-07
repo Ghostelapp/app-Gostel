@@ -183,14 +183,19 @@ export default function CallScreen() {
           peerPublicKeyRef.current,
           user.id,
         );
-        wsSendRef.current?.({
+        const payload = {
           type,
           to,
           call_id: id,
           conversation_id: conversationIdParam,
           encrypted: true,
           e2ee_signal: e2eeSignal,
-        });
+          signal_id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        };
+        // Persist first so signaling still works while the WebSocket is
+        // reconnecting after the app is opened from a native call alert.
+        await api.post(`/calls/${id}/signals`, payload);
+        wsSendRef.current?.(payload);
         return true;
       } catch (e: any) {
         setErrMsg(`Signal encryption failed: ${e?.message || e}`);
@@ -805,22 +810,25 @@ export default function CallScreen() {
   useEffect(() => {
     let cancelled = false;
 
-    const sendReadyWithRetry = (attempt = 0) => {
+    const sendReadyWithRetry = async (attempt = 0) => {
       if (endedRef.current || cancelled) return;
       const target = peerIdRef.current; // for callee = caller_id from URL
       if (target) {
+        const payload = {
+          type: 'call:ready',
+          to: target,
+          call_id: id,
+          conversation_id: conversationIdParam,
+          signal_id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        };
         try {
-          wsSendRef.current?.({
-            type: 'call:ready',
-            to: target,
-            call_id: id,
-            conversation_id: conversationIdParam,
-          });
+          await api.post(`/calls/${id}/signals`, payload);
+          wsSendRef.current?.(payload);
         } catch {}
       }
       if (attempt < READY_RETRY_MAX) {
         readyRetryRef.current = setTimeout(
-          () => sendReadyWithRetry(attempt + 1),
+          () => sendReadyWithRetry(attempt + 1).catch(() => {}),
           READY_RETRY_MS
         );
       }
@@ -907,7 +915,7 @@ export default function CallScreen() {
 
       // 7. Callee: notify caller we're ready (will retry)
       if (!isCaller) {
-        sendReadyWithRetry();
+        sendReadyWithRetry().catch(() => {});
       }
     };
 
