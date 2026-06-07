@@ -3,6 +3,7 @@ import {
   Animated,
   AppState,
   Modal,
+  Platform,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -27,6 +28,7 @@ import {
 import {
   cancelFullScreenIncomingCallNotification,
   consumeInitialNativeIncomingCall,
+  showFullScreenIncomingCallNotification,
 } from './androidCallNotification';
 
 type IncomingCall = {
@@ -70,12 +72,21 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const showIncoming = useCallback(
     (call: IncomingCallPayload) => {
       if (call.caller_id === user?.id) return;
-      // Once our own incoming-call screen is visible, the persistent native
-      // call notification is redundant and can obscure the app controls.
-      cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
       setIncoming((current) => (current?.id === call.id ? current : call));
       startVibration();
-      import('./sounds').then((s) => s.startRingtone(0.85)).catch(() => {});
+      if (Platform.OS === 'android') {
+        // Keep one native full-screen call notification alive until the call
+        // is answered, rejected or ended. It owns the looping system ringtone.
+        showFullScreenIncomingCallNotification({
+          call_id: call.id,
+          caller_id: call.caller_id,
+          caller_name: call.caller_name,
+          conversation_id: call.conversation_id,
+          mode: call.mode,
+        }).catch(() => {});
+      } else {
+        import('./sounds').then((s) => s.startRingtone(0.85)).catch(() => {});
+      }
     },
     [user?.id, startVibration],
   );

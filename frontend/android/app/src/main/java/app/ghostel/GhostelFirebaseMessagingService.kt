@@ -121,7 +121,9 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
         .addAction(android.R.drawable.sym_call_outgoing, "Odbierz", answerIntent)
     }
 
-    val notification = builder.build()
+    val notification = builder.build().apply {
+      flags = flags or Notification.FLAG_INSISTENT or Notification.FLAG_ONGOING_EVENT
+    }
 
     nm.notify(notificationId(callId), notification)
     Log.i(

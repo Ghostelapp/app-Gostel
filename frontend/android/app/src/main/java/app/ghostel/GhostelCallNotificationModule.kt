@@ -111,7 +111,9 @@ class GhostelCallNotificationModule(
           .addAction(android.R.drawable.sym_call_outgoing, "Odbierz", answerIntent)
       }
 
-      val notification = builder.build()
+      val notification = builder.build().apply {
+        flags = flags or Notification.FLAG_INSISTENT or Notification.FLAG_ONGOING_EVENT
+      }
 
       nm.notify(notificationId(callId), notification)
       Log.i(TAG, "Posted full-screen call notification channel=$CHANNEL_ID callId=$callId")
@@ -261,7 +263,7 @@ class GhostelCallNotificationModule(
     callId.hashCode().let { if (it == Int.MIN_VALUE) 1 else kotlin.math.abs(it) }
 
   companion object {
-    const val CHANNEL_ID = "ghostel_calls_fullscreen_v5"
+    const val CHANNEL_ID = "ghostel_calls_fullscreen_v6"
     const val ACTION_INCOMING_CALL = "app.ghostel.INCOMING_CALL"
     private const val TAG = "GhostelCallNotification"
   }
