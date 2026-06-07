@@ -111,6 +111,7 @@ export default function CallScreen() {
   const peerIdRef = useRef<string | null>(isCaller ? null : callerIdParam || null);
   const iceServersRef = useRef<IceServer[]>(FALLBACK_ICE);
   const pendingIceRef = useRef<any[]>([]);
+  const pendingSignalMessagesRef = useRef<any[]>([]);
   const remoteSetRef = useRef(false);
   const wsSendRef = useRef<((data: any) => void) | null>(null);
   const peerPublicKeyRef = useRef<string | null>(null);
@@ -611,6 +612,22 @@ export default function CallScreen() {
       }
 
       const pc = pcRef.current;
+      const isPeerSignal =
+        msg.type === 'call:offer' ||
+        msg.type === 'call:answer' ||
+        msg.type === 'call:ice';
+
+      // Offers, answers and ICE can arrive while this screen is still loading
+      // E2EE keys, microphone access or the PeerConnection. Dropping any of
+      // them leaves both peers stuck on "Connecting", so replay them once the
+      // bootstrap is complete.
+      if (isPeerSignal && (!pc || !peerPublicKeyRef.current)) {
+        pendingSignalMessagesRef.current.push(msg);
+        if (pendingSignalMessagesRef.current.length > 100) {
+          pendingSignalMessagesRef.current.shift();
+        }
+        return;
+      }
 
       // ----- Caller side: callee is ready, can send offer -----
       if (msg.type === 'call:ready' && isCaller) {
@@ -799,6 +816,13 @@ export default function CallScreen() {
         return;
       }
       pcRef.current = pc;
+
+      const pendingSignals = pendingSignalMessagesRef.current;
+      pendingSignalMessagesRef.current = [];
+      for (const pendingSignal of pendingSignals) {
+        if (cancelled || endedRef.current) return;
+        await onWs(pendingSignal);
+      }
 
       // 5. Set initial status
       setStatus(isCaller ? 'ringing' : 'connecting');

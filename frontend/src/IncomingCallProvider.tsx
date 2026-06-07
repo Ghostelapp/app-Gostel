@@ -70,6 +70,9 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const showIncoming = useCallback(
     (call: IncomingCallPayload) => {
       if (call.caller_id === user?.id) return;
+      // Once our own incoming-call screen is visible, the persistent native
+      // call notification is redundant and can obscure the app controls.
+      cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
       setIncoming((current) => (current?.id === call.id ? current : call));
       startVibration();
       import('./sounds').then((s) => s.startRingtone(0.85)).catch(() => {});
@@ -82,7 +85,9 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       if (!call.action) return false;
       await clearPendingIncomingCall(call.id).catch(() => {});
       await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
+      setIncoming((current) => (current?.id === call.id ? null : current));
       stopVibration();
+      import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
       if (call.action === 'decline') {
         await api.post(`/calls/${call.id}/end`).catch(() => {});
         return true;
@@ -165,10 +170,17 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         consume().catch(() => {});
       }
     });
+    // Android delivers notification action taps through MainActivity.onNewIntent.
+    // The app can already be active, in which case AppState does not change.
+    // Poll the one-shot native intent slot so Answer/Decline is never missed.
+    const nativeActionTimer = setInterval(() => {
+      consume().catch(() => {});
+    }, 500);
     return () => {
       mounted = false;
       unsubIncoming();
       sub.remove();
+      clearInterval(nativeActionTimer);
     };
   }, [user, showIncoming, handleNativeCallAction]);
 
