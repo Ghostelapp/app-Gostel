@@ -4,7 +4,7 @@
  * Storage strategy:
  *  - User-selected language is persisted in AsyncStorage under key `ghostel:lang`
  *  - On first launch, falls back to device locale via expo-localization
- *  - Supported: 'en' (default), 'pl'
+ *  - Supported: 'en' (default), 'pl', 'de'
  */
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
@@ -12,9 +12,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Localization from 'expo-localization';
 import en from './locales/en';
 import pl from './locales/pl';
+import de from './locales/de';
 
 export const LANG_STORAGE_KEY = 'ghostel:lang';
-export const SUPPORTED_LANGS = ['en', 'pl'] as const;
+export const SUPPORTED_LANGS = ['en', 'pl', 'de'] as const;
 export type AppLang = (typeof SUPPORTED_LANGS)[number];
 
 function detectDeviceLang(): AppLang {
@@ -44,6 +45,7 @@ function ensureI18nInitializedSync(initial: AppLang) {
     resources: {
       en: { translation: en },
       pl: { translation: pl },
+      de: { translation: de },
     },
     lng: initial,
     fallbackLng: 'en',

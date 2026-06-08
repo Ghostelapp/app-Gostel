@@ -325,6 +325,21 @@ export default function ProfileScreen() {
               <Check color={theme.colors.primary} size={20} strokeWidth={2.5} />
             )}
           </TouchableOpacity>
+          <Divider />
+          <TouchableOpacity
+            testID="lang-de"
+            style={styles.menuRow}
+            onPress={() => handleLangChange('de')}
+            activeOpacity={0.7}
+          >
+            <View style={styles.menuIcon}>
+              <Globe color={theme.colors.primary} size={18} strokeWidth={1.8} />
+            </View>
+            <Text style={styles.menuLabel}>Deutsch</Text>
+            {lang === 'de' && (
+              <Check color={theme.colors.primary} size={20} strokeWidth={2.5} />
+            )}
+          </TouchableOpacity>
         </View>
 
         <Text style={styles.sectionLabel}>Security</Text>

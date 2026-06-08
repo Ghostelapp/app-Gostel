@@ -247,6 +247,7 @@ export default {
     select: 'Wybierz język',
     english: 'English',
     polish: 'Polski',
+    german: 'Deutsch',
   },
   user_profile: {
     title: 'Profil',
