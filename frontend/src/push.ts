@@ -8,8 +8,8 @@ export async function configureAndroidChannels() {
   if (Platform.OS !== 'android' || _channelsConfigured) return;
   try {
     const Notifications = require('expo-notifications');
-    const PUBLIC =
-      Notifications.AndroidNotificationVisibility?.PUBLIC ?? 1;
+    const PRIVATE =
+      Notifications.AndroidNotificationVisibility?.PRIVATE ?? 0;
     // Default messages channel — wakes screen + heads-up banner.
     await Notifications.setNotificationChannelAsync('messages', {
       name: 'Messages',
@@ -21,7 +21,7 @@ export async function configureAndroidChannels() {
       showBadge: true,
       enableLights: true,
       enableVibrate: true,
-      lockscreenVisibility: PUBLIC,
+      lockscreenVisibility: PRIVATE,
     });
     // High-priority calls channel — heads-up, ringtone, long vibration,
     // bypass DND so user always hears it.
@@ -32,7 +32,7 @@ export async function configureAndroidChannels() {
       lightColor: '#22c55e',
       sound: 'ringtone',
       bypassDnd: true,
-      lockscreenVisibility: PUBLIC,
+      lockscreenVisibility: PRIVATE,
       description: 'Incoming voice/video calls',
       showBadge: true,
       enableLights: true,
@@ -49,7 +49,7 @@ export async function configureAndroidChannels() {
       showBadge: true,
       enableLights: true,
       enableVibrate: true,
-      lockscreenVisibility: PUBLIC,
+      lockscreenVisibility: PRIVATE,
     });
     _channelsConfigured = true;
   } catch {

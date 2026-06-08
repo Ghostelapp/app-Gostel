@@ -33,7 +33,8 @@ import {
 import * as SecureStore from 'expo-secure-store';
 import * as Crypto from 'expo-crypto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Delete, LogOut } from 'lucide-react-native';
+import { Delete } from 'lucide-react-native';
+import nacl from 'tweetnacl';
 import { useTranslation } from 'react-i18next';
 import { theme } from './theme';
 
@@ -57,11 +58,31 @@ type PinLockState = {
 
 const Ctx = createContext<PinLockState | undefined>(undefined);
 
-async function hashPin(pin: string): Promise<string> {
+async function legacyHashPin(pin: string): Promise<string> {
   return Crypto.digestStringAsync(
     Crypto.CryptoDigestAlgorithm.SHA256,
     `ghostel:v1:${pin}`,
   );
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function derivePinHash(pin: string, salt: string): string {
+  let value: Uint8Array<ArrayBufferLike> = Uint8Array.from(
+    `${salt}:${pin}`,
+    (char) => char.charCodeAt(0),
+  );
+  for (let round = 0; round < 20_000; round += 1) {
+    value = nacl.hash(value);
+  }
+  return bytesToHex(value);
+}
+
+async function createStoredPinHash(pin: string): Promise<string> {
+  const salt = bytesToHex(await Crypto.getRandomBytesAsync(16));
+  return `v2:${salt}:${derivePinHash(pin, salt)}`;
 }
 
 async function getStoredPinHash(): Promise<string | null> {
@@ -129,7 +150,7 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
   }, [pinSet]);
 
   const setPin = useCallback(async (pin: string) => {
-    const hash = await hashPin(pin);
+    const hash = await createStoredPinHash(pin);
     await setStoredPinHash(hash);
     setPinSet(true);
     setIsLocked(false);
@@ -138,8 +159,13 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
   const verifyPin = useCallback(async (pin: string) => {
     const stored = await getStoredPinHash();
     if (!stored) return true; // nothing to verify against
-    const h = await hashPin(pin);
-    return h === stored;
+    if (stored.startsWith('v2:')) {
+      const [, salt, expected] = stored.split(':');
+      return !!salt && !!expected && derivePinHash(pin, salt) === expected;
+    }
+    const validLegacyPin = (await legacyHashPin(pin)) === stored;
+    if (validLegacyPin) await setStoredPinHash(await createStoredPinHash(pin));
+    return validLegacyPin;
   }, []);
 
   const clearPin = useCallback(async (currentPin: string) => {
@@ -199,15 +225,17 @@ export function usePinLock(): PinLockState {
 
 function LockOverlay() {
   const { t } = useTranslation();
-  const { verifyPin, unlock, forceClearForLogout } = usePinLock();
+  const { verifyPin, unlock } = usePinLock();
   const [entered, setEntered] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [attempts, setAttempts] = useState(0);
+  const [, setAttempts] = useState(0);
+  const [blockedUntil, setBlockedUntil] = useState(0);
   const verifying = useRef(false);
   const MIN_LEN = 4;
   const MAX_LEN = 6;
 
   const onDigit = (d: string) => {
+    if (Date.now() < blockedUntil) return;
     setError(null);
     setEntered((prev) => {
       if (prev.length >= MAX_LEN) return prev;
@@ -234,7 +262,14 @@ function LockOverlay() {
       } else if (entered.length >= MAX_LEN) {
         setError(t('pinlock.wrong'));
         Vibration.vibrate(120);
-        setAttempts((a) => a + 1);
+        setAttempts((a) => {
+          const next = a + 1;
+          if (next >= 5) {
+            const delay = Math.min(5 * 60_000, 30_000 * 2 ** Math.floor((next - 5) / 2));
+            setBlockedUntil(Date.now() + delay);
+          }
+          return next;
+        });
         setEntered('');
       }
     })();
@@ -304,21 +339,6 @@ function LockOverlay() {
         })}
       </View>
 
-      {attempts >= 5 && (
-        <TouchableOpacity
-          style={styles.forgotBtn}
-          onPress={async () => {
-            // After many failed attempts, allow user to escape via signing out
-            // (we don't have biometric per user request, and rather than support
-            // hidden recovery we let the user log out, which clears the PIN).
-            await forceClearForLogout();
-          }}
-          testID="pin-forgot"
-        >
-          <LogOut color={theme.colors.error} size={14} strokeWidth={2} />
-          <Text style={styles.forgotText}>{t('pinlock.forgot_signout')}</Text>
-        </TouchableOpacity>
-      )}
     </View>
   );
 }
@@ -396,13 +416,4 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '500',
   },
-  forgotBtn: {
-    marginTop: 24,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-  },
-  forgotText: { color: theme.colors.error, fontSize: 13, fontWeight: '600' },
 });

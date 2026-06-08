@@ -38,13 +38,14 @@ class GhostelActiveCallService : Service() {
       .setContentTitle("Ghostel")
       .setContentText("Aktywne połączenie z $peerName")
       .setCategory(Notification.CATEGORY_CALL)
+      .setVisibility(Notification.VISIBILITY_PRIVATE)
       .setOngoing(true)
       .setOnlyAlertOnce(true)
       .setContentIntent(pendingIntent)
       .build()
 
     startForeground(NOTIFICATION_ID, notification)
-    return START_STICKY
+    return START_NOT_STICKY
   }
 
   override fun onBind(intent: Intent?): IBinder? = null

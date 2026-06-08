@@ -3,7 +3,7 @@ import { getStoredToken, TOKEN_KEY } from './tokenStorage';
 
 export { TOKEN_KEY };
 
-const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://YOUR-BACKEND-HTTPS.example.com';
+export const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://api.ghostel.app';
 
 export const api: AxiosInstance = axios.create({
   baseURL: `${BASE_URL}/api`,

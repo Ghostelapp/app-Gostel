@@ -90,11 +90,18 @@ async function getStoredIdentity(userId: string): Promise<E2EEIdentity | null> {
   if (canUseSecureStore) {
     try {
       raw = await SecureStore.getItemAsync(key);
-    } catch {
-      raw = null;
+    } catch (error) {
+      throw new Error(`Secure E2EE identity storage unavailable: ${String(error)}`);
     }
   }
-  if (!raw) raw = await AsyncStorage.getItem(key);
+  if (!raw) {
+    const legacy = await AsyncStorage.getItem(key);
+    if (legacy && canUseSecureStore) {
+      await SecureStore.setItemAsync(key, legacy);
+      await AsyncStorage.removeItem(key);
+    }
+    raw = legacy;
+  }
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as E2EEIdentity;
@@ -119,8 +126,8 @@ async function setStoredIdentity(userId: string, identity: E2EEIdentity): Promis
       await SecureStore.setItemAsync(key, raw);
       await AsyncStorage.removeItem(key);
       return;
-    } catch {
-      /* web/fallback below */
+    } catch (error) {
+      throw new Error(`Secure E2EE identity storage unavailable: ${String(error)}`);
     }
   }
   await AsyncStorage.setItem(key, raw);

@@ -17,6 +17,15 @@ def _ws_url() -> str:
     return "ws://" + BASE_URL[len("http://"):]
 
 
+def _ws_ticket(token: str) -> str:
+    response = requests.post(
+        f"{BASE_URL}/api/ws-ticket",
+        headers=auth_headers(token),
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["ticket"]
+
+
 # ---------------- Uploads ----------------
 class TestUploads:
     def test_upload_and_fetch(self, api_client, admin_token):
@@ -200,14 +209,14 @@ class TestCalls:
 @pytest.mark.asyncio
 class TestWebSocket:
     async def test_ws_hello_with_valid_token(self, admin_token):
-        url = f"{_ws_url()}/api/ws?token={admin_token}"
+        url = f"{_ws_url()}/api/ws?ticket={_ws_ticket(admin_token)}"
         async with websockets.connect(url, open_timeout=10) as ws:
             raw = await asyncio.wait_for(ws.recv(), timeout=5)
             data = json.loads(raw)
             assert data["type"] == "hello"
             assert data["data"]["user_id"]
 
-    async def test_ws_missing_token_closes(self):
+    async def test_ws_missing_ticket_closes(self):
         url = f"{_ws_url()}/api/ws"
         try:
             async with websockets.connect(url, open_timeout=10) as ws:
@@ -224,8 +233,8 @@ class TestWebSocket:
         except Exception:
             pass  # rejection at handshake also acceptable
 
-    async def test_ws_invalid_token_closes(self):
-        url = f"{_ws_url()}/api/ws?token=not-a-jwt"
+    async def test_ws_invalid_ticket_closes(self):
+        url = f"{_ws_url()}/api/ws?ticket=not-a-jwt"
         async with websockets.connect(url, open_timeout=10) as ws:
             raw = await asyncio.wait_for(ws.recv(), timeout=5)
             data = json.loads(raw)
@@ -250,8 +259,8 @@ class TestWebSocket:
         assert conv.status_code == 200, conv.text
         conv_id = conv.json()["id"]
 
-        url_a = f"{_ws_url()}/api/ws?token={admin_token}"
-        url_b = f"{_ws_url()}/api/ws?token={demo_token}"
+        url_a = f"{_ws_url()}/api/ws?ticket={_ws_ticket(admin_token)}"
+        url_b = f"{_ws_url()}/api/ws?ticket={_ws_ticket(demo_token)}"
         async with websockets.connect(url_a, open_timeout=10) as ws_a, \
                    websockets.connect(url_b, open_timeout=10) as ws_b:
             # consume hello
@@ -302,7 +311,7 @@ class TestWebSocket:
         conv = conv.json()
         conv_id = conv["id"]
 
-        url_b = f"{_ws_url()}/api/ws?token={demo_token}"
+        url_b = f"{_ws_url()}/api/ws?ticket={_ws_ticket(demo_token)}"
         async with websockets.connect(url_b, open_timeout=10) as ws_b:
             await asyncio.wait_for(ws_b.recv(), timeout=5)  # hello
 

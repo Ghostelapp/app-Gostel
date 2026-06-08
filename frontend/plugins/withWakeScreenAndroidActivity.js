@@ -1,13 +1,9 @@
 /**
  * withWakeScreenAndroidActivity — Expo config plugin.
  *
- * Adds the following attributes to MainActivity in AndroidManifest.xml so
- * the app can launch on top of the lockscreen when the user taps an incoming
- * call notification (or any high-priority push). Without these, Android will
- * launch the app behind the lockscreen and the user must unlock first.
- *
- *   android:showWhenLocked="true"
- *   android:turnScreenOn="true"
+ * Keeps lock-screen wake behavior scoped to verified incoming-call intents.
+ * MainActivity applies the flags at runtime instead of exposing them for
+ * every launcher or deep-link intent.
  *
  * Also adds <uses-permission> entries that aren't always picked up by Expo
  * managed permissions array (e.g. POST_NOTIFICATIONS on Android 13+, and
@@ -23,8 +19,8 @@ function setMainActivityWakeFlags(androidManifest) {
   for (const activity of activities) {
     const name = activity.$?.['android:name'];
     if (name === '.MainActivity' || name?.endsWith('.MainActivity')) {
-      activity.$['android:showWhenLocked'] = 'true';
-      activity.$['android:turnScreenOn'] = 'true';
+      delete activity.$['android:showWhenLocked'];
+      delete activity.$['android:turnScreenOn'];
     }
   }
   return androidManifest;

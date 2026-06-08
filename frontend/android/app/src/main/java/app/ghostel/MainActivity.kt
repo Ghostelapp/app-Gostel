@@ -54,8 +54,11 @@ class MainActivity : ReactActivity() {
   }
 
   private fun applyIncomingCallWindowFlags(intent: Intent?) {
-    if (intent?.action != GhostelCallNotificationModule.ACTION_INCOMING_CALL &&
-      intent?.getBooleanExtra("ghostel_incoming_call", false) != true
+    if (intent?.action != GhostelCallNotificationModule.ACTION_INCOMING_CALL ||
+      intent.getBooleanExtra("ghostel_incoming_call", false) != true ||
+      intent.getStringExtra("call_id").isNullOrBlank() ||
+      intent.getStringExtra("caller_id").isNullOrBlank() ||
+      !IncomingCallIntentSecurity.isValid(this, intent)
     ) {
       return
     }

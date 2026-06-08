@@ -1563,10 +1563,11 @@ function ImagePreview({ msg, isMine }: { msg: Message; isMine: boolean }) {
   }, [msg, user?.id]);
 
   useEffect(() => {
+    if (msg.one_time_seconds) return;
     loadImage()
       .then(() => {})
       .catch(() => {});
-  }, [loadImage]);
+  }, [loadImage, msg.one_time_seconds]);
 
   useEffect(() => {
     if (!open || !msg.one_time_seconds) return;

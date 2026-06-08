@@ -1,6 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { getStoredToken } from './tokenStorage';
-import { api } from './api';
+import { api, BASE_URL } from './api';
 
 type Listener = (msg: any) => void;
 
@@ -40,11 +39,12 @@ export function useWebSocket(onMessage: Listener, enabled: boolean = true) {
     let pingTimer: any = null;
 
     const connect = async () => {
-      const token = await getStoredToken();
-      if (!token || cancelled) return;
-      const base = (process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.88.9:8000').replace(/^http/, 'ws');
-      const url = `${base}/api/ws?token=${encodeURIComponent(token)}`;
+      if (cancelled) return;
       try {
+        const { data } = await api.post('/ws-ticket');
+        if (!data?.ticket || cancelled) return;
+        const base = BASE_URL.replace(/^http/, 'ws');
+        const url = `${base}/api/ws?ticket=${encodeURIComponent(data.ticket)}`;
         const ws = new WebSocket(url);
         wsRef.current = ws;
         ws.onopen = () => {

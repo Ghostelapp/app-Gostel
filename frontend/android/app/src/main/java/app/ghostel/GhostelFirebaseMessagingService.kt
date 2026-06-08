@@ -33,7 +33,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
     if (callId.isBlank() || callerId.isBlank()) return
 
     try {
-      val intent = Intent(this, MainActivity::class.java).apply {
+      val intent = IncomingCallIntentSecurity.protect(this, Intent(this, MainActivity::class.java).apply {
         action = GhostelCallNotificationModule.ACTION_INCOMING_CALL
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or
           Intent.FLAG_ACTIVITY_SINGLE_TOP or
@@ -44,7 +44,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
         putExtra("caller_name", callerName)
         putExtra("conversation_id", data["conversation_id"].orEmpty())
         putExtra("mode", data["mode"].orEmpty().ifBlank { "audio" })
-      }
+      })
 
       wakeScreenBriefly()
       showFullScreenCallNotification(callId, callerName, intent)
@@ -96,7 +96,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
       .setContentText("Połączenie przychodzące w aplikacji")
       .setCategory(Notification.CATEGORY_CALL)
       .setPriority(Notification.PRIORITY_MAX)
-      .setVisibility(Notification.VISIBILITY_PUBLIC)
+      .setVisibility(Notification.VISIBILITY_PRIVATE)
       .setOngoing(true)
       .setAutoCancel(false)
       .setContentIntent(pendingIntent)
@@ -140,7 +140,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
       NotificationManager.IMPORTANCE_MAX
     ).apply {
       description = "Full-screen Ghostel incoming call alerts"
-      lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+      lockscreenVisibility = Notification.VISIBILITY_PRIVATE
       setBypassDnd(true)
       enableVibration(true)
       vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)

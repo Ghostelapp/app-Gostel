@@ -21,8 +21,8 @@ export async function getStoredToken(): Promise<string | null> {
       await AsyncStorage.removeItem(TOKEN_KEY);
     }
     return legacyToken;
-  } catch {
-    return AsyncStorage.getItem(TOKEN_KEY);
+  } catch (error) {
+    throw new Error(`Secure token storage unavailable: ${String(error)}`);
   }
 }
 
@@ -35,18 +35,22 @@ export async function setStoredToken(token: string): Promise<void> {
   try {
     await SecureStore.setItemAsync(TOKEN_KEY, token);
     await AsyncStorage.removeItem(TOKEN_KEY);
-  } catch {
-    await AsyncStorage.setItem(TOKEN_KEY, token);
+  } catch (error) {
+    throw new Error(`Secure token storage unavailable: ${String(error)}`);
   }
 }
 
 export async function removeStoredToken(): Promise<void> {
+  let secureStoreError: unknown = null;
   if (canUseSecureStore) {
     try {
       await SecureStore.deleteItemAsync(TOKEN_KEY);
-    } catch {
-      /* fallback below */
+    } catch (error) {
+      secureStoreError = error;
     }
   }
   await AsyncStorage.removeItem(TOKEN_KEY);
+  if (secureStoreError) {
+    throw new Error(`Secure token storage unavailable: ${String(secureStoreError)}`);
+  }
 }

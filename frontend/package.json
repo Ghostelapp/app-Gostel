@@ -7,7 +7,7 @@
     "email": "support@ghostel.app"
   },
   "main": "./index.js",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
@@ -117,7 +117,9 @@
     }
   },
   "resolutions": {
-    "**/@react-navigation/native": "7.2.5"
+    "**/@react-navigation/native": "7.2.5",
+    "**/postcss": "8.5.10",
+    "**/uuid": "11.1.1"
   },
   "build": {
     "appId": "app.ghostel.desktop",

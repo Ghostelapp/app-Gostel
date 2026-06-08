@@ -492,9 +492,13 @@ export default function ProfileScreen() {
                 text: t('common.sign_out'),
                 style: 'destructive',
                 onPress: async () => {
-                  // Disable PIN lock at logout so a new login isn't blocked.
-                  await forceClearForLogout();
-                  await logout();
+                  try {
+                    await logout();
+                    // Disable PIN lock only after the auth token is gone.
+                    await forceClearForLogout();
+                  } catch (e) {
+                    Alert.alert(t('common.error'), formatApiErrorDetail(e));
+                  }
                 },
               },
             ]);

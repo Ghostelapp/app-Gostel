@@ -43,6 +43,7 @@ api = APIRouter(prefix="/api")
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALG = "HS256"
 APP_NAME = os.environ.get("APP_NAME", "Ghostel")
+ALLOW_LEGACY_WS_TOKEN = os.environ.get("ALLOW_LEGACY_WS_TOKEN", "true").lower() == "true"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ghostel")
@@ -71,6 +72,22 @@ def create_access_token(user_id: str, email: str) -> str:
         "type": "access",
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def create_ws_ticket(user_id: str) -> tuple[str, str, datetime]:
+    jti = str(uuid.uuid4())
+    expires_at = now_utc() + timedelta(seconds=60)
+    token = jwt.encode(
+        {
+            "sub": user_id,
+            "exp": expires_at,
+            "type": "ws",
+            "jti": jti,
+        },
+        JWT_SECRET,
+        algorithm=JWT_ALG,
+    )
+    return token, jti, expires_at
 
 
 def user_has_push_token(u: dict) -> bool:
@@ -2013,6 +2030,11 @@ async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_
             raise HTTPException(
                 status_code=403, detail="Cannot send another user's attachment"
             )
+        existing_message = await db.messages.find_one(
+            {"attachment_id": payload.attachment_id}, {"_id": 0, "id": 1}
+        )
+        if existing_message:
+            raise HTTPException(status_code=409, detail="Attachment was already sent")
     msg = {
         "id": str(uuid.uuid4()),
         "conversation_id": payload.conversation_id,
@@ -2471,9 +2493,7 @@ async def get_attachment(att_id: str, user: dict = Depends(get_current_user)):
     if not att:
         raise HTTPException(status_code=404, detail="Attachment not found")
     if att.get("owner_id") != user["id"]:
-        msg = await db.messages.find_one(
-            {"attachment_id": att_id}, {"_id": 0, "conversation_id": 1}
-        )
+        msg = await db.messages.find_one({"attachment_id": att_id}, {"_id": 0})
         if not msg:
             raise HTTPException(status_code=403, detail="Attachment not accessible")
         conv = await db.conversations.find_one(
@@ -2482,6 +2502,17 @@ async def get_attachment(att_id: str, user: dict = Depends(get_current_user)):
         )
         if not conv:
             raise HTTPException(status_code=403, detail="Attachment not accessible")
+        one_time_seconds = int(msg.get("one_time_seconds") or 0)
+        if one_time_seconds:
+            viewed = (msg.get("one_time_viewed_at") or {}).get(user["id"])
+            if not viewed:
+                raise HTTPException(status_code=403, detail="Open the one-time image first")
+            try:
+                viewed_at = datetime.fromisoformat(viewed.replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=410, detail="One-time image expired")
+            if now_utc() >= viewed_at + timedelta(seconds=one_time_seconds):
+                raise HTTPException(status_code=410, detail="One-time image expired")
     return att
 
 
@@ -3560,23 +3591,49 @@ async def broadcast_to_members(member_ids, payload, exclude: Optional[str] = Non
         await ws_manager.send_to(uid, payload)
 
 
+@api.post("/ws-ticket")
+async def issue_ws_ticket(user: dict = Depends(get_current_user)):
+    ticket, jti, expires_at = create_ws_ticket(user["id"])
+    await db.ws_tickets.insert_one(
+        {"jti": jti, "user_id": user["id"], "expires_at": expires_at}
+    )
+    return {"ticket": ticket, "expires_in": 60}
+
+
 @app.websocket("/api/ws")
-async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
+async def websocket_endpoint(
+    websocket: WebSocket,
+    ticket: Optional[str] = None,
+    token: Optional[str] = None,
+):
     await websocket.accept()
-    if not token:
-        await websocket.send_text(json.dumps({"type": "error", "data": "missing token"}))
+    credential = ticket or (token if ALLOW_LEGACY_WS_TOKEN else None)
+    if not credential:
+        await websocket.send_text(json.dumps({"type": "error", "data": "missing ticket"}))
         await websocket.close()
         return
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        payload = jwt.decode(credential, JWT_SECRET, algorithms=[JWT_ALG])
         user_id = payload.get("sub")
-        if not user_id or payload.get("type") != "access":
-            raise ValueError("invalid token")
+        credential_type = payload.get("type")
+        if not user_id or credential_type not in ("ws", "access"):
+            raise ValueError("invalid ticket")
+        if credential_type == "ws":
+            jti = payload.get("jti")
+            if not jti:
+                raise ValueError("invalid ticket")
+            consumed = await db.ws_tickets.find_one_and_delete(
+                {"jti": jti, "user_id": user_id, "expires_at": {"$gt": now_utc()}}
+            )
+            if not consumed:
+                raise ValueError("used or expired ticket")
+        elif not token or not ALLOW_LEGACY_WS_TOKEN:
+            raise ValueError("legacy token disabled")
         ws_user = await db.users.find_one({"id": user_id}, {"_id": 0, "id": 1})
         if not ws_user:
             raise ValueError("user not found")
     except Exception:
-        await websocket.send_text(json.dumps({"type": "error", "data": "invalid token"}))
+        await websocket.send_text(json.dumps({"type": "error", "data": "invalid ticket"}))
         await websocket.close()
         return
 
@@ -3837,6 +3894,8 @@ async def _ensure_indexes() -> None:
         ("calls", "id", {"unique": True}),
         ("calls", "conversation_id", {}),
         ("login_attempts", "at", {}),
+        ("ws_tickets", "jti", {"unique": True}),
+        ("ws_tickets", "expires_at", {"expireAfterSeconds": 0}),
         ("contact_invitations", "id", {"unique": True}),
         (
             "contact_invitations",

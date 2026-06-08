@@ -41,7 +41,7 @@ class GhostelCallNotificationModule(
       val nm = reactContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
       ensureChannel(nm)
 
-      val intent = Intent(reactContext, MainActivity::class.java).apply {
+      val intent = IncomingCallIntentSecurity.protect(reactContext, Intent(reactContext, MainActivity::class.java).apply {
         action = ACTION_INCOMING_CALL
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or
           Intent.FLAG_ACTIVITY_SINGLE_TOP or
@@ -52,7 +52,7 @@ class GhostelCallNotificationModule(
         putExtra("caller_name", callerName)
         putExtra("conversation_id", data.getStringOrEmpty("conversation_id"))
         putExtra("mode", data.getStringOrEmpty("mode").ifBlank { "audio" })
-      }
+      })
       val pendingIntent = PendingIntent.getActivity(
         reactContext,
         notificationId(callId),
@@ -87,7 +87,7 @@ class GhostelCallNotificationModule(
         .setContentText("Połączenie przychodzące w aplikacji")
         .setCategory(Notification.CATEGORY_CALL)
         .setPriority(Notification.PRIORITY_MAX)
-        .setVisibility(Notification.VISIBILITY_PUBLIC)
+        .setVisibility(Notification.VISIBILITY_PRIVATE)
         .setOngoing(true)
         .setAutoCancel(false)
         .setContentIntent(pendingIntent)
@@ -245,7 +245,7 @@ class GhostelCallNotificationModule(
       NotificationManager.IMPORTANCE_MAX
     ).apply {
       description = "Full-screen Ghostel incoming call alerts"
-      lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+      lockscreenVisibility = Notification.VISIBILITY_PRIVATE
       setBypassDnd(true)
       enableVibration(true)
       vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
@@ -288,7 +288,7 @@ class GhostelCallNotificationModule(
     callId.hashCode().let { if (it == Int.MIN_VALUE) 1 else kotlin.math.abs(it) }
 
   companion object {
-    const val CHANNEL_ID = "ghostel_calls_fullscreen_v6"
+    const val CHANNEL_ID = "ghostel_calls_fullscreen_v7"
     const val ACTION_INCOMING_CALL = "app.ghostel.INCOMING_CALL"
     private const val TAG = "GhostelCallNotification"
   }
