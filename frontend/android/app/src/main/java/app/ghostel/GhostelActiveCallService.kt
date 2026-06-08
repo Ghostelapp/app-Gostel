@@ -19,7 +19,7 @@ class GhostelActiveCallService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val peerName = intent?.getStringExtra(EXTRA_PEER_NAME).orEmpty().ifBlank { "Ghostel" }
     val openAppIntent = Intent(this, MainActivity::class.java).apply {
-      flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+      this.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
     }
     val pendingIntent = PendingIntent.getActivity(
       this,
