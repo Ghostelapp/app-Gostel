@@ -33,6 +33,7 @@ export default {
     disabled: 'Deaktiviert',
     off: 'Aus',
     on: 'Ein',
+    send: 'Senden',
   },
   auth: {
     ...en.auth,
@@ -114,6 +115,13 @@ export default {
     no_recent_calls: 'Noch keine Anrufe',
     show_more_calls: '{{count}} weitere anzeigen',
     show_less: 'Weniger anzeigen',
+    delivered: 'Zugestellt',
+    read: 'Gelesen',
+    one_time_5s: 'Einmalig für 5 Sekunden',
+    one_time_5s_desc: 'Der Empfänger kann dieses Foto einmal öffnen. Es verschwindet nach 5 Sekunden.',
+    one_time_tap: 'Antippen und 5 Sekunden ansehen',
+    one_time_sent: 'Einmalfoto gesendet',
+    one_time_expired: 'Dieses Foto ist abgelaufen',
   },
   calls: {
     ...en.calls,

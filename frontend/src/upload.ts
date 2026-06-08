@@ -116,6 +116,25 @@ export async function pickImageForUpload(): Promise<UploadCandidate | null> {
   return { filename, mime, data, size };
 }
 
+export async function takePhotoForUpload(): Promise<UploadCandidate | null> {
+  const perm = await ImagePicker.requestCameraPermissionsAsync();
+  if (perm.status !== 'granted') return null;
+  const result = await ImagePicker.launchCameraAsync({
+    mediaTypes: ['images'],
+    quality: CHAT_IMAGE_QUALITY,
+    base64: false,
+  });
+  if (result.canceled || !result.assets?.[0]) return null;
+  const asset = result.assets[0];
+  const data = await uriToBase64(asset.uri);
+  return {
+    filename: asset.fileName || `camera-${Date.now()}.jpg`,
+    mime: asset.mimeType || 'image/jpeg',
+    data,
+    size: asset.fileSize || Math.ceil((data.length * 3) / 4),
+  };
+}
+
 export async function pickAndUploadImage(): Promise<UploadResult | null> {
   throw new Error('Direct uploads are disabled. Encrypt the attachment before upload.');
 }

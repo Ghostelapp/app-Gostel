@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -161,6 +162,30 @@ class GhostelCallNotificationModule(
       promise.resolve(map)
     } catch (e: Exception) {
       promise.reject("ghostel_call_notification_initial_failed", e)
+    }
+  }
+
+  @ReactMethod
+  fun startActiveCall(callId: String, peerName: String, promise: Promise) {
+    try {
+      val intent = Intent(reactContext, GhostelActiveCallService::class.java).apply {
+        putExtra(GhostelActiveCallService.EXTRA_CALL_ID, callId)
+        putExtra(GhostelActiveCallService.EXTRA_PEER_NAME, peerName)
+      }
+      ContextCompat.startForegroundService(reactContext, intent)
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("ghostel_active_call_start_failed", e)
+    }
+  }
+
+  @ReactMethod
+  fun stopActiveCall(promise: Promise) {
+    try {
+      reactContext.stopService(Intent(reactContext, GhostelActiveCallService::class.java))
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("ghostel_active_call_stop_failed", e)
     }
   }
 

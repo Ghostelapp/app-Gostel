@@ -27,6 +27,7 @@ export default {
     disabled: 'Disabled',
     off: 'Off',
     on: 'On',
+    send: 'Send',
   },
   auth: {
     sign_in: 'Sign in',
@@ -121,6 +122,13 @@ export default {
     show_more_calls: 'Show {{count}} more',
     show_less: 'Show less',
     will_disappear_when_read: 'will disappear when read',
+    delivered: 'Delivered',
+    read: 'Read',
+    one_time_5s: 'View once for 5 seconds',
+    one_time_5s_desc: 'The recipient can open this photo once. It disappears after 5 seconds.',
+    one_time_tap: 'Tap to view for 5 seconds',
+    one_time_sent: 'View-once photo sent',
+    one_time_expired: 'This photo has expired',
   },
   calls: {
     title: 'Calls',

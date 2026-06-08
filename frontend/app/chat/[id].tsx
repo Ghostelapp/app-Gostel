@@ -14,6 +14,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Linking,
+  Switch,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -40,6 +41,9 @@ import {
   Copy,
   PhoneCall,
   PhoneMissed,
+  Camera,
+  Eye,
+  Hourglass,
 } from 'lucide-react-native';
 import Avatar from '../../src/Avatar';
 import CallHistoryBanner from '../../src/CallHistoryBanner';
@@ -49,6 +53,7 @@ import { theme } from '../../src/theme';
 import {
   pickDocumentForUpload,
   pickImageForUpload,
+  takePhotoForUpload,
   uploadCandidate,
   UploadCandidate,
 } from '../../src/upload';
@@ -89,6 +94,8 @@ type Message = {
   duration_ms?: number | null;
   expires_at?: string | null;
   disappear_seconds?: number | null;
+  one_time_seconds?: number | null;
+  one_time_expires_at?: string | null;
 };
 
 type Conversation = {
@@ -195,6 +202,7 @@ function messageSignature(messages: Message[]): string {
         m.expires_at || '',
         JSON.stringify(m.reactions || {}),
         (m.read_by || []).join(','),
+        m.one_time_expires_at || '',
       ].join('|'),
     )
     .join('~');
@@ -219,6 +227,8 @@ export default function ChatScreen() {
   const [reactingTo, setReactingTo] = useState<string | null>(null);
   const [attachMenu, setAttachMenu] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [cameraPreview, setCameraPreview] = useState<UploadCandidate | null>(null);
+  const [cameraOneTime, setCameraOneTime] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const recorderRef = useRef<VoiceRecorder | null>(null);
@@ -408,6 +418,31 @@ export default function ChatScreen() {
         if (msg?.type === 'message:deleted' && msg.data?.conversation_id === id) {
           setMessages((prev) => prev.filter((m) => m.id !== msg.data.id));
         }
+        if (msg?.type === 'messages:read' && msg.data?.conversation_id === id) {
+          const messageIds = new Set<string>(msg.data?.message_ids || []);
+          const readerId = String(msg.data?.reader_id || '');
+          setMessages((prev) =>
+            prev.map((message) =>
+              messageIds.has(message.id) && readerId
+                ? {
+                    ...message,
+                    read_by: Array.from(
+                      new Set([...(message.read_by || []), readerId]),
+                    ),
+                  }
+                : message,
+            ),
+          );
+        }
+        if (msg?.type === 'message:opened_once' && msg.data?.conversation_id === id) {
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === msg.data?.message_id
+                ? { ...message, one_time_expires_at: msg.data?.expires_at }
+                : message,
+            ),
+          );
+        }
         if (
           msg?.type === 'messages:expiring_started' &&
           msg.data?.conversation_id === id
@@ -481,7 +516,8 @@ export default function ChatScreen() {
     kind: 'text' | 'image' | 'voice' | 'file' = 'text',
     attachmentId?: string,
     durationMs?: number,
-    e2eeAttachment?: E2EEAttachmentPayload | null
+    e2eeAttachment?: E2EEAttachmentPayload | null,
+    oneTimeSeconds?: 5,
   ): Promise<boolean> => {
     if (!id) return false;
     setSending(true);
@@ -498,6 +534,7 @@ export default function ChatScreen() {
         kind,
         attachment_id: attachmentId,
         duration_ms: durationMs,
+        one_time_seconds: oneTimeSeconds,
       };
 
       const encrypted = await encryptTextForConversation(content, conv, user.id);
@@ -651,6 +688,42 @@ export default function ChatScreen() {
     } catch (e) {
       if ((e as Error).message !== E2EE_KEY_BLOCKED) {
         Alert.alert('Upload failed', (e as Error).message);
+      }
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const onTakePhoto = async () => {
+    if (uploading) return;
+    try {
+      const candidate = await takePhotoForUpload();
+      if (!candidate) return;
+      setCameraOneTime(false);
+      setCameraPreview(candidate);
+    } catch (e) {
+      Alert.alert(t('common.error'), (e as Error).message);
+    }
+  };
+
+  const sendCameraPhoto = async () => {
+    if (!cameraPreview || uploading) return;
+    setUploading(true);
+    try {
+      const candidate = cameraPreview;
+      const { upload, e2eeAttachment } = await uploadForCurrentConversation(candidate);
+      const sent = await sendMessage(
+        candidate.filename,
+        'image',
+        upload.id,
+        undefined,
+        e2eeAttachment,
+        cameraOneTime ? 5 : undefined,
+      );
+      if (sent) setCameraPreview(null);
+    } catch (e) {
+      if ((e as Error).message !== E2EE_KEY_BLOCKED) {
+        Alert.alert(t('chat.upload_failed'), (e as Error).message);
       }
     } finally {
       setUploading(false);
@@ -850,6 +923,13 @@ export default function ChatScreen() {
               >
                 {formatTime(item.created_at)}
               </Text>
+              {isMine && (
+                <Text style={styles.deliveryStatus} testID={`delivery-${item.id}`}>
+                  {(item.read_by || []).length >= (conv?.members.length || 2)
+                    ? t('chat.read')
+                    : t('chat.delivered')}
+                </Text>
+              )}
             </View>
           </TouchableOpacity>
 
@@ -1186,6 +1266,18 @@ export default function ChatScreen() {
                 strokeWidth={1.8}
               />
             </TouchableOpacity>
+            <TouchableOpacity
+              testID="camera-button"
+              onPress={onTakePhoto}
+              disabled={uploading}
+              style={styles.composerIcon}
+            >
+              <Camera
+                color={theme.colors.textSecondary}
+                size={20}
+                strokeWidth={1.8}
+              />
+            </TouchableOpacity>
             <TextInput
               testID="message-input"
               value={text}
@@ -1261,6 +1353,57 @@ export default function ChatScreen() {
           </View>
         )}
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={!!cameraPreview}
+        animationType="slide"
+        onRequestClose={() => setCameraPreview(null)}
+      >
+        <SafeAreaView style={styles.cameraPreviewScreen}>
+          {cameraPreview && (
+            <Image
+              source={{ uri: `data:${cameraPreview.mime};base64,${cameraPreview.data}` }}
+              style={styles.cameraPreviewImage}
+              resizeMode="contain"
+            />
+          )}
+          <View style={styles.cameraPreviewControls}>
+            <View style={styles.oneTimeOption}>
+              <View style={styles.oneTimeOptionText}>
+                <Text style={styles.oneTimeTitle}>{t('chat.one_time_5s')}</Text>
+                <Text style={styles.oneTimeSubtitle}>{t('chat.one_time_5s_desc')}</Text>
+              </View>
+              <Switch
+                testID="camera-one-time-switch"
+                value={cameraOneTime}
+                onValueChange={setCameraOneTime}
+                trackColor={{ true: theme.colors.primary }}
+              />
+            </View>
+            <View style={styles.cameraPreviewActions}>
+              <TouchableOpacity
+                onPress={() => setCameraPreview(null)}
+                style={[styles.cameraPreviewButton, styles.cameraCancelButton]}
+              >
+                <Text style={styles.cameraCancelText}>{t('common.cancel')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="send-camera-photo"
+                onPress={sendCameraPhoto}
+                disabled={uploading}
+                style={[styles.cameraPreviewButton, styles.cameraSendButton]}
+              >
+                {uploading ? (
+                  <ActivityIndicator color={theme.colors.background} />
+                ) : (
+                  <Send color={theme.colors.background} size={18} />
+                )}
+                <Text style={styles.cameraSendText}>{t('common.send')}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </SafeAreaView>
+      </Modal>
 
       <Modal
         visible={attachMenu}
@@ -1367,7 +1510,7 @@ export default function ChatScreen() {
 
 function MessageBody({ msg, isMine }: { msg: Message; isMine: boolean }) {
   if (msg.kind === 'image' && msg.attachment_id) {
-    return <ImagePreview msg={msg} />;
+    return <ImagePreview msg={msg} isMine={isMine} />;
   }
   if (msg.kind === 'voice' && msg.attachment_id) {
     return <VoicePlayer msg={msg} isMine={isMine} />;
@@ -1400,26 +1543,110 @@ function LinkedMessageText({ content, isMine }: { content: string; isMine: boole
   );
 }
 
-function ImagePreview({ msg }: { msg: Message }) {
+function ImagePreview({ msg, isMine }: { msg: Message; isMine: boolean }) {
   const { user } = useAuth();
+  const { t } = useTranslation();
   const [src, setSrc] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [remaining, setRemaining] = useState(0);
+  const [expired, setExpired] = useState(false);
+
+  const loadImage = useCallback(async () => {
+    const { data } = await api.get(`/uploads/${msg.attachment_id}`);
+    const attachment = msg.e2ee_attachment
+      ? await decryptAttachmentForUser(data.data, msg.e2ee_attachment, msg, user?.id)
+      : { data: data.data, mime: data.mime };
+    if (!attachment) return null;
+    const uri = `data:${attachment.mime};base64,${attachment.data}`;
+    setSrc(uri);
+    return uri;
+  }, [msg, user?.id]);
+
   useEffect(() => {
-    let cancelled = false;
-    api
-      .get(`/uploads/${msg.attachment_id}`)
-      .then(async ({ data }) => {
-        const attachment = msg.e2ee_attachment
-          ? await decryptAttachmentForUser(data.data, msg.e2ee_attachment, msg, user?.id)
-          : { data: data.data, mime: data.mime };
-        if (!attachment) return;
-        if (!cancelled)
-          setSrc(`data:${attachment.mime};base64,${attachment.data}`);
-      })
+    loadImage()
+      .then(() => {})
       .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [msg.attachment_id, msg.e2ee_attachment, user?.id]);
+  }, [loadImage]);
+
+  useEffect(() => {
+    if (!open || !msg.one_time_seconds) return;
+    let screenshotSub: any = null;
+    try {
+      const ScreenCapture = require('expo-screen-capture');
+      screenshotSub = ScreenCapture.addScreenshotListener?.(() => {
+        api.post(`/messages/${msg.id}/screenshot`).catch(() => {});
+      });
+    } catch {
+      /* screenshot detection is unavailable on web/unsupported Android versions */
+    }
+    return () => screenshotSub?.remove?.();
+  }, [msg.id, msg.one_time_seconds, open]);
+
+  useEffect(() => {
+    if (!open || remaining <= 0) return;
+    const timer = setTimeout(() => setRemaining((value) => Math.max(0, value - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [open, remaining]);
+
+  useEffect(() => {
+    if (open && remaining === 0) {
+      setOpen(false);
+      setSrc(null);
+      if (!isMine) setExpired(true);
+    }
+  }, [isMine, open, remaining]);
+
+  const openOnce = async () => {
+    if (isMine || open) return;
+    try {
+      const { data } = await api.post(`/messages/${msg.id}/open-once`);
+      const expiresAt = new Date(data.expires_at).getTime();
+      const seconds = Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000));
+      if (!src) await loadImage();
+      setRemaining(seconds);
+      setOpen(true);
+    } catch (e) {
+      Alert.alert(t('chat.one_time_expired'), formatApiErrorDetail(e));
+    }
+  };
+
+  if (msg.one_time_seconds) {
+    if (expired) return null;
+    return (
+      <>
+        <TouchableOpacity
+          testID={`one-time-image-${msg.id}`}
+          onPress={openOnce}
+          disabled={isMine}
+          style={styles.oneTimeImage}
+          activeOpacity={0.85}
+        >
+          {src && (
+            <Image
+              source={{ uri: src }}
+              style={styles.oneTimeBlurredImage}
+              resizeMode="cover"
+              blurRadius={32}
+            />
+          )}
+          <Hourglass color="#fff" size={30} strokeWidth={2} />
+          <Text style={styles.oneTimeImageTitle}>KLIK⌛KLAK</Text>
+          <Text style={styles.oneTimeImageSubtitle}>
+            {isMine ? t('chat.one_time_sent') : t('chat.one_time_tap')}
+          </Text>
+        </TouchableOpacity>
+        <Modal visible={open} animationType="fade" onRequestClose={() => {}}>
+          <View style={styles.oneTimeViewer}>
+            {src && <Image source={{ uri: src }} style={styles.oneTimeViewerImage} resizeMode="contain" />}
+            <View style={styles.oneTimeCounter}>
+              <Eye color="#fff" size={16} />
+              <Text style={styles.oneTimeCounterText}>{remaining}s</Text>
+            </View>
+          </View>
+        </Modal>
+      </>
+    );
+  }
 
   if (!src) {
     return (
@@ -1761,6 +1988,10 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-end',
   },
   bubbleTime: { fontSize: 10 },
+  deliveryStatus: {
+    fontSize: 10,
+    color: theme.colors.textMuted,
+  },
   reactionRow: { flexDirection: 'row', gap: 4, marginTop: 4 },
   reactionChip: {
     flexDirection: 'row',
@@ -1914,6 +2145,32 @@ const styles = StyleSheet.create({
   },
   modalText: { color: theme.colors.textPrimary, fontSize: 15 },
   modalDivider: { height: 1, backgroundColor: theme.colors.border, marginHorizontal: 16 },
+  cameraPreviewScreen: { flex: 1, backgroundColor: '#05070a' },
+  cameraPreviewImage: { flex: 1, width: '100%' },
+  cameraPreviewControls: {
+    padding: 18,
+    gap: 16,
+    backgroundColor: theme.colors.background,
+  },
+  oneTimeOption: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  oneTimeOptionText: { flex: 1 },
+  oneTimeTitle: { color: theme.colors.textPrimary, fontSize: 15, fontWeight: '700' },
+  oneTimeSubtitle: { color: theme.colors.textSecondary, fontSize: 12, marginTop: 2 },
+  cameraPreviewActions: { flexDirection: 'row', gap: 10 },
+  cameraPreviewButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: theme.radius.lg,
+    alignItems: 'center',
+  },
+  cameraCancelButton: {
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  cameraSendButton: { backgroundColor: theme.colors.primary },
+  cameraCancelText: { color: theme.colors.textPrimary, fontWeight: '700' },
+  cameraSendText: { color: theme.colors.background, fontWeight: '800' },
   imagePlaceholder: {
     width: 220,
     height: 160,
@@ -1927,6 +2184,50 @@ const styles = StyleSheet.create({
     height: 160,
     borderRadius: theme.radius.md,
   },
+  oneTimeImage: {
+    width: 220,
+    height: 160,
+    borderRadius: theme.radius.md,
+    backgroundColor: '#182028',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    overflow: 'hidden',
+  },
+  oneTimeBlurredImage: {
+    ...StyleSheet.absoluteFillObject,
+    width: '100%',
+    height: '100%',
+    opacity: 0.38,
+    transform: [{ scale: 1.18 }],
+  },
+  oneTimeImageTitle: { color: '#fff', fontSize: 18, fontWeight: '900', letterSpacing: 1 },
+  oneTimeImageSubtitle: {
+    color: '#c7d0d9',
+    fontSize: 11,
+    textAlign: 'center',
+    paddingHorizontal: 18,
+  },
+  oneTimeViewer: {
+    flex: 1,
+    backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  oneTimeViewerImage: { width: '100%', height: '100%' },
+  oneTimeCounter: {
+    position: 'absolute',
+    top: 52,
+    right: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: theme.radius.pill,
+    backgroundColor: '#00000099',
+  },
+  oneTimeCounterText: { color: '#fff', fontSize: 13, fontWeight: '800' },
   voiceRow: {
     flexDirection: 'row',
     alignItems: 'center',

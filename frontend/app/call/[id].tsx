@@ -25,7 +25,11 @@ import { useWebSocket } from '../../src/ws';
 import { theme } from '../../src/theme';
 import { getInCallManager } from '../../src/incall';
 import { markCallActive, endIncomingCallNative } from '../../src/callkeep';
-import { cancelFullScreenIncomingCallNotification } from '../../src/androidCallNotification';
+import {
+  cancelFullScreenIncomingCallNotification,
+  startActiveCallService,
+  stopActiveCallService,
+} from '../../src/androidCallNotification';
 import { useCallRingback } from '../../src/callRingback';
 import {
   decryptCallSignalFromUser,
@@ -58,6 +62,7 @@ type CallInfo = {
   participants?: ContactInfo[];
   e2ee_required?: boolean;
   e2ee_member_keys?: Record<string, { public_key?: string; name?: string }>;
+  status?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -301,7 +306,16 @@ export default function CallScreen() {
     try {
       Vibration.cancel();
     } catch {}
+    stopActiveCallService().catch(() => {});
   }, [clearTimers, stopRingback, InCall]);
+
+  const returnToChat = useCallback(() => {
+    if (conversationIdParam) {
+      router.replace(`/chat/${conversationIdParam}` as any);
+      return;
+    }
+    router.replace('/(tabs)/chats');
+  }, [conversationIdParam, router]);
 
   const endCall = useCallback(
     async (reason?: string) => {
@@ -337,15 +351,9 @@ export default function CallScreen() {
       }
 
       await cleanup();
-      setTimeout(() => {
-        try {
-          router.back();
-        } catch {
-          router.replace('/(tabs)/calls');
-        }
-      }, 800);
+      setTimeout(returnToChat, 800);
     },
-    [id, cleanup, router]
+    [id, cleanup, conversationIdParam, returnToChat]
   );
 
   const closeCallFromPeer = useCallback(
@@ -362,15 +370,15 @@ export default function CallScreen() {
       }
 
       await cleanup();
-      setTimeout(() => {
-        try {
-          router.back();
-        } catch {
-          router.replace('/(tabs)/calls');
-        }
-      }, 800);
+      try {
+        const sounds = await import('../../src/sounds');
+        await sounds.playDisconnectTone();
+      } catch {
+        /* keep call teardown reliable even if audio playback is unavailable */
+      }
+      setTimeout(returnToChat, 350);
     },
-    [id, cleanup, router],
+    [id, cleanup, returnToChat],
   );
 
   // ---------------------------------------------------------------------------
@@ -453,11 +461,12 @@ export default function CallScreen() {
     } catch {
       /* ignore */
     }
+    startActiveCallService(id, callerName).catch(() => {});
     if (timeoutTimerRef.current) {
       clearTimeout(timeoutTimerRef.current);
       timeoutTimerRef.current = null;
     }
-  }, [InCall, id, startTimer, stopRingback]);
+  }, [InCall, callerName, id, startTimer, stopRingback]);
 
   const attemptIceRestart = useCallback(async (): Promise<boolean> => {
     const pc = pcRef.current;
@@ -792,7 +801,10 @@ export default function CallScreen() {
           if (cancelled) return;
           await onWs(signal);
         }
-      } catch {
+      } catch (error: any) {
+        if (error?.response?.status === 404 && !cancelled) {
+          closeCallFromPeer('Call ended by peer');
+        }
         /* WebSocket remains the primary signaling path. */
       }
     };
@@ -802,7 +814,7 @@ export default function CallScreen() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [id, onWs, user]);
+  }, [closeCallFromPeer, id, onWs, user]);
 
   // ---------------------------------------------------------------------------
   // Lifecycle: bootstrap the call when component mounts

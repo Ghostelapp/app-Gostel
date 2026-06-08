@@ -27,6 +27,7 @@ export default {
     disabled: 'Wyłączone',
     off: 'Wyłączone',
     on: 'Włączone',
+    send: 'Wyślij',
   },
   auth: {
     sign_in: 'Zaloguj się',
@@ -121,6 +122,13 @@ export default {
     show_more_calls: 'Pokaż jeszcze {{count}}',
     show_less: 'Pokaż mniej',
     will_disappear_when_read: 'zniknie po odczytaniu',
+    delivered: 'Dostarczona',
+    read: 'Odczytana',
+    one_time_5s: 'Jednorazówka 5 sekund',
+    one_time_5s_desc: 'Odbiorca może otworzyć to zdjęcie raz. Zniknie po 5 sekundach.',
+    one_time_tap: 'Kliknij, aby zobaczyć przez 5 sekund',
+    one_time_sent: 'Wysłano zdjęcie jednorazowe',
+    one_time_expired: 'To zdjęcie już wygasło',
   },
   calls: {
     title: 'Połączenia',

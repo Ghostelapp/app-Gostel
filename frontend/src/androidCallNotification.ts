@@ -6,6 +6,8 @@ type NativeCallNotification = {
   consumeInitialIncomingCall?: () => Promise<Record<string, string> | null>;
   getCapabilities?: () => Promise<AndroidCallCapabilities>;
   openSettings?: (kind: AndroidSettingsKind) => Promise<boolean>;
+  startActiveCall?: (callId: string, peerName: string) => Promise<boolean>;
+  stopActiveCall?: () => Promise<boolean>;
 };
 
 export type AndroidCallCapabilities = {
@@ -58,4 +60,16 @@ export async function openAndroidSettings(kind: AndroidSettingsKind): Promise<bo
   const mod = getModule();
   if (!mod?.openSettings) return false;
   return Boolean(await mod.openSettings(kind));
+}
+
+export async function startActiveCallService(callId: string, peerName: string): Promise<void> {
+  const mod = getModule();
+  if (!mod?.startActiveCall) return;
+  await mod.startActiveCall(callId, peerName);
+}
+
+export async function stopActiveCallService(): Promise<void> {
+  const mod = getModule();
+  if (!mod?.stopActiveCall) return;
+  await mod.stopActiveCall();
 }

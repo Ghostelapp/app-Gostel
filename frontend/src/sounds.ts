@@ -145,6 +145,12 @@ export async function playSound(key: SoundKey, volume = 0.6): Promise<void> {
   }
 }
 
+export async function playDisconnectTone(): Promise<void> {
+  await playSound('notification', 0.7);
+  await new Promise((resolve) => setTimeout(resolve, 240));
+  await playSound('notification', 0.7);
+}
+
 /**
  * Start an infinitely-looping ringtone for an incoming call. Stops a previous
  * ringtone first (only one can play at a time). Call `stopRingtone()` when the

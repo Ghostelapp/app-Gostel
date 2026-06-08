@@ -397,6 +397,7 @@ class MessageSendIn(BaseModel):
     encrypted: bool = False
     e2ee: Optional[E2EEMessagePayload] = None
     e2ee_attachment: Optional[E2EEAttachmentPayload] = None
+    one_time_seconds: Optional[Literal[5]] = None
 
 
 class ReactionIn(BaseModel):
@@ -1770,6 +1771,7 @@ async def list_messages(conv_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     me = user["id"]
+    member_ids = conv.get("member_ids") or []
     now = now_utc()
     now_iso = now.isoformat()
 
@@ -1824,6 +1826,14 @@ async def list_messages(conv_id: str, user: dict = Depends(get_current_user)):
                 pass
 
     # 2) Mark all unread as read (existing semantics).
+    unread = await db.messages.find(
+        {
+            "conversation_id": conv_id,
+            "sender_id": {"$ne": me},
+            "read_by": {"$ne": me},
+        },
+        {"_id": 0, "id": 1},
+    ).to_list(2000)
     await db.messages.update_many(
         {
             "conversation_id": conv_id,
@@ -1832,6 +1842,19 @@ async def list_messages(conv_id: str, user: dict = Depends(get_current_user)):
         },
         {"$addToSet": {"read_by": me}},
     )
+    if unread:
+        await broadcast_to_members(
+            member_ids,
+            {
+                "type": "messages:read",
+                "data": {
+                    "conversation_id": conv_id,
+                    "reader_id": me,
+                    "message_ids": [message["id"] for message in unread],
+                },
+            },
+            exclude=me,
+        )
 
     # 3) Fetch messages. We pull ALL and then filter per-user expiry locally.
     raw = await db.messages.find(
@@ -1840,9 +1863,21 @@ async def list_messages(conv_id: str, user: dict = Depends(get_current_user)):
 
     # 4) Filter: hide messages that have already expired FOR ME.
     visible: List[dict] = []
-    member_ids = conv.get("member_ids") or []
     fully_dead_ids: List[str] = []
     for m in raw:
+        one_time_seconds = int(m.get("one_time_seconds") or 0)
+        one_time_viewed_at = (m.get("one_time_viewed_at") or {}).get(me)
+        if one_time_seconds > 0 and one_time_viewed_at and me != m.get("sender_id"):
+            try:
+                viewed_dt = datetime.fromisoformat(
+                    one_time_viewed_at.replace("Z", "+00:00")
+                )
+                one_time_expires = viewed_dt + timedelta(seconds=one_time_seconds)
+                if now >= one_time_expires:
+                    continue
+                m["one_time_expires_at"] = one_time_expires.isoformat()
+            except Exception:
+                pass
         secs = m.get("disappear_seconds") or 0
         read_at = m.get("read_at") or {}
         # Compute per-user expiry helper
@@ -1965,6 +2000,8 @@ async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_
         if key_recipient_ids != member_ids:
             raise HTTPException(status_code=400, detail="Encrypted attachment key payload must include every conversation member")
         e2ee_attachment_doc = payload.e2ee_attachment.dict()
+    if payload.one_time_seconds and payload.kind != "image":
+        raise HTTPException(status_code=400, detail="One-time viewing is supported only for images")
 
     if payload.attachment_id:
         att = await db.attachments.find_one(
@@ -1991,6 +2028,10 @@ async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_
         "created_at": now_utc().isoformat(),
         "encrypted": bool(e2ee_doc),
     }
+    if payload.one_time_seconds:
+        msg["one_time_seconds"] = int(payload.one_time_seconds)
+        msg["one_time_viewed_at"] = {}
+        msg["screenshot_by"] = []
     if e2ee_doc:
         msg["e2ee"] = e2ee_doc
         msg["e2ee_version"] = e2ee_doc.get("version", 1)
@@ -2022,6 +2063,91 @@ async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_
     asyncio.create_task(_maybe_handle_ai(conv, msg, user))
 
     return msg
+
+
+@api.post("/messages/{msg_id}/open-once")
+async def open_message_once(msg_id: str, user: dict = Depends(get_current_user)):
+    msg = await db.messages.find_one({"id": msg_id}, {"_id": 0})
+    if not msg or msg.get("kind") != "image" or not msg.get("one_time_seconds"):
+        raise HTTPException(status_code=404, detail="One-time image not found")
+    conv = await db.conversations.find_one(
+        {"id": msg["conversation_id"], "member_ids": user["id"]}, {"_id": 0}
+    )
+    if not conv:
+        raise HTTPException(status_code=403, detail="Not a member")
+    if user["id"] == msg.get("sender_id"):
+        raise HTTPException(status_code=400, detail="Sender cannot open their one-time image")
+
+    now = now_utc()
+    viewed = (msg.get("one_time_viewed_at") or {}).get(user["id"])
+    if viewed:
+        viewed_dt = datetime.fromisoformat(viewed.replace("Z", "+00:00"))
+        expires_at = viewed_dt + timedelta(seconds=int(msg["one_time_seconds"]))
+        if now >= expires_at:
+            raise HTTPException(status_code=410, detail="One-time image expired")
+    else:
+        viewed = now.isoformat()
+        expires_at = now + timedelta(seconds=int(msg["one_time_seconds"]))
+        await db.messages.update_one(
+            {"id": msg_id}, {"$set": {f"one_time_viewed_at.{user['id']}": viewed}}
+        )
+        await broadcast_to_members(
+            conv["member_ids"],
+            {
+                "type": "message:opened_once",
+                "data": {
+                    "conversation_id": msg["conversation_id"],
+                    "message_id": msg_id,
+                    "viewer_id": user["id"],
+                    "expires_at": expires_at.isoformat(),
+                },
+            },
+            exclude=None,
+        )
+    return {"expires_at": expires_at.isoformat()}
+
+
+@api.post("/messages/{msg_id}/screenshot")
+async def report_message_screenshot(msg_id: str, user: dict = Depends(get_current_user)):
+    msg = await db.messages.find_one({"id": msg_id}, {"_id": 0})
+    if not msg or not msg.get("one_time_seconds"):
+        raise HTTPException(status_code=404, detail="One-time image not found")
+    conv = await db.conversations.find_one(
+        {"id": msg["conversation_id"], "member_ids": user["id"]}, {"_id": 0}
+    )
+    if not conv:
+        raise HTTPException(status_code=403, detail="Not a member")
+    if user["id"] == msg.get("sender_id"):
+        raise HTTPException(status_code=400, detail="Sender cannot report a screenshot")
+    viewed = (msg.get("one_time_viewed_at") or {}).get(user["id"])
+    if not viewed:
+        raise HTTPException(status_code=400, detail="Open the one-time image first")
+    viewed_dt = datetime.fromisoformat(viewed.replace("Z", "+00:00"))
+    if now_utc() >= viewed_dt + timedelta(seconds=int(msg["one_time_seconds"])):
+        raise HTTPException(status_code=410, detail="One-time image expired")
+    if user["id"] in set(msg.get("screenshot_by") or []):
+        return {"reported": True}
+
+    await db.messages.update_one({"id": msg_id}, {"$addToSet": {"screenshot_by": user["id"]}})
+    system_msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": msg["conversation_id"],
+        "sender_id": "system",
+        "sender_name": "system",
+        "kind": "system",
+        "content": f"{user.get('name') or user.get('username') or 'User'} made a screenshot of a one-time photo.",
+        "attachment_id": None,
+        "reactions": {},
+        "read_by": [user["id"]],
+        "created_at": now_utc().isoformat(),
+        "encrypted": False,
+    }
+    await db.messages.insert_one(system_msg)
+    system_msg.pop("_id", None)
+    await broadcast_to_members(
+        conv["member_ids"], {"type": "message", "data": system_msg}, exclude=None
+    )
+    return {"reported": True}
 
 
 @api.post("/messages/{msg_id}/reactions")
@@ -3134,16 +3260,31 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
         # callee ends it, it is an explicit rejection rather than a missed call.
         update_doc["status"] = "cancelled" if user["id"] == call.get("caller_id") else "rejected"
     await db.calls.update_one({"id": call_id}, {"$set": update_doc})
+    ended_event = {
+        "type": "call:ended",
+        "call_id": call_id,
+        "from": user["id"],
+        "data": {
+            "call_id": call_id,
+            "ended_by": user["id"],
+            "status": update_doc.get("status", "ended"),
+        },
+    }
+    ended_signals = [
+        {
+            **ended_event,
+            "signal_id": str(uuid.uuid4()),
+            "to": member_id,
+            "created_at": ended_iso,
+        }
+        for member_id in call.get("member_ids", [])
+        if member_id != user["id"]
+    ]
+    if ended_signals:
+        await db.call_signals.insert_many(ended_signals)
     await broadcast_to_members(
         call["member_ids"],
-        {
-            "type": "call:ended",
-            "data": {
-                "call_id": call_id,
-                "ended_by": user["id"],
-                "status": update_doc.get("status", "ended"),
-            },
-        },
+        ended_event,
     )
     if call.get("ephemeral"):
         await db.calls.delete_one({"id": call_id})
