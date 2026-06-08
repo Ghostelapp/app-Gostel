@@ -6,7 +6,9 @@ import nacl from 'tweetnacl';
 import { api } from './api';
 
 const ALGORITHM = 'nacl-box-v1' as const;
-const IDENTITY_PREFIX = 'ghostel_e2ee_identity_v1:';
+// SecureStore keys may contain only alphanumeric characters, ".", "-" and "_".
+const IDENTITY_PREFIX = 'ghostel_e2ee_identity_v1.';
+const LEGACY_IDENTITY_PREFIX = 'ghostel_e2ee_identity_v1:';
 const TRUST_PREFIX = 'ghostel_e2ee_trusted_keys_v1:';
 const PLACEHOLDER = '[encrypted message]';
 export const E2EE_UNAVAILABLE_TEXT = 'Encrypted message unavailable on this device';
@@ -80,6 +82,10 @@ function identityKey(userId: string): string {
   return `${IDENTITY_PREFIX}${userId}`;
 }
 
+function legacyIdentityKey(userId: string): string {
+  return `${LEGACY_IDENTITY_PREFIX}${userId}`;
+}
+
 function trustedKeysKey(userId: string): string {
   return `${TRUST_PREFIX}${userId}`;
 }
@@ -95,10 +101,16 @@ async function getStoredIdentity(userId: string): Promise<E2EEIdentity | null> {
     }
   }
   if (!raw) {
-    const legacy = await AsyncStorage.getItem(key);
+    const legacyKey = legacyIdentityKey(userId);
+    const currentAsync = await AsyncStorage.getItem(key);
+    const legacy = currentAsync || await AsyncStorage.getItem(legacyKey);
     if (legacy && canUseSecureStore) {
-      await SecureStore.setItemAsync(key, legacy);
-      await AsyncStorage.removeItem(key);
+      try {
+        await SecureStore.setItemAsync(key, legacy);
+        await AsyncStorage.multiRemove([key, legacyKey]);
+      } catch (error) {
+        throw new Error(`Secure E2EE identity storage unavailable: ${String(error)}`);
+      }
     }
     raw = legacy;
   }
@@ -124,7 +136,7 @@ async function setStoredIdentity(userId: string, identity: E2EEIdentity): Promis
   if (canUseSecureStore) {
     try {
       await SecureStore.setItemAsync(key, raw);
-      await AsyncStorage.removeItem(key);
+      await AsyncStorage.multiRemove([key, legacyIdentityKey(userId)]);
       return;
     } catch (error) {
       throw new Error(`Secure E2EE identity storage unavailable: ${String(error)}`);
