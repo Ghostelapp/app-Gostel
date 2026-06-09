@@ -1,5 +1,5 @@
 /**
- * English translations for Ghostel.
+ * English translations for ghostel.app.
  */
 export default {
   common: {
@@ -77,7 +77,7 @@ export default {
     e2e_notice_ready: 'Messages and attachments are end-to-end encrypted on this device.',
     e2e_required: 'This conversation requires E2EE. Wait until every member opens the app and registers device keys.',
     e2e_key_changed_title: 'Device key changed',
-    e2e_key_changed_body: 'Ghostel paused encrypted sending until you confirm the new device key for {{names}}.',
+    e2e_key_changed_body: 'ghostel.app paused encrypted sending until you confirm the new device key for {{names}}.',
     e2e_key_changed_banner: 'Device key changed for {{names}}. Confirm it before sending encrypted messages.',
     e2e_trust_new_keys: 'Trust new key',
     e2e_key_fingerprint: '{{name}}: {{fingerprint}}',
@@ -302,17 +302,17 @@ export default {
     all_permissions: 'Open all system permissions',
   },
   onboarding: {
-    welcome_title: 'Welcome to Ghostel',
+    welcome_title: 'Welcome to ghostel.app',
     welcome_subtitle: 'Private. Secure. Focused.',
     welcome_body: 'Secure enterprise messaging with calls, files and disappearing messages.',
     welcome_cta: 'Get started',
     terms_title: 'Terms & Privacy',
     terms_intro: 'Before we begin, please review and accept the terms of use and privacy policy.',
-    terms_body: "By using Ghostel you confirm that:\n\n• You are at least 16 years old, or have parental consent.\n• You will not use the app to send unlawful, harassing or harmful content.\n• Messages, attachments and call signaling SDP/ICE are end-to-end encrypted when all conversation members have device keys. Call media uses encrypted WebRTC DTLS-SRTP. Account credentials, device push tokens, last-seen timestamps and conversation membership are stored or processed on our servers as needed to operate the service.\n• You can request a full data export at any time from Profile → Export my data.\n• You can delete your data by removing chats, contacts, or your entire account from settings.\n• We may temporarily store metadata necessary for delivery, push notifications, and abuse prevention.\n• You retain full ownership of your content.\n\nFor the full terms and privacy policy, contact support@ghostel.app.",
+    terms_body: "By using ghostel.app you confirm that:\n\n• You are at least 16 years old, or have parental consent.\n• You will not use the app to send unlawful, harassing or harmful content.\n• Messages, attachments and call signaling SDP/ICE are end-to-end encrypted when all conversation members have device keys. Call media uses encrypted WebRTC DTLS-SRTP. Account credentials, device push tokens, last-seen timestamps and conversation membership are stored or processed on our servers as needed to operate the service.\n• You can request a full data export at any time from Profile → Export my data.\n• You can delete your data by removing chats, contacts, or your entire account from settings.\n• We may temporarily store metadata necessary for delivery, push notifications, and abuse prevention.\n• You retain full ownership of your content.\n\nFor the full terms and privacy policy, contact support@ghostel.app.",
     terms_accept_label: 'I have read and agree to the Terms of Use and Privacy Policy.',
     terms_continue: 'Continue',
     perms_title: 'Permissions',
-    perms_intro: 'To unlock the full experience, Ghostel needs a few permissions. You can change these later in your system settings.',
+    perms_intro: 'To unlock the full experience, ghostel.app needs a few permissions. You can change these later in your system settings.',
     perm_notifications: 'Notifications',
     perm_notifications_desc: 'Receive secure message and call alerts when the app is closed.',
     perm_microphone: 'Microphone',
@@ -327,7 +327,7 @@ export default {
     perm_open_settings: 'Open settings',
     perms_skip: 'Skip for now',
     perms_finish: 'Finish setup',
-    perm_explain_denied: 'You denied this permission. To enable it later, open your phone settings and grant access to Ghostel.',
+    perm_explain_denied: 'You denied this permission. To enable it later, open your phone settings and grant access to ghostel.app.',
   },
   errors: {
     network: 'Network error',

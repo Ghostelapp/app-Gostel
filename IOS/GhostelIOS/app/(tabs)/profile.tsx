@@ -482,7 +482,7 @@ export default function ProfileScreen() {
         </TouchableOpacity>
 
         <Text style={styles.versionText}>
-          Ghostel • v{Constants.expoConfig?.version || '1.3.0'}
+          ghostel.app • v{Constants.expoConfig?.version || '1.3.0'}
         </Text>
       </ScrollView>
 

@@ -1,4 +1,4 @@
-# Ghostel iOS
+# ghostel.app iOS
 
 Ten folder zawiera osobna wersje projektu przygotowana pod iOS.
 
@@ -6,7 +6,7 @@ Ten folder zawiera osobna wersje projektu przygotowana pod iOS.
 
 - Konfiguracja Expo/EAS pod iOS.
 - Bundle ID: `app.ghostel`.
-- Ikony i splash z aktualnego Ghostel.
+- Ikony i splash z aktualnego ghostel.app.
 - Uprawnienia iOS dla mikrofonu, kamery, zdjec, push, VoIP/audio.
 - Tymczasowe dopuszczenie HTTP/local network do testow lokalnych.
 

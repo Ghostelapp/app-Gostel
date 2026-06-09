@@ -306,7 +306,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
           <View style={styles.header}>
             <View style={styles.securePill}>
               <ShieldCheck color={theme.colors.primary} size={14} strokeWidth={2.5} />
-              <Text style={styles.secureText}>Secure Ghostel call</Text>
+              <Text style={styles.secureText}>Secure ghostel.app call</Text>
             </View>
             <Text style={styles.statusText}>Incoming audio call</Text>
           </View>
@@ -360,7 +360,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
             <Text style={styles.name} numberOfLines={2}>
               {incoming?.caller_name || 'Caller'}
             </Text>
-            <Text style={styles.sub}>is calling you in Ghostel</Text>
+            <Text style={styles.sub}>is calling you in ghostel.app</Text>
           </View>
 
           <View style={styles.actionsWrap}>

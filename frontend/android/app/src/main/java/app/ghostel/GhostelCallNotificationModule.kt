@@ -32,7 +32,7 @@ class GhostelCallNotificationModule(
     try {
       val callId = data.getStringOrEmpty("call_id")
       val callerName = data.getStringOrEmpty("caller_name")
-        .ifBlank { data.getStringOrEmpty("sender_name").ifBlank { "Ghostel" } }
+        .ifBlank { data.getStringOrEmpty("sender_name").ifBlank { "ghostel.app" } }
       if (callId.isBlank()) {
         promise.resolve(false)
         return
@@ -83,7 +83,7 @@ class GhostelCallNotificationModule(
 
       builder
         .setSmallIcon(android.R.drawable.sym_call_incoming)
-        .setContentTitle("Ghostel: $callerName")
+        .setContentTitle("ghostel.app: $callerName")
         .setContentText("Połączenie przychodzące w aplikacji")
         .setCategory(Notification.CATEGORY_CALL)
         .setPriority(Notification.PRIORITY_MAX)
@@ -241,10 +241,10 @@ class GhostelCallNotificationModule(
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     val channel = NotificationChannel(
       CHANNEL_ID,
-      "Incoming Ghostel calls",
+      "Incoming ghostel.app calls",
       NotificationManager.IMPORTANCE_MAX
     ).apply {
-      description = "Full-screen Ghostel incoming call alerts"
+      description = "Full-screen ghostel.app incoming call alerts"
       lockscreenVisibility = Notification.VISIBILITY_PRIVATE
       setBypassDnd(true)
       enableVibration(true)

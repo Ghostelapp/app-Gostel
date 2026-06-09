@@ -1,8 +1,8 @@
-# Ghostel - uruchomienie na zewnetrznym serwerze
+# ghostel.app - uruchomienie na zewnetrznym serwerze
 
 Ten plik jest napisany najprosciej jak sie da. Celem jest postawienie:
 
-- backendu aplikacji Ghostel,
+- backendu aplikacji ghostel.app,
 - strony WWW i panelu z repo `Ghostelapp/GhostelAPPweb`,
 - MongoDB,
 - Nginx + HTTPS,
@@ -20,7 +20,7 @@ Moja rekomendacja na start:
 - sensowny start produkcyjny: 4 vCPU, 8 GB RAM, 120 GB NVMe,
 - gdy bedzie wiecej uzytkownikow: osobna baza MongoDB albo wiekszy VPS.
 
-Najlepszy wybor dla Ghostel na start:
+Najlepszy wybor dla ghostel.app na start:
 
 1. Hetzner Cloud - dobra cena/wydajnosc, lokalizacje w Europie, prosta administracja. Wybralbym jako pierwszy wybor, jesli nie potrzebujesz polskiego panelu i polskiego wsparcia.
 2. OVHcloud VPS - dobry wybor, jesli chcesz panel po polsku, ochrone Anty-DDoS, codzienne backupy w cenie i europejskie centrum danych.
@@ -176,7 +176,7 @@ git clone --branch GhostelWebApp --single-branch https://github.com/Ghostelapp/G
 
 Jesli repo aplikacji jest prywatne, uzyj adresu SSH z GitHuba.
 
-## 8. Backend aplikacji Ghostel
+## 8. Backend aplikacji ghostel.app
 
 Wejdz do backendu:
 
@@ -201,7 +201,7 @@ Ustaw minimum:
 MONGO_URL=mongodb://127.0.0.1:27017
 DB_NAME=ghostel
 JWT_SECRET=TU_WKLEJ_DLUGI_LOSOWY_SEKRET
-APP_NAME=Ghostel
+APP_NAME=ghostel.app
 
 ADMIN_EMAIL=twoj-admin@ghostel.app
 ADMIN_PASSWORD=TU_MOCNE_HASLO_ADMINA
@@ -298,7 +298,7 @@ Wklej:
 
 ```ini
 [Unit]
-Description=Ghostel mobile app backend
+Description=ghostel.app mobile app backend
 After=network.target docker.service
 
 [Service]
@@ -379,7 +379,7 @@ Wklej:
 
 ```ini
 [Unit]
-Description=Ghostel website/admin backend
+Description=ghostel.app website/admin backend
 After=network.target docker.service
 
 [Service]

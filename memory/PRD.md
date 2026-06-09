@@ -1,4 +1,4 @@
-# Ghostel — PRD
+# ghostel.app — PRD
 
 ## Iteration 5 (Current) — AI Assistant `@ghost`
 
@@ -14,7 +14,7 @@
 
 ### Earlier iterations
 - **Iter 4**: Admin panel + endpoints; expo-audio voice recorder; logo swap (real JPG on native, shield circle on web).
-- **Iter 3**: Rebrand Silentel → Ghostel; 5-sec polling fallback for messages.
+- **Iter 3**: Rebrand Silentel → ghostel.app; 5-sec polling fallback for messages.
 - **Iter 2**: File uploads, voice messages, WebRTC calls (signaling + UI), Expo push pipeline.
 - **Iter 1**: JWT + TOTP 2FA, 1-on-1 & group chats, reactions, search, presence.
 
@@ -41,11 +41,11 @@
   - Users list with role / 2FA / push badges; change role inline (admin/moderator/user/guest); soft-delete account (cannot self-delete / self-demote; deleting a user also pulls them from every conversation's `member_ids`).
   - Non-admins see a polite "Admin access required" lock screen; tab itself is hidden via `href: null`.
 - **Voice recording** rewritten on top of **`expo-audio`** (SDK 54 supported API; replaces deprecated `expo-av.Audio.Recording` that was silently failing on iOS Expo Go).
-- **Logo swap** — login screen renders the real `Ghostel.jpg` via `<Image>` on iOS/Android and falls back to the cyan-shield circle on web (avoids react-native-web Image-constructor crash).
+- **Logo swap** — login screen renders the real `ghostel.app.jpg` via `<Image>` on iOS/Android and falls back to the cyan-shield circle on web (avoids react-native-web Image-constructor crash).
 - **demo@ghostel.app** seeded automatically (`Demo@2026!`).
 
 ## Iteration 3 — Rebrand + reliability
-Silentel → **Ghostel** across app.json (name/slug/icon/splash/bundle), backend (`ghostel_db`, `admin@ghostel.app`), every screen. 5-second polling fallback merges with WebSocket so reconnect gaps no longer lose messages.
+Silentel → **ghostel.app** across app.json (name/slug/icon/splash/bundle), backend (`ghostel_db`, `admin@ghostel.app`), every screen. 5-second polling fallback merges with WebSocket so reconnect gaps no longer lose messages.
 
 ## Iteration 2 — File + voice + calls + push
 Uploads, voice messages, WebRTC voice calls (signaling), Expo Push pipeline (works only in EAS dev builds — Expo Go ≥ SDK 53 doesn't support remote push).
@@ -71,7 +71,7 @@ JWT + TOTP 2FA, 1-on-1 and group chats, reactions, search, presence.
 ## Iteration 3 (Current) — Rebrand + Reliability fixes
 
 ### Delivered
-- **Rebrand to Ghostel** — app name, splash, login screen, app.json (icon, splash, slug, bundle ID), backend (DB name `ghostel_db`, default admin `admin@ghostel.app`, log lines).
+- **Rebrand to ghostel.app** — app name, splash, login screen, app.json (icon, splash, slug, bundle ID), backend (DB name `ghostel_db`, default admin `admin@ghostel.app`, log lines).
 - **Voice recording resilience** — web `MediaRecorder` now picks a browser-supported MIME type (opus → webm → mp4 → ogg fallback chain); helpful errors surfaced to the user; native `expo-av` path wraps every step in a try/catch with descriptive messages.
 - **Real-time messaging fallback** — chat screen now combines WebSocket push with a 5-second polling refresh that merges by message ID. WebSocket reconnect gaps no longer cause missed messages.
 - **Push noise removed** — `expo-notifications` registration now silently no-ops in Expo Go (where remote push was removed in SDK 53) and when no EAS project ID is configured. To actually receive push banners, build with EAS Build (Emergent publish button).

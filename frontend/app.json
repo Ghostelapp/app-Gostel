@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "Ghostel",
+    "name": "ghostel.app",
     "slug": "ghostel",
-    "version": "1.4.10",
+    "version": "1.4.11",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "ghostel",

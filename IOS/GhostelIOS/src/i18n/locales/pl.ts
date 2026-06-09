@@ -1,5 +1,5 @@
 /**
- * Polish translations for Ghostel.
+ * Polish translations for ghostel.app.
  */
 export default {
   common: {
@@ -76,7 +76,7 @@ export default {
     e2e_notice_ready: 'Wiadomości i załączniki są szyfrowane end-to-end na tym urządzeniu.',
     e2e_required: 'Ta rozmowa wymaga E2EE. Poczekaj, aż wszyscy członkowie otworzą aplikację i zarejestrują klucze urządzeń.',
     e2e_key_changed_title: 'Klucz urządzenia się zmienił',
-    e2e_key_changed_body: 'Ghostel wstrzymał wysyłanie szyfrowane, dopóki nie potwierdzisz nowego klucza urządzenia dla {{names}}.',
+    e2e_key_changed_body: 'ghostel.app wstrzymał wysyłanie szyfrowane, dopóki nie potwierdzisz nowego klucza urządzenia dla {{names}}.',
     e2e_key_changed_banner: 'Klucz urządzenia zmienił się: {{names}}. Potwierdź go przed wysłaniem zaszyfrowanej wiadomości.',
     e2e_trust_new_keys: 'Zaufaj nowemu kluczowi',
     e2e_key_fingerprint: '{{name}}: {{fingerprint}}',
@@ -277,17 +277,17 @@ export default {
     enable: 'Dźwięki włączone',
   },
   onboarding: {
-    welcome_title: 'Witaj w Ghostel',
+    welcome_title: 'Witaj w ghostel.app',
     welcome_subtitle: 'Prywatnie. Bezpiecznie. Spokojnie.',
     welcome_body: 'Bezpieczna komunikacja firmowa z połączeniami, plikami i znikającymi wiadomościami.',
     welcome_cta: 'Zaczynamy',
     terms_title: 'Regulamin i prywatność',
     terms_intro: 'Zanim zaczniesz, zapoznaj się z regulaminem korzystania i polityką prywatności.',
-    terms_body: 'Korzystając z Ghostel potwierdzasz, że:\n\n• Masz co najmniej 16 lat lub zgodę opiekuna.\n• Nie będziesz używać aplikacji do treści niezgodnych z prawem, nękania ani szkodliwych.\n• Wiadomości, załączniki oraz sygnalizacja połączeń SDP/ICE są szyfrowane end-to-end, gdy wszyscy członkowie rozmowy mają klucze urządzeń. Media połączeń używają szyfrowanego WebRTC DTLS-SRTP. Dane konta, token push urządzenia, oznaczenia "ostatnio widziany" oraz przynależność do rozmów są przechowywane lub przetwarzane na naszych serwerach w celu działania usługi.\n• W każdej chwili możesz zażądać pełnego eksportu swoich danych z Profil → Eksportuj moje dane.\n• Możesz usunąć dane usuwając czaty, kontakty lub całe konto z ustawień.\n• Możemy tymczasowo przechowywać metadane niezbędne do dostarczania, powiadomień push i zapobiegania nadużyciom.\n• Zachowujesz pełną własność swoich treści.\n\nPełny regulamin i polityka prywatności: support@ghostel.app.',
+    terms_body: 'Korzystając z ghostel.app potwierdzasz, że:\n\n• Masz co najmniej 16 lat lub zgodę opiekuna.\n• Nie będziesz używać aplikacji do treści niezgodnych z prawem, nękania ani szkodliwych.\n• Wiadomości, załączniki oraz sygnalizacja połączeń SDP/ICE są szyfrowane end-to-end, gdy wszyscy członkowie rozmowy mają klucze urządzeń. Media połączeń używają szyfrowanego WebRTC DTLS-SRTP. Dane konta, token push urządzenia, oznaczenia "ostatnio widziany" oraz przynależność do rozmów są przechowywane lub przetwarzane na naszych serwerach w celu działania usługi.\n• W każdej chwili możesz zażądać pełnego eksportu swoich danych z Profil → Eksportuj moje dane.\n• Możesz usunąć dane usuwając czaty, kontakty lub całe konto z ustawień.\n• Możemy tymczasowo przechowywać metadane niezbędne do dostarczania, powiadomień push i zapobiegania nadużyciom.\n• Zachowujesz pełną własność swoich treści.\n\nPełny regulamin i polityka prywatności: support@ghostel.app.',
     terms_accept_label: 'Przeczytałem(-am) i akceptuję Regulamin oraz Politykę Prywatności.',
     terms_continue: 'Dalej',
     perms_title: 'Uprawnienia',
-    perms_intro: 'Aby w pełni korzystać z Ghostel, potrzebujemy kilku uprawnień. W każdej chwili możesz je zmienić w ustawieniach systemowych.',
+    perms_intro: 'Aby w pełni korzystać z ghostel.app, potrzebujemy kilku uprawnień. W każdej chwili możesz je zmienić w ustawieniach systemowych.',
     perm_notifications: 'Powiadomienia',
     perm_notifications_desc: 'Otrzymuj powiadomienia o wiadomościach i połączeniach, gdy aplikacja jest zamknięta.',
     perm_microphone: 'Mikrofon',
@@ -302,7 +302,7 @@ export default {
     perm_open_settings: 'Otwórz ustawienia',
     perms_skip: 'Pomiń na razie',
     perms_finish: 'Zakończ konfigurację',
-    perm_explain_denied: 'Odmówiono tego uprawnienia. Aby je włączyć później, otwórz ustawienia telefonu i przyznaj dostęp aplikacji Ghostel.',
+    perm_explain_denied: 'Odmówiono tego uprawnienia. Aby je włączyć później, otwórz ustawienia telefonu i przyznaj dostęp aplikacji ghostel.app.',
   },
   errors: {
     network: 'Błąd sieci',

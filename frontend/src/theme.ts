@@ -1,4 +1,4 @@
-// Theme tokens for Ghostel enterprise dark UI
+// Theme tokens for ghostel.app enterprise dark UI
 export const theme = {
   colors: {
     background: '#0f1419',

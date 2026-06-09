@@ -1,13 +1,13 @@
 {
   "name": "ghostel",
-  "productName": "Ghostel",
-  "description": "Ghostel private messaging desktop client",
+  "productName": "ghostel.app",
+  "description": "ghostel.app private messaging desktop client",
   "author": {
-    "name": "Ghostel",
+    "name": "ghostel.app",
     "email": "support@ghostel.app"
   },
   "main": "./index.js",
-  "version": "1.4.10",
+  "version": "1.4.11",
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
@@ -123,8 +123,8 @@
   },
   "build": {
     "appId": "app.ghostel.desktop",
-    "productName": "Ghostel",
-    "copyright": "Copyright © 2026 Ghostel",
+    "productName": "ghostel.app",
+    "copyright": "Copyright © 2026 ghostel.app",
     "extraMetadata": {
       "main": "desktop/main.cjs"
     },
@@ -157,7 +157,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Ghostel",
+      "shortcutName": "ghostel.app",
       "deleteAppDataOnUninstall": false
     }
   },

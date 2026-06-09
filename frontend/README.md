@@ -1,6 +1,6 @@
-# Ghostel Frontend
+# ghostel.app Frontend
 
-Expo / React Native frontend for Ghostel.
+Expo / React Native frontend for ghostel.app.
 
 ## Linux Quick Start
 

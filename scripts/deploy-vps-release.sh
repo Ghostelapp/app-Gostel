@@ -5,7 +5,7 @@ APP_ROOT="${APP_ROOT:-$HOME/apps/app-Gostel}"
 WEBSITE_ROOT="${WEBSITE_ROOT:-$HOME/apps/GhostelAPPweb}"
 WEB_APP_ROOT="${WEB_APP_ROOT:-/var/www/ghostel-web-app}"
 
-echo "Updating Ghostel backend and browser app..."
+echo "Updating ghostel.app backend and browser app..."
 cd "$APP_ROOT"
 git pull --ff-only origin main
 
@@ -36,4 +36,4 @@ curl -fsS https://api.ghostel.app/api/ >/dev/null
 curl -fsSI https://app.ghostel.app >/dev/null
 curl -fsSI https://ghostel.app >/dev/null
 
-echo "Ghostel release deployed successfully."
+echo "ghostel.app release deployed successfully."

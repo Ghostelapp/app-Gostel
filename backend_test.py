@@ -1,4 +1,4 @@
-"""Phase D backend integration tests for Ghostel.
+"""Phase D backend integration tests for ghostel.app.
 
 Targets:
 - DELETE /api/conversations/{conv_id}

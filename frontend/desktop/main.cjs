@@ -101,7 +101,7 @@ function createWindow() {
     minWidth: 390,
     minHeight: 640,
     show: false,
-    title: "Ghostel",
+    title: "ghostel.app",
     backgroundColor: "#0f1419",
     icon: join(__dirname, "..", "assets", "images", "icon.png"),
     webPreferences: {
@@ -167,7 +167,7 @@ app.whenReady().then(async () => {
   });
 }).catch((error) => {
   log(`Startup failed: ${error?.stack || error}`);
-  dialog.showErrorBox("Ghostel", "Nie udało się uruchomić aplikacji Ghostel.");
+  dialog.showErrorBox("ghostel.app", "Nie udało się uruchomić aplikacji ghostel.app.");
   app.quit();
 });
 

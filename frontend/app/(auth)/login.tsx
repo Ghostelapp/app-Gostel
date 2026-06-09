@@ -73,7 +73,7 @@ export default function LoginScreen() {
                 resizeMode="contain"
               />
             )}
-            <Text style={styles.brandTitle}>Ghostel</Text>
+            <Text style={styles.brandTitle}>ghostel.app</Text>
             <Text style={styles.brandSub}>{t('auth.brand_subtitle')}</Text>
           </View>
 

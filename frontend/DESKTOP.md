@@ -1,6 +1,6 @@
-# Ghostel Desktop
+# ghostel.app Desktop
 
-Ghostel Desktop packages the Expo web client as a standalone Windows
+ghostel.app Desktop packages the Expo web client as a standalone Windows
 application. It uses the same account and production API as Android and the
 browser version.
 

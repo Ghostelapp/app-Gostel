@@ -1,4 +1,4 @@
-# Ghostel Web App
+# ghostel.app Web App
 
 The Expo frontend can also run as an installable browser application at
 `https://app.ghostel.app`.

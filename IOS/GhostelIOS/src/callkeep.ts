@@ -39,7 +39,7 @@ export type IncomingCallInfo = {
 
 const callKeepOptions = {
   ios: {
-    appName: 'Ghostel',
+    appName: 'ghostel.app',
     supportsVideo: false,
     includesCallsInRecents: false,
     maximumCallGroups: '1',

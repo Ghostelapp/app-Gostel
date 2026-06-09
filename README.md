@@ -1,6 +1,6 @@
-# Ghostel
+# ghostel.app
 
-Ghostel is a mobile/web communication app with a FastAPI backend and an Expo frontend.
+ghostel.app is a mobile/web communication app with a FastAPI backend and an Expo frontend.
 
 ## Setup
 

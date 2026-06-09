@@ -7,7 +7,7 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleDisplayName</key>
-    <string>Ghostel</string>
+    <string>ghostel.app</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -44,15 +44,15 @@
       <true/>
     </dict>
     <key>NSCameraUsageDescription</key>
-    <string>Ghostel needs camera access so you can take and send photos in chats.</string>
+    <string>ghostel.app needs camera access so you can take and send photos in chats.</string>
     <key>NSFaceIDUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to access your Face ID biometric data.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Ghostel needs local network access only for local development and device testing.</string>
+    <string>ghostel.app needs local network access only for local development and device testing.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Ghostel needs microphone access for encrypted voice calls and voice messages.</string>
+    <string>ghostel.app needs microphone access for encrypted voice calls and voice messages.</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>Ghostel needs photo library access so you can choose images to send in chats.</string>
+    <string>ghostel.app needs photo library access so you can choose images to send in chats.</string>
     <key>NSUserActivityTypes</key>
     <array>
       <string>$(PRODUCT_BUNDLE_IDENTIFIER).expo.index_route</string>

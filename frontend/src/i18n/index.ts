@@ -1,5 +1,5 @@
 /**
- * i18n initialization for Ghostel.
+ * i18n initialization for ghostel.app.
  *
  * Storage strategy:
  *  - User-selected language is persisted in AsyncStorage under key `ghostel:lang`

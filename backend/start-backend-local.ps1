@@ -37,7 +37,7 @@ if (-not $mongoOpen) {
 }
 
 Write-Host ""
-Write-Host "Ghostel backend is starting at:"
+Write-Host "ghostel.app backend is starting at:"
 Write-Host "  http://127.0.0.1:8000/api/"
 Write-Host ""
 Write-Host "Keep this window open while using the app."

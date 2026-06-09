@@ -1,6 +1,6 @@
 {
-  "name": "Ghostel",
-  "short_name": "Ghostel",
+  "name": "ghostel.app",
+  "short_name": "ghostel.app",
   "description": "Prywatny komunikator z szyfrowanymi rozmowami, polaczeniami i kontaktami.",
   "lang": "pl",
   "start_url": "/",

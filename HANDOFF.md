@@ -1,6 +1,6 @@
-# Ghostel Handoff
+# ghostel.app Handoff
 
-This file is a quick handoff for continuing Ghostel on a new computer.
+This file is a quick handoff for continuing ghostel.app on a new computer.
 
 ## Repository
 
@@ -212,5 +212,5 @@ frontend/scripts/patch-webrtc.js
 Start a new Codex conversation on the new computer and say:
 
 ```text
-Kontynuujemy projekt Ghostel z repo Ghostelapp/app-Gostel. Backend to FastAPI/MongoDB na porcie 8000, frontend to Expo/React Native Android. Ostatnio naprawiliśmy Android Network Error przez usesCleartextTraffic i wypchnęliśmy pierwszy commit na GitHuba. Przeczytaj HANDOFF.md i pomóż uruchomić projekt lokalnie.
+Kontynuujemy projekt ghostel.app z repo Ghostelapp/app-Gostel. Backend to FastAPI/MongoDB na porcie 8000, frontend to Expo/React Native Android. Ostatnio naprawiliśmy Android Network Error przez usesCleartextTraffic i wypchnęliśmy pierwszy commit na GitHuba. Przeczytaj HANDOFF.md i pomóż uruchomić projekt lokalnie.
 ```

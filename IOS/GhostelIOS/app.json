@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Ghostel",
+    "name": "ghostel.app",
     "slug": "ghostel",
     "version": "1.4.0",
     "orientation": "portrait",
@@ -13,10 +13,10 @@
       "bundleIdentifier": "app.ghostel",
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Ghostel needs microphone access for encrypted voice calls and voice messages.",
-        "NSCameraUsageDescription": "Ghostel needs camera access so you can take and send photos in chats.",
-        "NSPhotoLibraryUsageDescription": "Ghostel needs photo library access so you can choose images to send in chats.",
-        "NSLocalNetworkUsageDescription": "Ghostel needs local network access only for local development and device testing.",
+        "NSMicrophoneUsageDescription": "ghostel.app needs microphone access for encrypted voice calls and voice messages.",
+        "NSCameraUsageDescription": "ghostel.app needs camera access so you can take and send photos in chats.",
+        "NSPhotoLibraryUsageDescription": "ghostel.app needs photo library access so you can choose images to send in chats.",
+        "NSLocalNetworkUsageDescription": "ghostel.app needs local network access only for local development and device testing.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         },

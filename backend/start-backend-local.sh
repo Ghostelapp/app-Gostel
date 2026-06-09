@@ -20,6 +20,6 @@ if ! timeout 1 bash -c '</dev/tcp/127.0.0.1/27017' >/dev/null 2>&1; then
   exit 1
 fi
 
-printf 'Ghostel backend: http://127.0.0.1:8000/api/\n'
+printf 'ghostel.app backend: http://127.0.0.1:8000/api/\n'
 . .venv/bin/activate
 exec python -m uvicorn server:app --host 0.0.0.0 --port 8000 --reload

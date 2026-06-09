@@ -17,7 +17,7 @@ class GhostelActiveCallService : Service() {
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    val peerName = intent?.getStringExtra(EXTRA_PEER_NAME).orEmpty().ifBlank { "Ghostel" }
+    val peerName = intent?.getStringExtra(EXTRA_PEER_NAME).orEmpty().ifBlank { "ghostel.app" }
     val openAppIntent = Intent(this, MainActivity::class.java).apply {
       this.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
     }
@@ -35,7 +35,7 @@ class GhostelActiveCallService : Service() {
     }
     val notification = builder
       .setSmallIcon(android.R.drawable.sym_call_outgoing)
-      .setContentTitle("Ghostel")
+      .setContentTitle("ghostel.app")
       .setContentText("Aktywne połączenie z $peerName")
       .setCategory(Notification.CATEGORY_CALL)
       .setVisibility(Notification.VISIBILITY_PRIVATE)
@@ -56,10 +56,10 @@ class GhostelActiveCallService : Service() {
     manager.createNotificationChannel(
       NotificationChannel(
         CHANNEL_ID,
-        "Active Ghostel calls",
+        "Active ghostel.app calls",
         NotificationManager.IMPORTANCE_LOW
       ).apply {
-        description = "Keeps an active Ghostel call running in the background"
+        description = "Keeps an active ghostel.app call running in the background"
         setSound(null, null)
         enableVibration(false)
       }

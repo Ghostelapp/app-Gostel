@@ -1,5 +1,5 @@
 /**
- * German translations for Ghostel.
+ * German translations for ghostel.app.
  *
  * English remains the fallback for keys which are added in future releases.
  */
@@ -77,7 +77,7 @@ export default {
     e2e_notice_ready: 'Nachrichten und Anhänge sind auf diesem Gerät Ende-zu-Ende-verschlüsselt.',
     e2e_required: 'Diese Unterhaltung erfordert E2EE. Warte, bis alle Mitglieder ihre Geräteschlüssel registriert haben.',
     e2e_key_changed_title: 'Geräteschlüssel geändert',
-    e2e_key_changed_body: 'Ghostel hat das verschlüsselte Senden pausiert. Bestätige den neuen Geräteschlüssel für {{names}}.',
+    e2e_key_changed_body: 'ghostel.app hat das verschlüsselte Senden pausiert. Bestätige den neuen Geräteschlüssel für {{names}}.',
     e2e_key_changed_banner: 'Geräteschlüssel für {{names}} geändert. Bestätige ihn vor dem Senden.',
     e2e_trust_new_keys: 'Neuem Schlüssel vertrauen',
     security_title: 'Sicherheit der Unterhaltung',
@@ -292,7 +292,7 @@ export default {
   },
   onboarding: {
     ...en.onboarding,
-    welcome_title: 'Willkommen bei Ghostel',
+    welcome_title: 'Willkommen bei ghostel.app',
     welcome_subtitle: 'Privat. Sicher. Fokussiert.',
     welcome_body: 'Sichere Kommunikation mit Anrufen, Dateien und verschwindenden Nachrichten.',
     welcome_cta: 'Loslegen',
@@ -301,7 +301,7 @@ export default {
     terms_accept_label: 'Ich habe die Nutzungsbedingungen und Datenschutzerklärung gelesen und stimme ihnen zu.',
     terms_continue: 'Weiter',
     perms_title: 'Berechtigungen',
-    perms_intro: 'Ghostel benötigt einige Berechtigungen. Du kannst sie später in den Systemeinstellungen ändern.',
+    perms_intro: 'ghostel.app benötigt einige Berechtigungen. Du kannst sie später in den Systemeinstellungen ändern.',
     perm_notifications: 'Benachrichtigungen',
     perm_notifications_desc: 'Sichere Nachrichten- und Anrufhinweise empfangen, wenn die App geschlossen ist.',
     perm_microphone: 'Mikrofon',

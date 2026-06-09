@@ -25,7 +25,7 @@ check_cmd() {
   fi
 }
 
-printf 'Ghostel test environment check\n'
+printf 'ghostel.app test environment check\n'
 printf 'Root: %s\n\n' "$ROOT_DIR"
 
 check_cmd python3 "install python3 python3-venv python3-pip"

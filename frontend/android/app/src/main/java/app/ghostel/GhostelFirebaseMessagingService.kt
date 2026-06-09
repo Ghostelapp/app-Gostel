@@ -29,7 +29,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
     val callId = data["call_id"].orEmpty()
     val callerId = data["caller_id"].orEmpty()
     val callerName = data["caller_name"].orEmpty()
-      .ifBlank { data["sender_name"].orEmpty().ifBlank { "Ghostel" } }
+      .ifBlank { data["sender_name"].orEmpty().ifBlank { "ghostel.app" } }
     if (callId.isBlank() || callerId.isBlank()) return
 
     try {
@@ -92,7 +92,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
 
     builder
       .setSmallIcon(android.R.drawable.sym_call_incoming)
-      .setContentTitle("Ghostel: $callerName")
+      .setContentTitle("ghostel.app: $callerName")
       .setContentText("Połączenie przychodzące w aplikacji")
       .setCategory(Notification.CATEGORY_CALL)
       .setPriority(Notification.PRIORITY_MAX)
@@ -136,10 +136,10 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     val channel = NotificationChannel(
       GhostelCallNotificationModule.CHANNEL_ID,
-      "Ghostel full-screen calls",
+      "ghostel.app full-screen calls",
       NotificationManager.IMPORTANCE_MAX
     ).apply {
-      description = "Full-screen Ghostel incoming call alerts"
+      description = "Full-screen ghostel.app incoming call alerts"
       lockscreenVisibility = Notification.VISIBILITY_PRIVATE
       setBypassDnd(true)
       enableVibration(true)

@@ -6,18 +6,18 @@ export default function Root({ children }: PropsWithChildren) {
   return (
     <html lang="pl" style={{ height: "100%" }}>
       <head>
-        <title>Ghostel</title>
+        <title>ghostel.app</title>
         <meta charSet="utf-8" />
         <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
-        <meta name="application-name" content="Ghostel" />
+        <meta name="application-name" content="ghostel.app" />
         <meta name="theme-color" content="#0f1419" />
         <meta
           name="description"
-          content="Ghostel - prywatny komunikator z szyfrowanymi rozmowami, połączeniami i kontaktami."
+          content="ghostel.app - prywatny komunikator z szyfrowanymi rozmowami, połączeniami i kontaktami."
         />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        <meta name="apple-mobile-web-app-title" content="Ghostel" />
+        <meta name="apple-mobile-web-app-title" content="ghostel.app" />
         <meta name="robots" content="noindex,nofollow" />
         <meta
           name="viewport"

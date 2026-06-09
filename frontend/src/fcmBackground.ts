@@ -8,7 +8,7 @@
  *   1. Wake the JS engine via the Headless task (registered automatically
  *      by @react-native-firebase/messaging).
  *   2. Be dispatched to the handler below.
- *   3. We then show a Ghostel call notification on the dedicated `calls`
+ *   3. We then show a ghostel.app call notification on the dedicated `calls`
  *      channel. Tapping it opens the app call screen.
  *
  * Foreground messages are handled here too, but since the user is already in
@@ -145,10 +145,10 @@ async function _showIncomingCallPushNotification(data: Record<string, string>): 
       /* channels are also configured during app boot */
     }
 
-    const callerName = data.caller_name || data.sender_name || 'Ghostel';
+    const callerName = data.caller_name || data.sender_name || 'ghostel.app';
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: data.title || `Ghostel: ${callerName}`,
+        title: data.title || `ghostel.app: ${callerName}`,
         body: data.body || 'Połączenie przychodzące w aplikacji',
         sound: 'ringtone',
         data: {

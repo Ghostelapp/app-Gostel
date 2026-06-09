@@ -9,7 +9,7 @@ Set-Location $PSScriptRoot
 npx.cmd expo export --platform web --output-dir dist-local --clear --dev
 
 Write-Host ""
-Write-Host "Ghostel web is available at:"
+Write-Host "ghostel.app web is available at:"
 Write-Host "  http://127.0.0.1:19006"
 Write-Host ""
 Write-Host "Keep this window open while using the app."
