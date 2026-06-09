@@ -38,7 +38,8 @@
         "WAKE_LOCK",
         "TURN_SCREEN_ON",
         "DISABLE_KEYGUARD"
-      ]
+      ],
+      "versionCode": 14
     },
     "web": {
       "bundler": "metro",
