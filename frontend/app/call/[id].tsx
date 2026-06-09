@@ -546,7 +546,10 @@ export default function CallScreen() {
 
       // remote track → attach
       pc.ontrack = (e: any) => {
-        if (e?.streams?.[0]) attachRemoteStream(e.streams[0]);
+        if (e?.streams?.[0]) {
+          attachRemoteStream(e.streams[0]);
+          markConnected();
+        }
       };
       // ICE candidates → relay to peer
       pc.onicecandidate = (e: any) => {
@@ -1048,7 +1051,7 @@ export default function CallScreen() {
       case 'ended':
         return 'Call ended';
       default:
-        return '';
+        return elapsedSec > 0 ? fmtElapsed() : '';
     }
   })();
 

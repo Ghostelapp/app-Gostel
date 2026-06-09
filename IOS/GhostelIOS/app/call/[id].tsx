@@ -410,6 +410,30 @@ export default function CallScreen() {
     // once InCallManager is started.
   }, []);
 
+  const markConnected = useCallback(() => {
+    if (endedRef.current) return;
+    stopRingback();
+    setErrMsg(null);
+    if (!inCallStartedRef.current && Platform.OS !== 'web') {
+      try {
+        InCall.start({ media: 'audio', auto: true });
+        InCall.setKeepScreenOn(true);
+        inCallStartedRef.current = true;
+      } catch {}
+    }
+    startTimer();
+    setStatus('connected');
+    try {
+      markCallActive(id);
+    } catch {
+      /* ignore */
+    }
+    if (timeoutTimerRef.current) {
+      clearTimeout(timeoutTimerRef.current);
+      timeoutTimerRef.current = null;
+    }
+  }, [InCall, id, startTimer, stopRingback]);
+
   const setupPeer = useCallback(
     (stream: any): any => {
       let pc: any;
@@ -427,7 +451,10 @@ export default function CallScreen() {
 
       // remote track → attach
       pc.ontrack = (e: any) => {
-        if (e?.streams?.[0]) attachRemoteStream(e.streams[0]);
+        if (e?.streams?.[0]) {
+          attachRemoteStream(e.streams[0]);
+          markConnected();
+        }
       };
       // ICE candidates → relay to peer
       pc.onicecandidate = (e: any) => {
@@ -443,30 +470,7 @@ export default function CallScreen() {
       pc.oniceconnectionstatechange = () => {
         const st = pc.iceConnectionState;
         if (st === 'connected' || st === 'completed') {
-          if (!endedRef.current) {
-            stopRingback();
-            // Start InCallManager audio routing on FIRST connect
-            if (!inCallStartedRef.current && Platform.OS !== 'web') {
-              try {
-                InCall.start({ media: 'audio', auto: true });
-                InCall.setKeepScreenOn(true);
-                inCallStartedRef.current = true;
-              } catch {}
-            }
-            startTimer();
-            setStatus('connected');
-            // Tell OS-level CallKeep that the call is active (so the system
-            // call log + foreground service notification show the right state).
-            try {
-              markCallActive(id);
-            } catch {
-              /* ignore */
-            }
-            if (timeoutTimerRef.current) {
-              clearTimeout(timeoutTimerRef.current);
-              timeoutTimerRef.current = null;
-            }
-          }
+          markConnected();
         } else if (st === 'failed') {
           setErrMsg('Network connection failed');
           setStatus('failed');
@@ -490,7 +494,7 @@ export default function CallScreen() {
       }
       return pc;
     },
-    [attachRemoteStream, stopRingback, startTimer, endCall, InCall, sendEncryptedSignal]
+    [attachRemoteStream, markConnected, endCall, sendEncryptedSignal]
   );
 
   const drainPendingIce = useCallback(async () => {
@@ -867,7 +871,7 @@ export default function CallScreen() {
       case 'ended':
         return 'Call ended';
       default:
-        return '';
+        return elapsedSec > 0 ? fmtElapsed() : '';
     }
   })();
 
