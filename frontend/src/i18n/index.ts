@@ -3,13 +3,12 @@
  *
  * Storage strategy:
  *  - User-selected language is persisted in AsyncStorage under key `ghostel:lang`
- *  - On first launch, falls back to device locale via expo-localization
+ *  - On first launch, defaults to English unless the user already chose a language
  *  - Supported: 'en' (default), 'pl', 'de'
  */
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Localization from 'expo-localization';
 import en from './locales/en';
 import pl from './locales/pl';
 import de from './locales/de';
@@ -17,21 +16,6 @@ import de from './locales/de';
 export const LANG_STORAGE_KEY = 'ghostel:lang';
 export const SUPPORTED_LANGS = ['en', 'pl', 'de'] as const;
 export type AppLang = (typeof SUPPORTED_LANGS)[number];
-
-function detectDeviceLang(): AppLang {
-  try {
-    const locales = Localization.getLocales();
-    for (const loc of locales) {
-      const code = (loc.languageCode || '').toLowerCase();
-      if (SUPPORTED_LANGS.includes(code as AppLang)) {
-        return code as AppLang;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return 'en';
-}
 
 let _initialized = false;
 
@@ -59,7 +43,7 @@ function ensureI18nInitializedSync(initial: AppLang) {
   _initialized = true;
 }
 
-ensureI18nInitializedSync(detectDeviceLang());
+ensureI18nInitializedSync('en');
 
 export async function initI18n(): Promise<AppLang> {
   let saved: AppLang | null = null;
@@ -71,7 +55,7 @@ export async function initI18n(): Promise<AppLang> {
   } catch {
     /* ignore */
   }
-  const initial = saved || detectDeviceLang();
+  const initial = saved || 'en';
 
   ensureI18nInitializedSync(initial);
   await i18n.changeLanguage(initial);
