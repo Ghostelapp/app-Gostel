@@ -1,38 +1,5 @@
 # ghostel.app — PRD
 
-## Iteration 5 (Current) — AI Assistant `@ghost`
-
-### Delivered
-- **Ghost AI bot** (`ghost@ghostel.app`, `id: ghost-ai-bot`, `role: bot`) seeded as a regular conversation member.
-- **Trigger logic** in `POST /api/messages` (fire-and-forget):
-  - DM with the bot → always replies.
-  - Group with the bot as a member → replies only when message contains `@ghost`.
-  - Bot never replies to itself.
-- **Backed by Claude** `claude-sonnet-4-5-20250929` via `emergentintegrations.llm.chat.LlmChat` + Emergent LLM key. Per-conversation `session_id` keeps multi-turn memory. Last 10 messages of the conversation passed as context (with voice/image/file placeholders).
-- **Reply path**: AI message inserted as a normal message (`ai: true`, `sender_id: ghost-ai-bot`, `reply_to: <triggering msg id>`), broadcast over WebSocket, push-notified like any other message.
-- **Frontend polish**: Contacts list now shows an `AI` badge + tinted row for the bot; clicking opens a DM that auto-replies.
-
-### Earlier iterations
-- **Iter 4**: Admin panel + endpoints; expo-audio voice recorder; logo swap (real JPG on native, shield circle on web).
-- **Iter 3**: Rebrand Silentel → ghostel.app; 5-sec polling fallback for messages.
-- **Iter 2**: File uploads, voice messages, WebRTC calls (signaling + UI), Expo push pipeline.
-- **Iter 1**: JWT + TOTP 2FA, 1-on-1 & group chats, reactions, search, presence.
-
-## Architecture additions
-- New env vars: `EMERGENT_LLM_KEY`, `AI_MODEL_PROVIDER`, `AI_MODEL_NAME`.
-- `_maybe_handle_ai` runs as an asyncio task → does not block the HTTP send response.
-
-## Test Coverage
-- Curl validation passed live (DM + group `@ghost` trigger, group without mention skipped, multi-turn memory respected).
-- Backend pytest suite (52 cases) remains green.
-
-## Roadmap
-- Multi-tenancy / workspaces / SSO / audit log.
-- True Signal-protocol per-device E2EE.
-- AI slash commands (`/summarize`, `/translate`, `/draft`).
-- EAS dev build to unlock push + native WebRTC.
-
-
 ## Iteration 4 (Current) — Admin panel + Voice fix + Real logo
 
 ### Delivered
@@ -64,7 +31,6 @@ JWT + TOTP 2FA, 1-on-1 and group chats, reactions, search, presence.
 
 ## Roadmap
 - Multi-tenancy (workspaces, white-label, audit log, SSO) — biggest remaining lift.
-- AI assistant `@ghost` in chat (Emergent LLM key already wired into the platform).
 - Native dev build via Emergent publish button to unlock push + native WebRTC + real audio recorder testing.
 
 

@@ -216,9 +216,7 @@ export default function GroupInfoScreen() {
   const adminIds = new Set(conv.admin_ids || []);
   const memberCount = (conv.members || []).length;
   const existingMemberIds = new Set((conv.members || []).map((m) => m.id));
-  const addableContacts = contacts.filter(
-    (c) => !existingMemberIds.has(c.id) && c.role !== 'bot',
-  );
+  const addableContacts = contacts.filter((c) => !existingMemberIds.has(c.id));
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -341,7 +339,7 @@ export default function GroupInfoScreen() {
                     <Text style={styles.memberSub}>@{m.username}</Text>
                   ) : null}
                 </View>
-                {isAdmin && !isMe && m.role !== 'bot' && (
+                {isAdmin && !isMe && (
                   <View style={styles.memberActions}>
                     {memberIsAdmin ? (
                       <TouchableOpacity

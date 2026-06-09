@@ -17,7 +17,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   Search,
   MessageSquare,
-  Sparkles,
   UserPlus,
   X,
   Check,
@@ -210,13 +209,12 @@ export default function ContactsScreen() {
   };
 
   const renderContact = ({ item }: { item: Contact }) => {
-    const isBot = item.role === 'bot';
     return (
       <TouchableOpacity
         testID={`contact-row-${item.id}`}
         style={styles.row}
         onPress={() => openChat(item.id)}
-        onLongPress={() => !isBot && removeContact(item)}
+        onLongPress={() => removeContact(item)}
         activeOpacity={0.7}
       >
         <Avatar
@@ -225,14 +223,13 @@ export default function ContactsScreen() {
           size={48}
           photo={item.avatar}
           status={item.status}
-          showStatus={!isBot}
+          showStatus
         />
         <View style={styles.rowBody}>
           <View style={styles.rowTitleLine}>
             <Text style={styles.rowName} numberOfLines={1}>
               {item.name}
             </Text>
-            {isBot && <Sparkles color={theme.colors.primary} size={13} strokeWidth={2} />}
           </View>
           {item.username ? (
             <Text style={styles.rowSub} numberOfLines={1}>
@@ -248,25 +245,21 @@ export default function ContactsScreen() {
         >
           <MessageSquare color={theme.colors.primary} size={18} strokeWidth={2} />
         </TouchableOpacity>
-        {!isBot && (
-          <TouchableOpacity
-            style={styles.callBtn}
-            onPress={() => callContact(item.id)}
-            testID={`contact-call-${item.id}`}
-          >
-            <Phone color={theme.colors.success} size={18} strokeWidth={2} />
-          </TouchableOpacity>
-        )}
-        {!isBot && (
-          <TouchableOpacity
-            style={styles.removeIconBtn}
-            onPress={() => removeContact(item)}
-            testID={`contact-remove-${item.id}`}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Trash2 color={theme.colors.error} size={16} strokeWidth={2} />
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity
+          style={styles.callBtn}
+          onPress={() => callContact(item.id)}
+          testID={`contact-call-${item.id}`}
+        >
+          <Phone color={theme.colors.success} size={18} strokeWidth={2} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.removeIconBtn}
+          onPress={() => removeContact(item)}
+          testID={`contact-remove-${item.id}`}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Trash2 color={theme.colors.error} size={16} strokeWidth={2} />
+        </TouchableOpacity>
       </TouchableOpacity>
     );
   };

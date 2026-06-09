@@ -38,7 +38,7 @@ export async function configureAndroidChannels() {
       enableLights: true,
       enableVibrate: true,
     });
-    // Generic notifications (mentions, system, AI, invites).
+    // Generic notifications (mentions, system, invites).
     await Notifications.setNotificationChannelAsync('notifications', {
       name: 'Powiadomienia',
       importance: Notifications.AndroidImportance.HIGH,
