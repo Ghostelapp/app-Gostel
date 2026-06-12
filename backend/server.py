@@ -9,6 +9,7 @@ import uuid
 import logging
 import base64
 import binascii
+import hashlib
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Literal
 
@@ -22,6 +23,8 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSock
 from fastapi.responses import FileResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from pydantic import BaseModel, Field, EmailStr
 
 # ----------------- Setup -----------------
@@ -35,7 +38,7 @@ api = APIRouter(prefix="/api")
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALG = "HS256"
 APP_NAME = os.environ.get("APP_NAME", "ghostel.app")
-ALLOW_LEGACY_WS_TOKEN = os.environ.get("ALLOW_LEGACY_WS_TOKEN", "true").lower() == "true"
+ALLOW_LEGACY_WS_TOKEN = os.environ.get("ALLOW_LEGACY_WS_TOKEN", "false").lower() == "true"
 REMOVED_ASSISTANT_USER_ID = "ghost-ai-bot"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -44,6 +47,54 @@ logger = logging.getLogger("ghostel")
 # ----------------- Helpers -----------------
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def client_ip(request: Request) -> str:
+    peer = request.client.host if request.client else ""
+    if peer in {"127.0.0.1", "::1"}:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()
+    return peer or "unknown"
+
+
+async def enforce_rate_limit(
+    scope: str,
+    identifier: str,
+    *,
+    limit: int,
+    window_seconds: int,
+) -> None:
+    now = now_utc()
+    bucket = int(now.timestamp()) // window_seconds
+    digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()
+    key = f"{scope}:{digest}:{bucket}"
+    try:
+        row = await db.rate_limits.find_one_and_update(
+            {"key": key},
+            {
+                "$inc": {"count": 1},
+                "$setOnInsert": {
+                    "key": key,
+                    "scope": scope,
+                    "expires_at": now + timedelta(seconds=window_seconds * 2),
+                },
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        row = await db.rate_limits.find_one_and_update(
+            {"key": key},
+            {"$inc": {"count": 1}},
+            return_document=ReturnDocument.AFTER,
+        )
+    if row and row.get("count", 0) > limit:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Try again later.",
+            headers={"Retry-After": str(window_seconds)},
+        )
 
 
 def hash_password(pw: str) -> str:
@@ -63,6 +114,7 @@ def create_access_token(user_id: str, email: str) -> str:
         "email": email,
         "exp": now_utc() + timedelta(days=7),
         "type": "access",
+        "jti": str(uuid.uuid4()),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
@@ -305,6 +357,9 @@ async def get_current_user(request: Request) -> dict:
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    jti = payload.get("jti")
+    if jti and await db.revoked_tokens.find_one({"jti": jti}, {"_id": 1}):
+        raise HTTPException(status_code=401, detail="Token revoked")
     user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -451,8 +506,11 @@ class MuteUpdateIn(BaseModel):
 
 # ----------------- Auth Routes -----------------
 @api.post("/auth/register")
-async def register(payload: RegisterIn):
+async def register(payload: RegisterIn, request: Request):
     email = payload.email.lower().strip()
+    await enforce_rate_limit(
+        "auth-register-ip", client_ip(request), limit=10, window_seconds=60 * 60
+    )
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -495,10 +553,16 @@ async def register(payload: RegisterIn):
 
 
 @api.post("/auth/login")
-async def login(payload: LoginIn):
+async def login(payload: LoginIn, request: Request):
     identifier = (payload.identifier or payload.email or "").lower().strip().lstrip("@")
     if not identifier:
         raise HTTPException(status_code=422, detail="Username or email is required")
+    await enforce_rate_limit(
+        "auth-login-ip", client_ip(request), limit=30, window_seconds=5 * 60
+    )
+    await enforce_rate_limit(
+        "auth-login-identifier", identifier, limit=10, window_seconds=5 * 60
+    )
     user = await db.users.find_one(
         {"email": identifier} if "@" in identifier else {"username": normalize_username(identifier)},
         {"_id": 0},
@@ -506,7 +570,10 @@ async def login(payload: LoginIn):
     if not user or not verify_password(payload.password, user["password_hash"]):
         # brute force tracking
         await db.login_attempts.insert_one({
-            "identifier": identifier, "at": now_utc().isoformat(), "success": False
+            "identifier": identifier,
+            "at": now_utc(),
+            "expires_at": now_utc() + timedelta(days=30),
+            "success": False,
         })
         raise HTTPException(status_code=401, detail="Invalid username/email or password")
 
@@ -515,12 +582,20 @@ async def login(payload: LoginIn):
             return {"requires_2fa": True, "user_id": user["id"]}
         totp = pyotp.TOTP(user["totp_secret"])
         if not totp.verify(payload.totp_code, valid_window=1):
+            await db.login_attempts.insert_one({
+                "identifier": identifier,
+                "at": now_utc(),
+                "expires_at": now_utc() + timedelta(days=30),
+                "success": False,
+                "reason": "invalid_2fa",
+            })
             raise HTTPException(status_code=401, detail="Invalid 2FA code")
 
     await db.users.update_one(
         {"id": user["id"]},
         {"$set": {"last_seen": now_utc().isoformat(), "status": "online"}},
     )
+    await db.login_attempts.delete_many({"identifier": identifier})
     token = create_access_token(user["id"], user["email"])
     return {"access_token": token, "token_type": "bearer", "user": public_user(user)}
 
@@ -545,6 +620,27 @@ async def me(user: dict = Depends(get_current_user)):
     data["blocked_user_ids"] = user.get("blocked_user_ids") or []
     data["save_call_history"] = bool(user.get("save_call_history", True))
     return data
+
+
+@api.post("/auth/logout")
+async def logout(request: Request, user: dict = Depends(get_current_user)):
+    token = request.headers.get("Authorization", "")[7:]
+    payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    jti = payload.get("jti")
+    expires = payload.get("exp")
+    if jti and expires:
+        await db.revoked_tokens.update_one(
+            {"jti": jti},
+            {
+                "$set": {
+                    "jti": jti,
+                    "user_id": user["id"],
+                    "expires_at": datetime.fromtimestamp(expires, tz=timezone.utc),
+                }
+            },
+            upsert=True,
+        )
+    return {"ok": True}
 
 
 # ----------------- E2EE key registry -----------------
@@ -974,7 +1070,7 @@ async def delete_user_account_data(user_id: str) -> bool:
         }
     )
     if email:
-        await db.login_attempts.delete_many({"email": email})
+        await db.login_attempts.delete_many({"identifier": email.lower()})
     await db.users.delete_one({"id": user_id})
     return True
 
@@ -2506,13 +2602,11 @@ EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"  # legacy, retained for /
 
 
 @api.get("/push/status")
-async def push_status():
+async def push_status(admin: dict = Depends(require_admin)):
     """Returns FCM configuration status — useful to verify Service Account loaded."""
-    from fcm import is_configured, get_config_error, get_project_id
+    from fcm import is_configured
     return {
         "fcm_configured": is_configured(),
-        "fcm_project_id": get_project_id(),
-        "fcm_error": get_config_error(),
     }
 
 
@@ -2608,22 +2702,40 @@ async def unregister_push(user: dict = Depends(get_current_user)):
 
 @api.post("/push/diag")
 async def push_diag(
+    request: Request,
     payload: dict = Body(default_factory=dict),
     user: dict = Depends(get_current_user),
 ):
     """Receives diagnostic payload from client when push registration fails or succeeds.
     Used to debug 'why isn't push working on user X?' on production."""
     try:
+        await enforce_rate_limit(
+            "push-diag-user", user["id"], limit=20, window_seconds=60 * 60
+        )
+        allowed = {
+            "platform", "reason", "is_expo_go", "is_device", "device_model",
+            "os_version", "channels_configured", "permission_initial",
+            "permission_final", "firebase_permission", "token_source",
+            "token_type", "token_prefix", "expo_device_token_error",
+            "firebase_token_error", "register_error", "error", "token_resp",
+        }
+        sanitized = {}
+        for key, value in payload.items():
+            if key not in allowed or not isinstance(value, (str, bool, int, float, type(None))):
+                continue
+            sanitized[key] = value[:300] if isinstance(value, str) else value
+        if len(json.dumps(sanitized)) > 4096:
+            raise HTTPException(status_code=413, detail="Diagnostic payload too large")
         # Store last diag on user doc (overwrite previous)
         await db.users.update_one(
             {"id": user["id"]},
-            {"$set": {"push_diag": {"at": now_utc().isoformat(), **payload}}},
+            {"$set": {"push_diag": {"at": now_utc().isoformat(), **sanitized}}},
         )
-        reason = payload.get("reason", "unknown")
+        reason = sanitized.get("reason", "unknown")
         # Log clearly to backend logs
-        logger.info(
-            f"PushDiag user={user.get('email')} reason={reason} payload={payload}"
-        )
+        logger.info(f"PushDiag user_id={user.get('id')} reason={reason}")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning(f"push_diag store error: {e}")
     return {"received": True}
@@ -3614,6 +3726,10 @@ async def websocket_endpoint(
                 raise ValueError("used or expired ticket")
         elif not token or not ALLOW_LEGACY_WS_TOKEN:
             raise ValueError("legacy token disabled")
+        elif payload.get("jti") and await db.revoked_tokens.find_one(
+            {"jti": payload["jti"]}, {"_id": 1}
+        ):
+            raise ValueError("token revoked")
         ws_user = await db.users.find_one({"id": user_id}, {"_id": 0, "id": 1})
         if not ws_user:
             raise ValueError("user not found")
@@ -3728,9 +3844,10 @@ async def head_android_apk():
 app.include_router(api)
 
 _cors_raw = os.environ.get("CORS_ORIGINS", "").strip()
-_cors_origins = (
-    [o.strip() for o in _cors_raw.split(",") if o.strip()] if _cors_raw else ["*"]
-)
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()] if _cors_raw else [
+    "http://localhost:3000",
+    "http://localhost:8081",
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -3741,7 +3858,17 @@ app.add_middleware(
 )
 
 
-from pymongo.errors import DuplicateKeyError, OperationFailure
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+from pymongo.errors import OperationFailure
 
 # ----------------- Startup -----------------
 async def _ensure_indexes() -> None:
@@ -3762,6 +3889,11 @@ async def _ensure_indexes() -> None:
         ("calls", "id", {"unique": True}),
         ("calls", "conversation_id", {}),
         ("login_attempts", "at", {}),
+        ("login_attempts", "expires_at", {"expireAfterSeconds": 0}),
+        ("rate_limits", "key", {"unique": True}),
+        ("rate_limits", "expires_at", {"expireAfterSeconds": 0}),
+        ("revoked_tokens", "jti", {"unique": True}),
+        ("revoked_tokens", "expires_at", {"expireAfterSeconds": 0}),
         ("ws_tickets", "jti", {"unique": True}),
         ("ws_tickets", "expires_at", {"expireAfterSeconds": 0}),
         ("contact_invitations", "id", {"unique": True}),

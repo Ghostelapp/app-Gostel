@@ -34,6 +34,7 @@ import { useCallRingback } from '../../src/callRingback';
 import {
   decryptCallSignalFromUser,
   encryptCallSignalForUser,
+  syncConversationKeyTrust,
   type E2EECallSignalPayload,
 } from '../../src/e2ee';
 
@@ -161,6 +162,24 @@ export default function CallScreen() {
       const peerKey = call.e2ee_member_keys[peerId]?.public_key || '';
       if (!peerKey) {
         setErrMsg('Missing peer E2EE key');
+        return false;
+      }
+      const trust = await syncConversationKeyTrust(
+        {
+          type: 'direct',
+          members: Object.entries(call.e2ee_member_keys).map(([memberId, key]) => ({
+            id: memberId,
+            e2ee_public_key: key.public_key,
+          })),
+        },
+        user.id,
+      );
+      if (!trust.trusted) {
+        setErrMsg(
+          trust.changedMemberIds.includes(peerId)
+            ? 'Contact E2EE key changed. Verify it in chat before calling.'
+            : 'Call E2EE trust verification failed',
+        );
         return false;
       }
       peerIdRef.current = peerId;

@@ -162,19 +162,41 @@ class NativeVoiceRecorder implements VoiceRecorder {
         throw new Error('expo-file-system not available');
       }
     }
-    const b64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
-    const filename = `voice-${Date.now()}.m4a`;
-    const size = Math.ceil((b64.length * 3) / 4);
-    return { filename, mime: 'audio/m4a', data: b64, size, durationMs };
+    try {
+      const b64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+      const filename = `voice-${Date.now()}.m4a`;
+      const size = Math.ceil((b64.length * 3) / 4);
+      return { filename, mime: 'audio/m4a', data: b64, size, durationMs };
+    } finally {
+      await FileSystem.deleteAsync?.(uri, { idempotent: true }).catch?.(() => {});
+    }
   }
 
   async cancel() {
+    const recorder = this.recorder;
+    let uri = recorder?.uri || null;
     try {
-      if (this.recorder) await this.recorder.stop();
+      if (recorder) {
+        await recorder.stop();
+        uri = recorder.uri || uri;
+      }
     } catch {
       /* ignore */
     }
     this.recorder = null;
+    if (uri) {
+      try {
+        let FileSystem: any;
+        try {
+          FileSystem = require('expo-file-system/legacy');
+        } catch {
+          FileSystem = require('expo-file-system');
+        }
+        await FileSystem.deleteAsync?.(uri, { idempotent: true });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
   }
 }
 

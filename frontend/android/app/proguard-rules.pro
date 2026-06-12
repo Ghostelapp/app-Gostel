@@ -11,4 +11,11 @@
 -keep class com.swmansion.reanimated.** { *; }
 -keep class com.facebook.react.turbomodule.** { *; }
 
-# Add any project specific keep options here:
+# Native calling modules are loaded through React Native package registration
+# and must remain available in optimized release builds.
+-keep class io.wazo.callkeep.** { *; }
+-keep class com.zxcpoiu.incallmanager.** { *; }
+-keep class org.webrtc.** { *; }
+-keep class app.ghostel.GhostelFirebaseMessagingService { *; }
+-keep class app.ghostel.GhostelActiveCallService { *; }
+-keep class app.ghostel.GhostelCallNotificationModule { *; }

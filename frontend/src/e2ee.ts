@@ -9,7 +9,8 @@ const ALGORITHM = 'nacl-box-v1' as const;
 // SecureStore keys may contain only alphanumeric characters, ".", "-" and "_".
 const IDENTITY_PREFIX = 'ghostel_e2ee_identity_v1.';
 const LEGACY_IDENTITY_PREFIX = 'ghostel_e2ee_identity_v1:';
-const TRUST_PREFIX = 'ghostel_e2ee_trusted_keys_v1:';
+const TRUST_PREFIX = 'ghostel_e2ee_trusted_keys_v2.';
+const LEGACY_TRUST_PREFIX = 'ghostel_e2ee_trusted_keys_v1:';
 const PLACEHOLDER = '[encrypted message]';
 export const E2EE_UNAVAILABLE_TEXT = 'Encrypted message unavailable on this device';
 
@@ -90,6 +91,10 @@ function trustedKeysKey(userId: string): string {
   return `${TRUST_PREFIX}${userId}`;
 }
 
+function legacyTrustedKeysKey(userId: string): string {
+  return `${LEGACY_TRUST_PREFIX}${userId}`;
+}
+
 async function getStoredIdentity(userId: string): Promise<E2EEIdentity | null> {
   const key = identityKey(userId);
   let raw: string | null = null;
@@ -146,7 +151,28 @@ async function setStoredIdentity(userId: string, identity: E2EEIdentity): Promis
 }
 
 async function getTrustedPublicKeys(userId: string): Promise<Record<string, string>> {
-  const raw = await AsyncStorage.getItem(trustedKeysKey(userId));
+  const key = trustedKeysKey(userId);
+  let raw: string | null = null;
+  if (canUseSecureStore) {
+    try {
+      raw = await SecureStore.getItemAsync(key);
+    } catch (error) {
+      throw new Error(`Secure E2EE trust storage unavailable: ${String(error)}`);
+    }
+  }
+  if (!raw) {
+    const currentAsync = await AsyncStorage.getItem(key);
+    const legacy = currentAsync || await AsyncStorage.getItem(legacyTrustedKeysKey(userId));
+    if (legacy && canUseSecureStore) {
+      try {
+        await SecureStore.setItemAsync(key, legacy);
+        await AsyncStorage.multiRemove([key, legacyTrustedKeysKey(userId)]);
+      } catch (error) {
+        throw new Error(`Secure E2EE trust storage unavailable: ${String(error)}`);
+      }
+    }
+    raw = legacy;
+  }
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as Record<string, string>;
@@ -161,7 +187,18 @@ async function setTrustedPublicKeys(
   userId: string,
   keys: Record<string, string>,
 ): Promise<void> {
-  await AsyncStorage.setItem(trustedKeysKey(userId), JSON.stringify(keys));
+  const key = trustedKeysKey(userId);
+  const raw = JSON.stringify(keys);
+  if (canUseSecureStore) {
+    try {
+      await SecureStore.setItemAsync(key, raw);
+      await AsyncStorage.multiRemove([key, legacyTrustedKeysKey(userId)]);
+      return;
+    } catch (error) {
+      throw new Error(`Secure E2EE trust storage unavailable: ${String(error)}`);
+    }
+  }
+  await AsyncStorage.setItem(key, raw);
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

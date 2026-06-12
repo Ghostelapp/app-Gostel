@@ -4,6 +4,9 @@ import expo.modules.splashscreen.SplashScreenManager
 import android.os.Build
 import android.os.Bundle
 import android.content.Intent
+import android.graphics.Color
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 
 import com.facebook.react.ReactActivity
@@ -14,6 +17,8 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
+  private var privacyOverlay: View? = null
+
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.
@@ -30,6 +35,16 @@ class MainActivity : ReactActivity() {
     super.onNewIntent(intent)
     setIntent(intent)
     applyIncomingCallWindowFlags(intent)
+  }
+
+  override fun onPause() {
+    addPrivacyOverlay()
+    super.onPause()
+  }
+
+  override fun onResume() {
+    super.onResume()
+    removePrivacyOverlay()
   }
 
   /**
@@ -78,6 +93,28 @@ class MainActivity : ReactActivity() {
           WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
       )
     }
+  }
+
+  private fun addPrivacyOverlay() {
+    if (privacyOverlay != null) return
+    val decor = window.decorView as? ViewGroup ?: return
+    privacyOverlay = View(this).apply {
+      setBackgroundColor(Color.rgb(15, 20, 25))
+      importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+    }
+    decor.addView(
+      privacyOverlay,
+      ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+      ),
+    )
+  }
+
+  private fun removePrivacyOverlay() {
+    val overlay = privacyOverlay ?: return
+    (overlay.parent as? ViewGroup)?.removeView(overlay)
+    privacyOverlay = null
   }
 
   /**

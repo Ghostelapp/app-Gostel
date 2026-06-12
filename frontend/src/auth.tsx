@@ -109,6 +109,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
+    try {
+      await api.post('/auth/logout');
+    } catch {
+      // Local logout must still succeed when the network is unavailable.
+    }
     await removeStoredToken();
     setUser(null);
   };

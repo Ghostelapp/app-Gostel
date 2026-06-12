@@ -39,6 +39,7 @@ import { useTranslation } from 'react-i18next';
 import { theme } from './theme';
 
 const PIN_KEY = 'ghostel.pinHash.v1';
+const PIN_RETRY_KEY = 'ghostel.pinRetry.v1';
 const AUTO_LOCK_MS = 30_000; // re-lock when app has been backgrounded for >30s
 const canUseSecureStore = Platform.OS !== 'web';
 
@@ -106,6 +107,41 @@ async function removeStoredPinHash(): Promise<void> {
   await SecureStore.deleteItemAsync(PIN_KEY);
 }
 
+type PinRetryState = { attempts: number; blockedUntil: number };
+
+async function getPinRetryState(): Promise<PinRetryState> {
+  const raw = canUseSecureStore
+    ? await SecureStore.getItemAsync(PIN_RETRY_KEY)
+    : await AsyncStorage.getItem(PIN_RETRY_KEY);
+  if (!raw) return { attempts: 0, blockedUntil: 0 };
+  try {
+    const parsed = JSON.parse(raw) as Partial<PinRetryState>;
+    return {
+      attempts: Math.max(0, Number(parsed.attempts) || 0),
+      blockedUntil: Math.max(0, Number(parsed.blockedUntil) || 0),
+    };
+  } catch {
+    return { attempts: 0, blockedUntil: 0 };
+  }
+}
+
+async function setPinRetryState(state: PinRetryState): Promise<void> {
+  const raw = JSON.stringify(state);
+  if (canUseSecureStore) {
+    await SecureStore.setItemAsync(PIN_RETRY_KEY, raw);
+    return;
+  }
+  await AsyncStorage.setItem(PIN_RETRY_KEY, raw);
+}
+
+async function clearPinRetryState(): Promise<void> {
+  if (canUseSecureStore) {
+    await SecureStore.deleteItemAsync(PIN_RETRY_KEY);
+    return;
+  }
+  await AsyncStorage.removeItem(PIN_RETRY_KEY);
+}
+
 export function PinLockProvider({ children }: { children: React.ReactNode }) {
   const [pinSet, setPinSet] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
@@ -152,6 +188,7 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
   const setPin = useCallback(async (pin: string) => {
     const hash = await createStoredPinHash(pin);
     await setStoredPinHash(hash);
+    await clearPinRetryState();
     setPinSet(true);
     setIsLocked(false);
   }, []);
@@ -172,6 +209,7 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
     const ok = await verifyPin(currentPin);
     if (!ok) return false;
     await removeStoredPinHash();
+    await clearPinRetryState();
     setPinSet(false);
     setIsLocked(false);
     return true;
@@ -180,6 +218,7 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
   const forceClearForLogout = useCallback(async () => {
     try {
       await removeStoredPinHash();
+      await clearPinRetryState();
     } catch {
       /* noop */
     }
@@ -228,14 +267,41 @@ function LockOverlay() {
   const { verifyPin, unlock } = usePinLock();
   const [entered, setEntered] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [, setAttempts] = useState(0);
+  const [attempts, setAttempts] = useState(0);
   const [blockedUntil, setBlockedUntil] = useState(0);
+  const [retryLoaded, setRetryLoaded] = useState(false);
   const verifying = useRef(false);
   const MIN_LEN = 4;
   const MAX_LEN = 6;
 
+  useEffect(() => {
+    getPinRetryState()
+      .then((state) => {
+        setAttempts(state.attempts);
+        setBlockedUntil(state.blockedUntil);
+      })
+      .catch(() => {})
+      .finally(() => setRetryLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    let active = true;
+    import('expo-screen-capture')
+      .then(async (ScreenCapture) => {
+        if (active) await ScreenCapture.preventScreenCaptureAsync('ghostel-pin-lock');
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+      import('expo-screen-capture')
+        .then((ScreenCapture) => ScreenCapture.allowScreenCaptureAsync('ghostel-pin-lock'))
+        .catch(() => {});
+    };
+  }, []);
+
   const onDigit = (d: string) => {
-    if (Date.now() < blockedUntil) return;
+    if (!retryLoaded || Date.now() < blockedUntil) return;
     setError(null);
     setEntered((prev) => {
       if (prev.length >= MAX_LEN) return prev;
@@ -258,6 +324,9 @@ function LockOverlay() {
       verifying.current = false;
       if (ok) {
         setEntered('');
+        setAttempts(0);
+        setBlockedUntil(0);
+        await clearPinRetryState().catch(() => {});
         unlock();
       } else if (entered.length >= MAX_LEN) {
         setError(t('pinlock.wrong'));
@@ -266,7 +335,11 @@ function LockOverlay() {
           const next = a + 1;
           if (next >= 5) {
             const delay = Math.min(5 * 60_000, 30_000 * 2 ** Math.floor((next - 5) / 2));
-            setBlockedUntil(Date.now() + delay);
+            const nextBlockedUntil = Date.now() + delay;
+            setBlockedUntil(nextBlockedUntil);
+            setPinRetryState({ attempts: next, blockedUntil: nextBlockedUntil }).catch(() => {});
+          } else {
+            setPinRetryState({ attempts: next, blockedUntil }).catch(() => {});
           }
           return next;
         });

@@ -1681,6 +1681,23 @@ function VoicePlayer({ msg, isMine }: { msg: Message; isMine: boolean }) {
   const totalMs = msg.duration_ms || 0;
   const BAR_COUNT = 22;
 
+  const deleteLocalFile = useCallback(() => {
+    const localUri = localUriRef.current;
+    localUriRef.current = null;
+    if (!localUri || Platform.OS === 'web') return;
+    try {
+      let FileSystem: any;
+      try {
+        FileSystem = require('expo-file-system/legacy');
+      } catch {
+        FileSystem = require('expo-file-system');
+      }
+      FileSystem.deleteAsync?.(localUri, { idempotent: true }).catch?.(() => {});
+    } catch {
+      /* best-effort cleanup */
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     api
@@ -1706,8 +1723,9 @@ function VoicePlayer({ msg, isMine }: { msg: Message; isMine: boolean }) {
         } catch {}
         audioRef.current = null;
       }
+      deleteLocalFile();
     };
-  }, [msg.attachment_id, msg.e2ee_attachment, user?.id]);
+  }, [deleteLocalFile, msg.attachment_id, msg.e2ee_attachment, user?.id]);
 
   const stopPolling = () => {
     if (pollRef.current) {
@@ -1802,6 +1820,7 @@ function VoicePlayer({ msg, isMine }: { msg: Message; isMine: boolean }) {
             player.remove();
           } catch {}
           audioRef.current = null;
+          deleteLocalFile();
         }
       });
       audioRef.current = player;
