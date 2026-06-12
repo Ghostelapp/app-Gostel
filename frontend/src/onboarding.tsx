@@ -28,6 +28,7 @@ import {
   Linking,
   ActivityIndicator,
   Image,
+  Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -139,8 +140,12 @@ function OnboardingOverlay({ onFinish }: { onFinish: () => void }) {
         const ImagePicker = await import('expo-image-picker');
         const cam = await ImagePicker.getCameraPermissionsAsync();
         next.camera = cam.granted ? 'granted' : cam.canAskAgain ? 'unknown' : 'denied';
-        const lib = await ImagePicker.getMediaLibraryPermissionsAsync();
-        next.photos = lib.granted ? 'granted' : lib.canAskAgain ? 'unknown' : 'denied';
+        if (Platform.OS === 'android') {
+          next.photos = 'granted';
+        } else {
+          const lib = await ImagePicker.getMediaLibraryPermissionsAsync();
+          next.photos = lib.granted ? 'granted' : lib.canAskAgain ? 'unknown' : 'denied';
+        }
       } catch {
         /* skip */
       }
@@ -172,10 +177,14 @@ function OnboardingOverlay({ onFinish }: { onFinish: () => void }) {
         granted = !!res.granted;
         canAskAgain = !!res.canAskAgain;
       } else if (key === 'photos') {
-        const ImagePicker = await import('expo-image-picker');
-        const res = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        granted = !!res.granted;
-        canAskAgain = !!res.canAskAgain;
+        if (Platform.OS === 'android') {
+          granted = true;
+        } else {
+          const ImagePicker = await import('expo-image-picker');
+          const res = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          granted = !!res.granted;
+          canAskAgain = !!res.canAskAgain;
+        }
       } else if (key === 'microphone') {
         const Audio = await import('expo-audio');
         const res = await Audio.requestRecordingPermissionsAsync();

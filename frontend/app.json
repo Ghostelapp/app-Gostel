@@ -2,7 +2,7 @@
   "expo": {
     "name": "ghostel.app",
     "slug": "ghostel",
-    "version": "1.4.14",
+    "version": "1.4.15",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "ghostel",
@@ -31,7 +31,6 @@
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_MICROPHONE",
         "CAMERA",
-        "READ_MEDIA_IMAGES",
         "POST_NOTIFICATIONS",
         "USE_FULL_SCREEN_INTENT",
         "VIBRATE",
@@ -39,7 +38,7 @@
         "TURN_SCREEN_ON",
         "DISABLE_KEYGUARD"
       ],
-      "versionCode": 15
+      "versionCode": 16
     },
     "web": {
       "bundler": "metro",

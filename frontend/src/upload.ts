@@ -68,8 +68,10 @@ async function uriToBase64(uri: string): Promise<string> {
 }
 
 export async function pickImageForUpload(): Promise<UploadCandidate | null> {
-  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (perm.status !== 'granted') return null;
+  if (Platform.OS !== 'android') {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (perm.status !== 'granted') return null;
+  }
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ['images'],
     quality: 0.9, // keep high here — we re-encode below
@@ -145,8 +147,10 @@ export async function pickImageAsBase64(opts?: {
   allowsEditing?: boolean;
   quality?: number;
 }): Promise<{ base64: string; mime: string } | null> {
-  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (perm.status !== 'granted') return null;
+  if (Platform.OS !== 'android') {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (perm.status !== 'granted') return null;
+  }
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ['images'],
     quality: opts?.quality ?? 0.5,

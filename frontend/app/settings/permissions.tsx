@@ -62,7 +62,9 @@ export default function PermissionsScreen() {
           Notifications.getPermissionsAsync(),
           Audio.getRecordingPermissionsAsync(),
           ImagePicker.getCameraPermissionsAsync(),
-          ImagePicker.getMediaLibraryPermissionsAsync(),
+          Platform.OS === 'android'
+            ? Promise.resolve({ granted: true })
+            : ImagePicker.getMediaLibraryPermissionsAsync(),
           getAndroidCallCapabilities().catch(() => null),
         ]);
       next.notifications = notifications.granted ? 'granted' : 'denied';
@@ -104,7 +106,7 @@ export default function PermissionsScreen() {
       } else {
         const ImagePicker = await import('expo-image-picker');
         if (key === 'camera') await ImagePicker.requestCameraPermissionsAsync();
-        else await ImagePicker.requestMediaLibraryPermissionsAsync();
+        else if (Platform.OS !== 'android') await ImagePicker.requestMediaLibraryPermissionsAsync();
       }
       await refresh();
     } finally {

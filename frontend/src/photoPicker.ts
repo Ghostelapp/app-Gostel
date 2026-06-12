@@ -6,7 +6,7 @@
  *   responsible for showing a crop UI (see AvatarCropperModal).
  */
 import * as ImagePicker from 'expo-image-picker';
-import { Alert } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import type { TFunction } from 'i18next';
 
 type Choice = 'camera' | 'gallery' | null;
@@ -43,7 +43,9 @@ export async function pickRawImage(t: TFunction): Promise<RawPickedImage | null>
   const isCamera = choice === 'camera';
   const perm = isCamera
     ? await ImagePicker.requestCameraPermissionsAsync()
-    : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    : Platform.OS === 'android'
+      ? { granted: true }
+      : await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!perm.granted) {
     Alert.alert(t('common.error'), t('photo.permission_denied'));
     return null;
