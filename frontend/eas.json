@@ -29,6 +29,16 @@
         "EXPO_PUBLIC_BACKEND_URL": "https://api.ghostel.app"
       }
     },
+    "ios-simulator": {
+      "node": "22.13.0",
+      "ios": {
+        "simulator": true
+      },
+      "env": {
+        "EXPO_SKIP_FIREBASE_IOS": "1",
+        "EXPO_PUBLIC_BACKEND_URL": "https://api.ghostel.app"
+      }
+    },
     "production": {
       "node": "22.13.0",
       "android": {

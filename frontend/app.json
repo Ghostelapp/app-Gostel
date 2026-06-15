@@ -2,7 +2,7 @@
   "expo": {
     "name": "ghostel.app",
     "slug": "ghostel",
-    "version": "1.4.15",
+    "version": "1.4.16",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "ghostel",
@@ -12,6 +12,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "app.ghostel",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "Record voice messages",
         "NSCameraUsageDescription": "Share photos in chats",
         "NSPhotoLibraryUsageDescription": "Send photos from your library"
@@ -38,7 +39,13 @@
         "TURN_SCREEN_ON",
         "DISABLE_KEYGUARD"
       ],
-      "versionCode": 16
+      "blockedPermissions": [
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
+      "versionCode": 17
     },
     "web": {
       "bundler": "metro",
