@@ -36,6 +36,7 @@
       },
       "env": {
         "EXPO_SKIP_FIREBASE_IOS": "1",
+        "EXPO_USE_COMMUNITY_AUTOLINKING": "1",
         "EXPO_PUBLIC_BACKEND_URL": "https://api.ghostel.app"
       }
     },
@@ -43,6 +44,7 @@
       "extends": "production",
       "env": {
         "EXPO_SKIP_FIREBASE_IOS": "1",
+        "EXPO_USE_COMMUNITY_AUTOLINKING": "1",
         "EXPO_PUBLIC_BACKEND_URL": "https://api.ghostel.app"
       }
     },
