@@ -4,6 +4,16 @@ import { api } from './api';
 
 let _channelsConfigured = false;
 
+function getExpoProjectId(): string | undefined {
+  const c: any = Constants as any;
+  return (
+    c?.expoConfig?.extra?.eas?.projectId ||
+    c?.easConfig?.projectId ||
+    c?.manifest?.extra?.eas?.projectId ||
+    c?.manifest2?.extra?.expoClient?.extra?.eas?.projectId
+  );
+}
+
 export async function configureAndroidChannels() {
   if (Platform.OS !== 'android' || _channelsConfigured) return;
   try {
@@ -105,34 +115,55 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
       return null;
     }
 
-    // Direct FCM — get raw device push token (FCM on Android, APNs on iOS).
-    // This bypasses Expo Push API entirely; backend will send via FCM HTTP v1
-    // using the Service Account credentials we host server-side.
+    // Register a backend-compatible push token for the current platform.
+    // iOS is registered through Expo Push because the backend does not send
+    // raw APNs tokens directly.
     let tokenResp: any = null;
-    try {
-      tokenResp = await Notifications.getDevicePushTokenAsync();
-    } catch (e: any) {
-      diag.expo_device_token_error = String(e?.message || e).slice(0, 300);
+    let token: string | null = null;
+    let tokenType = Platform.OS === 'ios' ? 'expo' : 'fcm';
+
+    if (Platform.OS === 'ios') {
+      try {
+        const projectId = getExpoProjectId();
+        diag.expo_project_id = projectId || '';
+        tokenResp = await Notifications.getExpoPushTokenAsync(
+          projectId ? { projectId } : undefined,
+        );
+        token = tokenResp?.data || null;
+        tokenType = 'expo';
+        diag.token_source = 'expo_push_service';
+      } catch (e: any) {
+        diag.expo_push_token_error = String(e?.message || e).slice(0, 300);
+      }
+    } else {
+      try {
+        tokenResp = await Notifications.getDevicePushTokenAsync();
+        token = tokenResp?.data || null;
+        tokenType = tokenResp?.type || 'fcm';
+        diag.token_source = 'expo_notifications';
+      } catch (e: any) {
+        diag.expo_device_token_error = String(e?.message || e).slice(0, 300);
+      }
     }
-    let token = tokenResp?.data;
-    let tokenType = tokenResp?.type || (Platform.OS === 'ios' ? 'apns' : 'fcm');
 
     // Fallback for Android release builds using @react-native-firebase/messaging.
     // This avoids depending solely on expo-notifications for raw FCM token
     // retrieval while the backend sends directly through FCM HTTP v1.
-    if (!token && Platform.OS === 'android') {
+    if (!token) {
       try {
         const messaging = require('@react-native-firebase/messaging').default;
         const firebaseAuthStatus = await messaging().requestPermission();
         diag.firebase_permission = firebaseAuthStatus;
+        if (Platform.OS === 'ios') {
+          await messaging().registerDeviceForRemoteMessages();
+          diag.firebase_remote_registered = true;
+        }
         token = await messaging().getToken();
         tokenType = 'fcm';
         diag.token_source = 'firebase_messaging';
       } catch (e: any) {
         diag.firebase_token_error = String(e?.message || e).slice(0, 300);
       }
-    } else {
-      diag.token_source = 'expo_notifications';
     }
 
     if (!token) {
@@ -146,7 +177,7 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
     diag.token_type = tokenType;
     diag.token_prefix = String(token).slice(0, 30);
     try {
-      // Send raw FCM/APNs token + type so backend knows how to send.
+      // Send token + type so backend chooses FCM or Expo Push correctly.
       await api.post('/push/register', {
         token,
         platform: Platform.OS,

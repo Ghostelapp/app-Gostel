@@ -70,6 +70,15 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "ascAppId": "6781015398"
+      }
+    },
+    "ios-production-firebase": {
+      "ios": {
+        "ascAppId": "6781015398"
+      }
+    }
   }
 }

@@ -2717,7 +2717,9 @@ async def push_diag(
             "os_version", "channels_configured", "permission_initial",
             "permission_final", "firebase_permission", "token_source",
             "token_type", "token_prefix", "expo_device_token_error",
-            "firebase_token_error", "register_error", "error", "token_resp",
+            "expo_push_token_error", "expo_project_id",
+            "firebase_remote_registered", "firebase_token_error",
+            "register_error", "error", "token_resp",
         }
         sanitized = {}
         for key, value in payload.items():
