@@ -4,6 +4,7 @@ const path = require('path');
 module.exports = ({ config }) => {
   const skipFirebaseIos = process.env.EXPO_SKIP_FIREBASE_IOS === '1';
   const requireFirebaseIos = process.env.EXPO_REQUIRE_FIREBASE_IOS === '1';
+  const useJscIos = process.env.EXPO_USE_JSC_IOS === '1';
   const iosGoogleServicesFile = './GoogleService-Info.plist';
   const iosGoogleServicesPath = path.join(__dirname, 'GoogleService-Info.plist');
   const iosModularHeadersPlugin = './plugins/withIosModularHeaders';
@@ -30,9 +31,13 @@ module.exports = ({ config }) => {
       ios: hasIosGoogleServicesFile
         ? {
             ...(config.ios || {}),
+            ...(useJscIos ? { jsEngine: 'jsc' } : {}),
             googleServicesFile: iosGoogleServicesFile,
           }
-        : config.ios,
+        : {
+            ...(config.ios || {}),
+            ...(useJscIos ? { jsEngine: 'jsc' } : {}),
+          },
       plugins: withUniquePlugin(config.plugins || [], iosModularHeadersPlugin),
     };
   }
@@ -45,6 +50,10 @@ module.exports = ({ config }) => {
 
   return {
     ...config,
+    ios: {
+      ...(config.ios || {}),
+      ...(useJscIos ? { jsEngine: 'jsc' } : {}),
+    },
     plugins: [
       ...withUniquePlugin((config.plugins || []).filter((plugin) => {
         const pluginName = Array.isArray(plugin) ? plugin[0] : plugin;
