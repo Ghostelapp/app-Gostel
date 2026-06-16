@@ -108,6 +108,8 @@ export default function CallScreen() {
   const [speakerOn, setSpeakerOn] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [remoteStreamUrl, setRemoteStreamUrl] = useState<string | null>(null);
+  const [RTCViewComponent, setRTCViewComponent] = useState<any>(null);
 
   // ---------- refs ----------
   const pcRef = useRef<any>(null);
@@ -139,6 +141,18 @@ export default function CallScreen() {
   // ringback player (caller only)
   const InCall = getInCallManager();
   const { startRingback, stopRingback } = useCallRingback(RINGBACK, isCaller);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getWebRTC } = require('../../src/webrtc');
+      const WebRTC = getWebRTC();
+      if (WebRTC?.RTCView) setRTCViewComponent(() => WebRTC.RTCView);
+    } catch {
+      /* native WebRTC unavailable */
+    }
+  }, []);
 
   const ensureCallPeerE2EE = useCallback(async (): Promise<boolean> => {
     if (!user?.id) {
@@ -294,6 +308,7 @@ export default function CallScreen() {
     } catch {}
     localStreamRef.current = null;
     remoteStreamRef.current = null;
+    setRemoteStreamUrl(null);
     if (pcRef.current) {
       try {
         pcRef.current.close();
@@ -442,6 +457,26 @@ export default function CallScreen() {
     }
   }, []);
 
+  const makeRemoteStreamFromTrack = useCallback((track: any): any | null => {
+    if (!track || Platform.OS === 'web') return null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getWebRTC } = require('../../src/webrtc');
+      const WebRTC = getWebRTC();
+      if (!WebRTC?.MediaStream) return null;
+      let stream: any = null;
+      try {
+        stream = new WebRTC.MediaStream([track]);
+      } catch {
+        stream = new WebRTC.MediaStream();
+        stream.addTrack?.(track);
+      }
+      return stream;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const attachRemoteStream = useCallback((stream: any) => {
     remoteStreamRef.current = stream;
     if (Platform.OS === 'web') {
@@ -454,8 +489,8 @@ export default function CallScreen() {
       remoteAudioElRef.current = audio;
       return;
     }
-    // Native: audio plays automatically through MediaStream
-    // once InCallManager is started.
+    const url = typeof stream?.toURL === 'function' ? stream.toURL() : null;
+    if (url) setRemoteStreamUrl(url);
   }, []);
 
   const markConnected = useCallback(() => {
@@ -564,11 +599,18 @@ export default function CallScreen() {
       }
 
       // remote track → attach
+      const handleRemoteStream = (remoteStream: any) => {
+        if (!remoteStream) return;
+        attachRemoteStream(remoteStream);
+        markConnected();
+      };
+
       pc.ontrack = (e: any) => {
-        if (e?.streams?.[0]) {
-          attachRemoteStream(e.streams[0]);
-          markConnected();
-        }
+        const remoteStream = e?.streams?.[0] || makeRemoteStreamFromTrack(e?.track);
+        handleRemoteStream(remoteStream);
+      };
+      pc.onaddstream = (e: any) => {
+        handleRemoteStream(e?.stream);
       };
       // ICE candidates → relay to peer
       pc.onicecandidate = (e: any) => {
@@ -621,7 +663,13 @@ export default function CallScreen() {
       }
       return pc;
     },
-    [attachRemoteStream, markConnected, scheduleConnectionRecovery, sendEncryptedSignal]
+    [
+      attachRemoteStream,
+      makeRemoteStreamFromTrack,
+      markConnected,
+      scheduleConnectionRecovery,
+      sendEncryptedSignal,
+    ]
   );
 
   const drainPendingIce = useCallback(async () => {
@@ -1077,6 +1125,13 @@ export default function CallScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <View style={styles.bg} />
+      {Platform.OS !== 'web' && remoteStreamUrl && RTCViewComponent ? (
+        <RTCViewComponent
+          streamURL={remoteStreamUrl}
+          style={styles.remoteAudioSink}
+          objectFit="cover"
+        />
+      ) : null}
 
       <View style={styles.content}>
         <View style={styles.statusRow}>
@@ -1144,6 +1199,12 @@ export default function CallScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: theme.colors.background },
   bg: { ...StyleSheet.absoluteFillObject, backgroundColor: theme.colors.background },
+  remoteAudioSink: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    opacity: 0,
+  },
   content: {
     flex: 1,
     alignItems: 'center',
