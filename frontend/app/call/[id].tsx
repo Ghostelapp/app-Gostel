@@ -117,6 +117,40 @@ const trackSummary = (stream: any) => {
   }));
 };
 
+const summarizeAudioStats = (report: any) => {
+  const rows: any[] = [];
+  if (!report) return null;
+  if (typeof report.forEach === 'function') {
+    report.forEach((value: any) => rows.push(value));
+  } else if (typeof report.values === 'function') {
+    rows.push(...Array.from(report.values()));
+  } else if (typeof report === 'object') {
+    rows.push(...Object.values(report));
+  }
+  const audioRows = rows.filter((row) => {
+    const kind = String(row?.kind || row?.mediaType || '').toLowerCase();
+    const type = String(row?.type || '').toLowerCase();
+    return kind === 'audio' || type.includes('audio') || row?.trackIdentifier;
+  });
+  const pick = (dir: string) => audioRows.filter((row) => String(row?.type || '').includes(dir));
+  const sum = (items: any[], key: string) =>
+    items.reduce((total, item) => total + Number(item?.[key] || 0), 0);
+  const inbound = pick('inbound-rtp');
+  const outbound = pick('outbound-rtp');
+  const tracks = pick('track');
+  return {
+    inbound_packets: sum(inbound, 'packetsReceived'),
+    inbound_bytes: sum(inbound, 'bytesReceived'),
+    inbound_lost: sum(inbound, 'packetsLost'),
+    outbound_packets: sum(outbound, 'packetsSent'),
+    outbound_bytes: sum(outbound, 'bytesSent'),
+    audio_levels: tracks
+      .map((row) => row?.audioLevel)
+      .filter((value) => typeof value === 'number')
+      .slice(0, 4),
+  };
+};
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -167,6 +201,7 @@ export default function CallScreen() {
   const timeoutTimerRef = useRef<any>(null);
   const readyRetryRef = useRef<any>(null);
   const reconnectTimerRef = useRef<any>(null);
+  const audioRepairTimerRef = useRef<any>(null);
   const statusRef = useRef<CallStatus>('init');
   const endedRef = useRef(false);
   const connectedRef = useRef(false);
@@ -186,10 +221,14 @@ export default function CallScreen() {
   const remoteCandidateTypeCountsRef = useRef<Record<string, number>>({});
   const lastIceStateRef = useRef<string>('new');
   const lastConnectionStateRef = useRef<string>('new');
+  const lastAudioStatsRef = useRef<any>(null);
 
   // ringback player (caller only)
   const InCall = getInCallManager();
-  const { startRingback, stopRingback } = useCallRingback(RINGBACK, isCaller);
+  const { startRingback, stopRingback } = useCallRingback(
+    RINGBACK,
+    isCaller && Platform.OS !== 'ios',
+  );
 
   useEffect(() => {
     statusRef.current = status;
@@ -344,20 +383,27 @@ export default function CallScreen() {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
+    if (audioRepairTimerRef.current) {
+      clearInterval(audioRepairTimerRef.current);
+      audioRepairTimerRef.current = null;
+    }
   }, []);
 
   const startNativeCallAudio = useCallback(
     (forceSpeaker = speakerOn) => {
       if (Platform.OS === 'web') return;
       try {
-        activateWebRtcAudioSession();
         if (!inCallStartedRef.current) {
-          InCall.start({ media: 'audio', auto: false });
+          InCall.start({ media: 'audio', auto: true });
           InCall.setKeepScreenOn(true);
           inCallStartedRef.current = true;
         }
         InCall.setForceSpeakerphoneOn(forceSpeaker);
         InCall.setSpeakerphoneOn(forceSpeaker);
+        // InCallManager rewrites AVAudioSession while routing audio. Notify
+        // react-native-webrtc after that rewrite so WebRTC binds to the final
+        // active iOS audio session.
+        activateWebRtcAudioSession();
       } catch {
         /* native audio routing is best-effort */
       }
@@ -425,7 +471,15 @@ export default function CallScreen() {
   const reportCallDiag = useCallback(
     async (reason: string, extra: Record<string, unknown> = {}) => {
       try {
-        const diag = buildCallDiag(reason, extra);
+        let audioStats = lastAudioStatsRef.current;
+        try {
+          const report = await pcRef.current?.getStats?.();
+          audioStats = summarizeAudioStats(report);
+          lastAudioStatsRef.current = audioStats;
+        } catch {
+          /* getStats is best-effort on native */
+        }
+        const diag = buildCallDiag(reason, { audio_stats: audioStats, ...extra });
         await api.post(`/calls/${id}/diag`, diag);
       } catch {
         /* diagnostics must never affect the call */
@@ -433,6 +487,24 @@ export default function CallScreen() {
     },
     [buildCallDiag, id],
   );
+
+  const startAudioRepairLoop = useCallback(() => {
+    if (Platform.OS === 'web') return;
+    if (audioRepairTimerRef.current) {
+      clearInterval(audioRepairTimerRef.current);
+    }
+    let ticks = 0;
+    audioRepairTimerRef.current = setInterval(() => {
+      ticks += 1;
+      if (endedRef.current || !connectedRef.current || ticks > 8) {
+        clearInterval(audioRepairTimerRef.current);
+        audioRepairTimerRef.current = null;
+        return;
+      }
+      startNativeCallAudio(speakerOn);
+      reportCallDiag('audio_route_repair', { audio_repair_tick: ticks }).catch(() => {});
+    }, 1_000);
+  }, [reportCallDiag, speakerOn, startNativeCallAudio]);
 
   // ---------------------------------------------------------------------------
   // Cleanup + endCall
@@ -651,6 +723,7 @@ export default function CallScreen() {
       reconnectTimerRef.current = null;
     }
     startNativeCallAudio(speakerOn);
+    startAudioRepairLoop();
     startTimer();
     setStatus('connected');
     try {
@@ -664,7 +737,16 @@ export default function CallScreen() {
       timeoutTimerRef.current = null;
     }
     reportCallDiag('mark_connected').catch(() => {});
-  }, [callerName, id, reportCallDiag, speakerOn, startNativeCallAudio, startTimer, stopRingback]);
+  }, [
+    callerName,
+    id,
+    reportCallDiag,
+    speakerOn,
+    startAudioRepairLoop,
+    startNativeCallAudio,
+    startTimer,
+    stopRingback,
+  ]);
 
   const attemptIceRestart = useCallback(async (): Promise<boolean> => {
     const pc = pcRef.current;
