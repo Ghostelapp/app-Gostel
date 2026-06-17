@@ -78,6 +78,7 @@ const CALL_TIMEOUT_MS = 45_000; // no-answer cutoff
 const READY_RETRY_MS = 1_000;   // callee retries call:ready every 1s
 const READY_RETRY_MAX = 15;     // 15s of retries — covers a slow caller bootstrap
 const CONNECTION_RECOVERY_MS = 12_000;
+const IS_IOS = Platform.OS === 'ios';
 
 const FALLBACK_ICE: IceServer[] = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
@@ -393,6 +394,11 @@ export default function CallScreen() {
     (forceSpeaker = speakerOn) => {
       if (Platform.OS === 'web') return;
       try {
+        if (IS_IOS) {
+          activateWebRtcAudioSession();
+          inCallStartedRef.current = true;
+          return;
+        }
         if (!inCallStartedRef.current) {
           InCall.start({ media: 'audio', auto: true });
           InCall.setKeepScreenOn(true);
@@ -400,10 +406,6 @@ export default function CallScreen() {
         }
         InCall.setForceSpeakerphoneOn(forceSpeaker);
         InCall.setSpeakerphoneOn(forceSpeaker);
-        // InCallManager rewrites AVAudioSession while routing audio. Notify
-        // react-native-webrtc after that rewrite so WebRTC binds to the final
-        // active iOS audio session.
-        activateWebRtcAudioSession();
       } catch {
         /* native audio routing is best-effort */
       }
@@ -538,17 +540,18 @@ export default function CallScreen() {
     }
     if (inCallStartedRef.current) {
       try {
-        InCall.stop();
+        if (!IS_IOS) InCall.stop();
       } catch {}
       inCallStartedRef.current = false;
-      // InCallManager.stop() may have swapped the AVAudioSession / Android
-      // audio mode back to voice-call defaults. Clear our cached "configured"
-      // flag so the next ringtone re-applies speaker routing.
-      try {
-        const Sounds = require('../../src/sounds');
-        Sounds.resetAudioMode?.();
-      } catch {
-        /* ignore */
+      if (!IS_IOS) {
+        // InCallManager.stop() may have swapped Android audio mode back to
+        // voice-call defaults. Clear the cached sound mode for the next ring.
+        try {
+          const Sounds = require('../../src/sounds');
+          Sounds.resetAudioMode?.();
+        } catch {
+          /* ignore */
+        }
       }
       deactivateWebRtcAudioSession();
     }
@@ -1294,7 +1297,7 @@ export default function CallScreen() {
         localStreamRef.current?.getAudioTracks?.().forEach((t: any) => {
           t.enabled = !next;
         });
-        if (Platform.OS !== 'web') InCall.setMicrophoneMute(next);
+        if (Platform.OS === 'android') InCall.setMicrophoneMute(next);
       } catch {}
       return next;
     });
@@ -1304,7 +1307,7 @@ export default function CallScreen() {
     setSpeakerOn((s) => {
       const next = !s;
       try {
-        if (Platform.OS !== 'web') {
+        if (Platform.OS === 'android') {
           InCall.setForceSpeakerphoneOn(next);
           InCall.setSpeakerphoneOn(next);
         }
