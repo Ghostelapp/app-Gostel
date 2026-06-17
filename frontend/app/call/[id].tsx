@@ -26,6 +26,10 @@ import { theme } from '../../src/theme';
 import { getInCallManager } from '../../src/incall';
 import { markCallActive, endIncomingCallNative } from '../../src/callkeep';
 import {
+  activateWebRtcAudioSession,
+  deactivateWebRtcAudioSession,
+} from '../../src/webrtcAudioSession';
+import {
   cancelFullScreenIncomingCallNotification,
   startActiveCallService,
   stopActiveCallService,
@@ -346,6 +350,7 @@ export default function CallScreen() {
     (forceSpeaker = speakerOn) => {
       if (Platform.OS === 'web') return;
       try {
+        activateWebRtcAudioSession();
         if (!inCallStartedRef.current) {
           InCall.start({ media: 'audio', auto: false });
           InCall.setKeepScreenOn(true);
@@ -473,6 +478,7 @@ export default function CallScreen() {
       } catch {
         /* ignore */
       }
+      deactivateWebRtcAudioSession();
     }
     try {
       Vibration.cancel();

@@ -19,6 +19,10 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
+import {
+  activateWebRtcAudioSession,
+  deactivateWebRtcAudioSession,
+} from './webrtcAudioSession';
 
 let _initialized = false;
 let _lastPhoneAccountWarningAt = 0;
@@ -44,6 +48,10 @@ const callKeepOptions = {
     includesCallsInRecents: false,
     maximumCallGroups: '1',
     maximumCallsPerCallGroup: '1',
+    audioSession: {
+      categoryOptions: 0x4 | 0x8 | 0x20, // allowBluetooth | defaultToSpeaker | allowBluetoothA2DP
+      mode: 'AVAudioSessionModeVoiceChat',
+    },
   },
   android: {
     selfManaged: false,
@@ -196,7 +204,15 @@ export async function setupCallKeep(): Promise<boolean> {
     RNCallKeep.addEventListener(
       'didActivateAudioSession',
       () => {
+        activateWebRtcAudioSession();
         /* iOS hook — could (re)start incall manager here */
+      },
+    );
+
+    RNCallKeep.addEventListener(
+      'didDeactivateAudioSession',
+      () => {
+        deactivateWebRtcAudioSession();
       },
     );
 

@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "app.ghostel",
-      "buildNumber": "6",
+      "buildNumber": "7",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "Record voice messages",
