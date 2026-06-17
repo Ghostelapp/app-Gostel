@@ -2609,6 +2609,26 @@ def expo_push_sound_name(sound: str) -> str:
     return sound if "." in sound else f"{sound}.wav"
 
 
+def sanitize_diag_value(value, depth: int = 0):
+    """Keep client diagnostics useful while preventing oversized/noisy payloads."""
+    if depth > 3:
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:500]
+    if isinstance(value, list):
+        return [sanitize_diag_value(item, depth + 1) for item in value[:30]]
+    if isinstance(value, dict):
+        clean = {}
+        for key, nested in list(value.items())[:80]:
+            if not isinstance(key, str):
+                continue
+            clean[key[:80]] = sanitize_diag_value(nested, depth + 1)
+        return clean
+    return str(value)[:200]
+
+
 @api.get("/push/status")
 async def push_status(admin: dict = Depends(require_admin)):
     """Returns FCM configuration status — useful to verify Service Account loaded."""
@@ -3097,10 +3117,33 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
                     resp = await client.post(EXPO_PUSH_URL, json=messages_payload)
-                    if resp.status_code < 400:
-                        logger.info(
-                            f"Expo push (legacy): {len(messages_payload)} sent"
+                    if resp.status_code >= 400:
+                        logger.warning(
+                            f"Expo push (legacy) HTTP {resp.status_code}: {resp.text[:300]}"
                         )
+                    else:
+                        try:
+                            payload = resp.json()
+                        except Exception:
+                            payload = {}
+                        tickets = payload.get("data") if isinstance(payload, dict) else None
+                        if not isinstance(tickets, list):
+                            tickets = []
+                        ok_count = sum(1 for ticket in tickets if ticket.get("status") == "ok")
+                        err_tickets = [
+                            ticket for ticket in tickets if ticket.get("status") != "ok"
+                        ]
+                        logger.info(
+                            f"Expo push (legacy): {ok_count} ok / {len(err_tickets)} err"
+                        )
+                        for ticket in err_tickets[:5]:
+                            details = ticket.get("details") or {}
+                            logger.warning(
+                                "Expo push ticket error: "
+                                f"status={ticket.get('status')} "
+                                f"message={str(ticket.get('message', ''))[:180]} "
+                                f"details={str(details)[:180]}"
+                            )
             except Exception as exc:
                 logger.warning(f"Expo push (legacy) failed: {exc}")
     except Exception as exc:
@@ -3305,6 +3348,71 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
         {"$set": {"status": "answered", "answered_at": now_utc().isoformat()}},
     )
     return {"accepted": True}
+
+
+@api.post("/calls/{call_id}/diag")
+async def call_diag(
+    call_id: str,
+    payload: dict = Body(default_factory=dict),
+    user: dict = Depends(get_current_user),
+):
+    """Store short-lived client-side WebRTC diagnostics for failed mobile calls."""
+    try:
+        await enforce_rate_limit(
+            "call-diag-user", user["id"], limit=900, window_seconds=60 * 60
+        )
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid diagnostic payload")
+        sanitized = sanitize_diag_value(payload)
+        if not isinstance(sanitized, dict):
+            sanitized = {}
+        if len(json.dumps(sanitized, default=str)) > 20_000:
+            raise HTTPException(status_code=413, detail="Diagnostic payload too large")
+
+        call = await db.calls.find_one({"id": call_id}, {"_id": 0, "member_ids": 1})
+        if call and user["id"] not in call.get("member_ids", []):
+            raise HTTPException(status_code=403, detail="Not a participant")
+
+        diag = {
+            "id": str(uuid.uuid4()),
+            "call_id": call_id,
+            "user_id": user["id"],
+            "created_at": now_utc().isoformat(),
+            **sanitized,
+        }
+        await db.call_diagnostics.insert_one(diag)
+        await db.users.update_one(
+            {"id": user["id"]},
+            {
+                "$set": {
+                    "last_call_diag": {
+                        "at": diag["created_at"],
+                        "call_id": call_id,
+                        "reason": sanitized.get("reason", "unknown"),
+                        "status": sanitized.get("status", ""),
+                        "ice_state": sanitized.get("ice_state", ""),
+                        "connection_state": sanitized.get("connection_state", ""),
+                        "relay_seen": sanitized.get("relay_seen", False),
+                        "remote_tracks": len(sanitized.get("remote_tracks") or []),
+                    }
+                }
+            },
+        )
+        logger.info(
+            "CallDiag "
+            f"call={call_id[:8]} user={user.get('id')} "
+            f"reason={sanitized.get('reason', 'unknown')} "
+            f"status={sanitized.get('status', '')} "
+            f"ice={sanitized.get('ice_state', '')} "
+            f"pc={sanitized.get('connection_state', '')} "
+            f"relay={sanitized.get('relay_seen', False)} "
+            f"remote_tracks={len(sanitized.get('remote_tracks') or [])}"
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"call_diag store error: {exc}")
+    return {"received": True}
 
 
 @api.post("/calls/{call_id}/signals")

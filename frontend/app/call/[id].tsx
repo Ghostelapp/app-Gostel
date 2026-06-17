@@ -79,6 +79,40 @@ const FALLBACK_ICE: IceServer[] = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
 ];
 
+const candidateTypeFromText = (candidate: unknown): string | null => {
+  const text =
+    typeof candidate === 'string'
+      ? candidate
+      : typeof (candidate as any)?.candidate === 'string'
+        ? (candidate as any).candidate
+        : '';
+  const match = text.match(/\styp\s+([a-z0-9-]+)/i);
+  return match?.[1]?.toLowerCase() || null;
+};
+
+const bumpCandidateCount = (
+  countsRef: React.MutableRefObject<Record<string, number>>,
+  candidate: unknown,
+) => {
+  const type = candidateTypeFromText(candidate);
+  if (!type) return null;
+  countsRef.current = {
+    ...countsRef.current,
+    [type]: (countsRef.current[type] || 0) + 1,
+  };
+  return type;
+};
+
+const trackSummary = (stream: any) => {
+  const tracks = stream?.getTracks?.() || [];
+  return tracks.map((track: any) => ({
+    kind: String(track?.kind || ''),
+    enabled: track?.enabled !== false,
+    muted: track?.muted === true,
+    readyState: String(track?.readyState || ''),
+  }));
+};
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -110,6 +144,7 @@ export default function CallScreen() {
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [remoteStreamUrl, setRemoteStreamUrl] = useState<string | null>(null);
   const [RTCViewComponent, setRTCViewComponent] = useState<any>(null);
+  const [debugLine, setDebugLine] = useState<string>('');
 
   // ---------- refs ----------
   const pcRef = useRef<any>(null);
@@ -128,7 +163,9 @@ export default function CallScreen() {
   const timeoutTimerRef = useRef<any>(null);
   const readyRetryRef = useRef<any>(null);
   const reconnectTimerRef = useRef<any>(null);
+  const statusRef = useRef<CallStatus>('init');
   const endedRef = useRef(false);
+  const connectedRef = useRef(false);
   const inCallStartedRef = useRef(false);
   /** Caller side only: have we already created & sent the SDP offer? */
   const offerSentRef = useRef(false);
@@ -137,10 +174,22 @@ export default function CallScreen() {
   const restartAttemptedRef = useRef(false);
   const relayCandidateRef = useRef(false);
   const iceSourceRef = useRef<string>('fallback');
+  const diagSeqRef = useRef(0);
+  const onTrackCountRef = useRef(0);
+  const onAddStreamCountRef = useRef(0);
+  const remoteTrackCountRef = useRef(0);
+  const localCandidateTypeCountsRef = useRef<Record<string, number>>({});
+  const remoteCandidateTypeCountsRef = useRef<Record<string, number>>({});
+  const lastIceStateRef = useRef<string>('new');
+  const lastConnectionStateRef = useRef<string>('new');
 
   // ringback player (caller only)
   const InCall = getInCallManager();
   const { startRingback, stopRingback } = useCallRingback(RINGBACK, isCaller);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   useEffect(() => {
     if (Platform.OS === 'web') return;
@@ -311,12 +360,82 @@ export default function CallScreen() {
     [InCall, speakerOn],
   );
 
+  const buildCallDiag = useCallback(
+    (reason: string, extra: Record<string, unknown> = {}) => {
+      const pc = pcRef.current;
+      const localTracks = trackSummary(localStreamRef.current);
+      const remoteTracks = trackSummary(remoteStreamRef.current);
+      remoteTrackCountRef.current = remoteTracks.length;
+      const localRelay = localCandidateTypeCountsRef.current.relay || 0;
+      const remoteRelay = remoteCandidateTypeCountsRef.current.relay || 0;
+      const iceState = String(
+        pc?.iceConnectionState || lastIceStateRef.current || 'unknown',
+      );
+      const connectionState = String(
+        pc?.connectionState || lastConnectionStateRef.current || 'unknown',
+      );
+      lastIceStateRef.current = iceState;
+      lastConnectionStateRef.current = connectionState;
+      setDebugLine(
+        `ICE ${iceState}/${connectionState} | remote ${remoteTracks.length} | relay ${
+          localRelay + remoteRelay > 0 ? 'yes' : 'no'
+        } | stream ${remoteStreamRef.current ? 'yes' : 'no'}`,
+      );
+      return {
+        reason,
+        seq: ++diagSeqRef.current,
+        platform: Platform.OS,
+        role: isCaller ? 'caller' : 'callee',
+        call_id: id,
+        status: statusRef.current,
+        err_msg: errMsg || '',
+        peer_id_present: !!peerIdRef.current,
+        ice_source: iceSourceRef.current,
+        ice_state: iceState,
+        connection_state: connectionState,
+        signaling_state: String(pc?.signalingState || 'unknown'),
+        gathering_state: String(pc?.iceGatheringState || 'unknown'),
+        local_candidates: localCandidateTypeCountsRef.current,
+        remote_candidates: remoteCandidateTypeCountsRef.current,
+        relay_seen: localRelay + remoteRelay > 0 || relayCandidateRef.current,
+        pending_ice: pendingIceRef.current.length,
+        pending_signals: pendingSignalMessagesRef.current.length,
+        processed_signals: processedSignalIdsRef.current.size,
+        ontrack_count: onTrackCountRef.current,
+        onaddstream_count: onAddStreamCountRef.current,
+        remote_stream_url: !!remoteStreamUrl,
+        rtc_view_loaded: !!RTCViewComponent,
+        incall_started: inCallStartedRef.current,
+        speaker_on: speakerOn,
+        muted,
+        connected_ref: connectedRef.current,
+        local_tracks: localTracks,
+        remote_tracks: remoteTracks,
+        ...extra,
+      };
+    },
+    [RTCViewComponent, errMsg, id, isCaller, muted, remoteStreamUrl, speakerOn],
+  );
+
+  const reportCallDiag = useCallback(
+    async (reason: string, extra: Record<string, unknown> = {}) => {
+      try {
+        const diag = buildCallDiag(reason, extra);
+        await api.post(`/calls/${id}/diag`, diag);
+      } catch {
+        /* diagnostics must never affect the call */
+      }
+    },
+    [buildCallDiag, id],
+  );
+
   // ---------------------------------------------------------------------------
   // Cleanup + endCall
   // ---------------------------------------------------------------------------
   const cleanup = useCallback(async () => {
     clearTimers();
     stopRingback();
+    connectedRef.current = false;
     try {
       localStreamRef.current?.getTracks?.().forEach((t: any) => {
         try {
@@ -373,6 +492,7 @@ export default function CallScreen() {
     async (reason?: string) => {
       if (endedRef.current) return;
       endedRef.current = true;
+      await reportCallDiag('end_call', { end_reason: reason || '' });
       setStatus('ended');
       if (reason) setErrMsg(reason);
 
@@ -405,13 +525,14 @@ export default function CallScreen() {
       await cleanup();
       setTimeout(returnToChat, 800);
     },
-    [id, cleanup, conversationIdParam, returnToChat]
+    [id, cleanup, conversationIdParam, reportCallDiag, returnToChat]
   );
 
   const closeCallFromPeer = useCallback(
     async (reason?: string) => {
       if (endedRef.current) return;
       endedRef.current = true;
+      await reportCallDiag('peer_end', { end_reason: reason || '' });
       setStatus('ended');
       if (reason) setErrMsg(reason);
 
@@ -430,7 +551,7 @@ export default function CallScreen() {
       }
       setTimeout(returnToChat, 350);
     },
-    [id, cleanup, returnToChat],
+    [id, cleanup, reportCallDiag, returnToChat],
   );
 
   // ---------------------------------------------------------------------------
@@ -497,6 +618,7 @@ export default function CallScreen() {
 
   const attachRemoteStream = useCallback((stream: any) => {
     remoteStreamRef.current = stream;
+    remoteTrackCountRef.current = trackSummary(stream).length;
     if (Platform.OS === 'web') {
       const audio = (window as any).document.createElement('audio');
       audio.srcObject = stream;
@@ -509,10 +631,13 @@ export default function CallScreen() {
     }
     const url = typeof stream?.toURL === 'function' ? stream.toURL() : null;
     if (url) setRemoteStreamUrl(url);
-  }, []);
+    reportCallDiag('remote_stream_attached').catch(() => {});
+  }, [reportCallDiag]);
 
   const markConnected = useCallback(() => {
     if (endedRef.current) return;
+    connectedRef.current = true;
+    statusRef.current = 'connected';
     stopRingback();
     setErrMsg(null);
     if (reconnectTimerRef.current) {
@@ -532,7 +657,8 @@ export default function CallScreen() {
       clearTimeout(timeoutTimerRef.current);
       timeoutTimerRef.current = null;
     }
-  }, [callerName, id, speakerOn, startNativeCallAudio, startTimer, stopRingback]);
+    reportCallDiag('mark_connected').catch(() => {});
+  }, [callerName, id, reportCallDiag, speakerOn, startNativeCallAudio, startTimer, stopRingback]);
 
   const attemptIceRestart = useCallback(async (): Promise<boolean> => {
     const pc = pcRef.current;
@@ -624,17 +750,22 @@ export default function CallScreen() {
       };
 
       pc.ontrack = (e: any) => {
+        onTrackCountRef.current += 1;
         const remoteStream = e?.streams?.[0] || makeRemoteStreamFromTrack(e?.track);
         handleRemoteStream(remoteStream);
       };
       pc.onaddstream = (e: any) => {
+        onAddStreamCountRef.current += 1;
         handleRemoteStream(e?.stream);
       };
       // ICE candidates → relay to peer
       pc.onicecandidate = (e: any) => {
         if (e?.candidate && peerIdRef.current && wsSendRef.current) {
           const candidateText = String(e.candidate?.candidate || e.candidate || '');
-          if (candidateText.includes(' typ relay ')) relayCandidateRef.current = true;
+          const type = bumpCandidateCount(localCandidateTypeCountsRef, e.candidate);
+          if (type === 'relay' || candidateText.includes(' typ relay ')) {
+            relayCandidateRef.current = true;
+          }
           sendEncryptedSignal('call:ice', peerIdRef.current, {
             candidate: e.candidate.toJSON
               ? e.candidate.toJSON()
@@ -655,6 +786,8 @@ export default function CallScreen() {
       // Connection state
       pc.oniceconnectionstatechange = () => {
         const st = pc.iceConnectionState;
+        lastIceStateRef.current = String(st || 'unknown');
+        reportCallDiag('ice_state_change', { ice_state_event: String(st || '') }).catch(() => {});
         if (st === 'connected' || st === 'completed') {
           markConnected();
         } else if (st === 'failed' || st === 'disconnected') {
@@ -662,6 +795,10 @@ export default function CallScreen() {
         }
       };
       pc.onconnectionstatechange = () => {
+        lastConnectionStateRef.current = String(pc.connectionState || 'unknown');
+        reportCallDiag('connection_state_change', {
+          connection_state_event: String(pc.connectionState || ''),
+        }).catch(() => {});
         if (pc.connectionState === 'connected') markConnected();
         if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
           scheduleConnectionRecovery(pc);
@@ -690,6 +827,7 @@ export default function CallScreen() {
       attachRemoteStream,
       makeRemoteStreamFromTrack,
       markConnected,
+      reportCallDiag,
       scheduleConnectionRecovery,
       sendEncryptedSignal,
     ]
@@ -701,6 +839,8 @@ export default function CallScreen() {
     pendingIceRef.current = [];
     for (const c of queue) {
       try {
+        const type = bumpCandidateCount(remoteCandidateTypeCountsRef, c);
+        if (type === 'relay') relayCandidateRef.current = true;
         await pcRef.current.addIceCandidate(c);
       } catch {
         /* ignore individual errors */
@@ -833,6 +973,8 @@ export default function CallScreen() {
         if (!pc) return;
         const signal = await decryptPeerSignal(msg);
         if (!signal?.candidate) return;
+        const type = bumpCandidateCount(remoteCandidateTypeCountsRef, signal.candidate);
+        if (type === 'relay') relayCandidateRef.current = true;
         if (!remoteSetRef.current) {
           pendingIceRef.current.push(signal.candidate);
         } else {
@@ -909,6 +1051,15 @@ export default function CallScreen() {
     };
   }, [closeCallFromPeer, id, onWs, user]);
 
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!endedRef.current && pcRef.current) {
+        reportCallDiag('periodic').catch(() => {});
+      }
+    }, 3_000);
+    return () => clearInterval(timer);
+  }, [reportCallDiag]);
+
   // ---------------------------------------------------------------------------
   // Lifecycle: bootstrap the call when component mounts
   // ---------------------------------------------------------------------------
@@ -940,16 +1091,20 @@ export default function CallScreen() {
     };
 
     const bootstrap = async () => {
+      reportCallDiag('bootstrap_start').catch(() => {});
       // 1. Fetch ICE servers (cached on backend)
       await fetchIceServers();
+      reportCallDiag('ice_servers_loaded').catch(() => {});
       if (cancelled || endedRef.current) return;
 
       // 2. Resolve and verify call E2EE keys before touching media/WebRTC.
       const e2eeReady = await ensureCallPeerE2EE();
       if (!e2eeReady) {
+        reportCallDiag('e2ee_failed').catch(() => {});
         setTimeout(() => endCall('E2EE unavailable'), 1500);
         return;
       }
+      reportCallDiag('e2ee_ready').catch(() => {});
       if (cancelled || endedRef.current) return;
 
       // 2b. Native audio session must be active before microphone/WebRTC setup,
@@ -960,19 +1115,23 @@ export default function CallScreen() {
       const stream = await ensureMedia();
       if (!stream) {
         // ensureMedia already set errMsg; end the call
+        reportCallDiag('media_failed').catch(() => {});
         setTimeout(() => endCall('No microphone'), 1500);
         return;
       }
       if (cancelled || endedRef.current) return;
       localStreamRef.current = stream;
+      reportCallDiag('local_media_ready').catch(() => {});
 
       // 4. Setup PC
       const pc = setupPeer(stream);
       if (!pc) {
+        reportCallDiag('peer_setup_failed').catch(() => {});
         setTimeout(() => endCall('WebRTC unavailable'), 1500);
         return;
       }
       pcRef.current = pc;
+      reportCallDiag('peer_setup_ready').catch(() => {});
 
       const pendingSignals = pendingSignalMessagesRef.current;
       pendingSignalMessagesRef.current = [];
@@ -1017,7 +1176,7 @@ export default function CallScreen() {
 
       // 6. Timeout for no-answer
       timeoutTimerRef.current = setTimeout(() => {
-        if (!endedRef.current && status !== 'connected') {
+        if (!endedRef.current && !connectedRef.current) {
           endCall('No answer');
         }
       }, CALL_TIMEOUT_MS);
@@ -1173,6 +1332,7 @@ export default function CallScreen() {
         {errMsg && status !== 'ended' && status !== 'failed' && (
           <Text style={styles.warnText}>{errMsg}</Text>
         )}
+        {debugLine ? <Text style={styles.debugText}>{debugLine}</Text> : null}
       </View>
 
       <View style={styles.controls}>
@@ -1272,6 +1432,14 @@ const styles = StyleSheet.create({
     marginTop: 12,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  debugText: {
+    color: theme.colors.textMuted,
+    fontSize: 11,
+    marginTop: 12,
+    textAlign: 'center',
+    lineHeight: 16,
+    maxWidth: 320,
   },
   controls: {
     flexDirection: 'row',
