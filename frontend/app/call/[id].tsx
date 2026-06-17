@@ -105,7 +105,7 @@ export default function CallScreen() {
   );
   const [status, setStatus] = useState<CallStatus>('init');
   const [muted, setMuted] = useState(false);
-  const [speakerOn, setSpeakerOn] = useState(false);
+  const [speakerOn, setSpeakerOn] = useState(true);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [remoteStreamUrl, setRemoteStreamUrl] = useState<string | null>(null);
@@ -292,6 +292,24 @@ export default function CallScreen() {
       reconnectTimerRef.current = null;
     }
   }, []);
+
+  const startNativeCallAudio = useCallback(
+    (forceSpeaker = speakerOn) => {
+      if (Platform.OS === 'web') return;
+      try {
+        if (!inCallStartedRef.current) {
+          InCall.start({ media: 'audio', auto: false });
+          InCall.setKeepScreenOn(true);
+          inCallStartedRef.current = true;
+        }
+        InCall.setForceSpeakerphoneOn(forceSpeaker);
+        InCall.setSpeakerphoneOn(forceSpeaker);
+      } catch {
+        /* native audio routing is best-effort */
+      }
+    },
+    [InCall, speakerOn],
+  );
 
   // ---------------------------------------------------------------------------
   // Cleanup + endCall
@@ -501,13 +519,7 @@ export default function CallScreen() {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    if (!inCallStartedRef.current && Platform.OS !== 'web') {
-      try {
-        InCall.start({ media: 'audio', auto: true });
-        InCall.setKeepScreenOn(true);
-        inCallStartedRef.current = true;
-      } catch {}
-    }
+    startNativeCallAudio(speakerOn);
     startTimer();
     setStatus('connected');
     try {
@@ -520,7 +532,7 @@ export default function CallScreen() {
       clearTimeout(timeoutTimerRef.current);
       timeoutTimerRef.current = null;
     }
-  }, [InCall, callerName, id, startTimer, stopRingback]);
+  }, [callerName, id, speakerOn, startNativeCallAudio, startTimer, stopRingback]);
 
   const attemptIceRestart = useCallback(async (): Promise<boolean> => {
     const pc = pcRef.current;
@@ -652,13 +664,18 @@ export default function CallScreen() {
 
       // Add local audio tracks
       if (stream) {
-        try {
-          stream.getTracks().forEach((t: any) => pc.addTrack(t, stream));
-        } catch {
-          // Older API: addStream
+        if (Platform.OS !== 'web' && typeof pc.addStream === 'function') {
           try {
-            pc.addStream?.(stream);
+            pc.addStream(stream);
           } catch {}
+        } else {
+          try {
+            stream.getTracks().forEach((t: any) => pc.addTrack(t, stream));
+          } catch {
+            try {
+              pc.addStream?.(stream);
+            } catch {}
+          }
         }
       }
       return pc;
@@ -928,6 +945,10 @@ export default function CallScreen() {
         return;
       }
       if (cancelled || endedRef.current) return;
+
+      // 2b. Native audio session must be active before microphone/WebRTC setup,
+      // especially on iOS when the call was answered from CallKit.
+      startNativeCallAudio(true);
 
       // 3. Get microphone access
       const stream = await ensureMedia();
