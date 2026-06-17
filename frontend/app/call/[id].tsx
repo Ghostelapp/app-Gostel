@@ -598,7 +598,13 @@ export default function CallScreen() {
   const setupPeer = useCallback(
     (stream: any): any => {
       let pc: any;
-      const config = { iceServers: iceServersRef.current, iceCandidatePoolSize: 10 };
+      const config = {
+        iceServers: iceServersRef.current,
+        iceCandidatePoolSize: 10,
+        // Mobile NAT paths often connect briefly and then drop media. We have
+        // Cloudflare TURN in production, so native calls should prefer relay.
+        iceTransportPolicy: Platform.OS === 'web' ? 'all' : 'relay',
+      };
 
       if (Platform.OS === 'web') {
         pc = new (window as any).RTCPeerConnection(config);

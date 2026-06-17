@@ -1269,7 +1269,7 @@ async def _send_simple_push(
                         "title": title,
                         "body": body,
                         "data": data or {},
-                        "sound": sound,
+                        "sound": expo_push_sound_name(sound),
                         "channelId": channel,
                         "priority": priority,
                         "ttl": ttl_seconds,
@@ -2601,6 +2601,14 @@ async def get_attachment(att_id: str, user: dict = Depends(get_current_user)):
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"  # legacy, retained for /push/test
 
 
+def expo_push_sound_name(sound: str) -> str:
+    """Expo/iOS custom sounds use the bundled file name, including extension."""
+    sound = (sound or "default").strip()
+    if sound in ("default", "defaultCritical"):
+        return sound
+    return sound if "." in sound else f"{sound}.wav"
+
+
 @api.get("/push/status")
 async def push_status(admin: dict = Depends(require_admin)):
     """Returns FCM configuration status — useful to verify Service Account loaded."""
@@ -2869,7 +2877,7 @@ async def send_test_push(
                 "to": target["token"],
                 "title": title,
                 "body": body,
-                "sound": sound,
+                "sound": expo_push_sound_name(sound),
                 "priority": "high",
                 "channelId": channel,
                 "ttl": 30,
@@ -3078,7 +3086,7 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                     "to": r["token"],
                     "title": title,
                     "body": body_preview,
-                    "sound": sound,
+                    "sound": expo_push_sound_name(sound),
                     "priority": "high",
                     "channelId": channel_id,
                     "ttl": ttl_sec,
