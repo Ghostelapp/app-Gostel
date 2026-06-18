@@ -49,7 +49,7 @@ const callKeepOptions = {
     maximumCallGroups: '1',
     maximumCallsPerCallGroup: '1',
     audioSession: {
-      categoryOptions: 0x4 | 0x8 | 0x20, // allowBluetooth | defaultToSpeaker | allowBluetoothA2DP
+      categoryOptions: 0x4, // allowBluetooth; speaker is enabled only from the in-call button
       mode: 'AVAudioSessionModeVoiceChat',
     },
   },

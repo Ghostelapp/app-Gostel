@@ -177,7 +177,7 @@ export default function CallScreen() {
   );
   const [status, setStatus] = useState<CallStatus>('init');
   const [muted, setMuted] = useState(false);
-  const [speakerOn, setSpeakerOn] = useState(true);
+  const [speakerOn, setSpeakerOn] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [remoteStreamUrl, setRemoteStreamUrl] = useState<string | null>(null);
@@ -652,9 +652,14 @@ export default function CallScreen() {
 
   const ensureMedia = useCallback(async (): Promise<any | null> => {
     try {
+      const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      };
       if (Platform.OS === 'web') {
         const stream = await (navigator as any).mediaDevices.getUserMedia({
-          audio: true,
+          audio: audioConstraints,
         });
         return stream;
       }
@@ -665,7 +670,7 @@ export default function CallScreen() {
         setErrMsg('Native WebRTC not loaded. Requires APK build.');
         return null;
       }
-      const stream = await WebRTC.mediaDevices.getUserMedia({ audio: true });
+      const stream = await WebRTC.mediaDevices.getUserMedia({ audio: audioConstraints });
       return stream;
     } catch (e: any) {
       const msg = e?.message || String(e);
@@ -1197,7 +1202,7 @@ export default function CallScreen() {
 
       // 2b. Native audio session must be active before microphone/WebRTC setup,
       // especially on iOS when the call was answered from CallKit.
-      startNativeCallAudio(true);
+      startNativeCallAudio(false);
 
       // 3. Get microphone access
       const stream = await ensureMedia();
