@@ -32,6 +32,9 @@ import {
   Volume2,
   VolumeX,
   ListChecks,
+  PhoneCall,
+  LifeBuoy,
+  Bug,
 } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import Avatar from '../../src/Avatar';
@@ -432,6 +435,41 @@ export default function ProfileScreen() {
             value=""
             onPress={() => router.push('/settings/permissions')}
             testID="menu-permissions"
+          />
+        </View>
+
+        <Text style={styles.sectionLabel}>Diagnostics & support</Text>
+        <View style={styles.menuCard}>
+          <MenuRow
+            icon={<PhoneCall color={theme.colors.primary} size={18} strokeWidth={1.8} />}
+            label="Voice call diagnostics"
+            value=""
+            onPress={() => router.push('/settings/call-diagnostics')}
+            testID="menu-call-diagnostics"
+          />
+          <Divider />
+          <MenuRow
+            icon={<Smartphone color={theme.colors.primary} size={18} strokeWidth={1.8} />}
+            label={t('profile.push_devices')}
+            value=""
+            onPress={() => router.push('/settings/push-devices')}
+            testID="menu-push-devices"
+          />
+          <Divider />
+          <MenuRow
+            icon={<Bug color={theme.colors.warning} size={18} strokeWidth={1.8} />}
+            label="Report a problem"
+            value=""
+            onPress={() => router.push('/settings/report-problem')}
+            testID="menu-report-problem"
+          />
+          <Divider />
+          <MenuRow
+            icon={<LifeBuoy color={theme.colors.primary} size={18} strokeWidth={1.8} />}
+            label="Support"
+            value=""
+            onPress={() => router.push('/settings/report-problem')}
+            testID="menu-support"
           />
         </View>
 
