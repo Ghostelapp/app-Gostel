@@ -177,6 +177,35 @@ def user_push_targets(u: dict) -> list[dict]:
     return targets
 
 
+async def remove_push_token_from_users(token: str, user_id: Optional[str] = None) -> None:
+    """Remove one physical device token from one account or from every account."""
+    token = (token or "").strip()
+    if not token:
+        return
+    user_filter = {"id": user_id} if user_id else {}
+    await db.users.update_many(
+        {**user_filter, "push_tokens.token": token},
+        {"$pull": {"push_tokens": {"token": token}}},
+    )
+    await db.users.update_many(
+        {
+            **user_filter,
+            "$or": [
+                {"push_token": token},
+                {"expo_push_token": token},
+            ],
+        },
+        {
+            "$unset": {
+                "expo_push_token": "",
+                "push_platform": "",
+                "push_token": "",
+                "push_token_type": "",
+            }
+        },
+    )
+
+
 def public_user(u: dict) -> dict:
     return {
         "id": u["id"],
@@ -485,6 +514,10 @@ class PushTokenIn(BaseModel):
     device_model: Optional[str] = None
     os_version: Optional[str] = None
     source: Optional[str] = None
+
+
+class PushUnregisterIn(BaseModel):
+    token: Optional[str] = Field(default=None, min_length=4, max_length=500)
 
 
 class CallStartIn(BaseModel):
@@ -2663,10 +2696,10 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
         "source": (payload.source or "").strip()[:80],
         "registered_at": now_utc().isoformat(),
     }
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$pull": {"push_tokens": {"token": token}}},
-    )
+    # A push token identifies one physical app install. If a user logs out and
+    # signs into another account on the same phone, move that phone to the new
+    # account instead of ringing both accounts.
+    await remove_push_token_from_users(token)
     await db.users.update_one(
         {"id": user["id"]},
         {
@@ -2712,7 +2745,15 @@ async def list_push_devices(user: dict = Depends(get_current_user)):
 
 
 @api.post("/push/unregister")
-async def unregister_push(user: dict = Depends(get_current_user)):
+async def unregister_push(
+    payload: Optional[PushUnregisterIn] = Body(default=None),
+    user: dict = Depends(get_current_user),
+):
+    token = ((payload.token if payload else None) or "").strip()
+    if token:
+        await remove_push_token_from_users(token)
+        return {"unregistered": True, "token_scoped": True}
+
     await db.users.update_one(
         {"id": user["id"]},
         {

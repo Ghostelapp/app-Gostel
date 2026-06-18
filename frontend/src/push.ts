@@ -1,8 +1,10 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { api } from './api';
 
 let _channelsConfigured = false;
+const PUSH_TOKEN_STORAGE_KEY = 'ghostel_push_token_v1';
 
 function getExpoProjectId(): string | undefined {
   const c: any = Constants as any;
@@ -186,6 +188,10 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
         os_version: diag.os_version,
         source: diag.token_source,
       });
+      await AsyncStorage.setItem(
+        PUSH_TOKEN_STORAGE_KEY,
+        JSON.stringify({ token, token_type: tokenType, platform: Platform.OS }),
+      );
     } catch (e: any) {
       diag.reason = 'register_failed';
       diag.register_error = String(e?.message || e).slice(0, 300);
@@ -199,6 +205,18 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
     diag.error = String(e?.message || e).slice(0, 300);
     await reportDiag(diag);
     return null;
+  }
+}
+
+export async function unregisterCurrentPushDeviceAsync(): Promise<void> {
+  if (Platform.OS === 'web') return;
+  try {
+    const raw = await AsyncStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
+    const cached = raw ? JSON.parse(raw) : null;
+    const token = typeof cached?.token === 'string' ? cached.token : '';
+    await api.post('/push/unregister', token ? { token } : {});
+  } finally {
+    await AsyncStorage.removeItem(PUSH_TOKEN_STORAGE_KEY);
   }
 }
 
