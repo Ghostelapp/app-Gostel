@@ -173,12 +173,11 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   // API and navigation, so consume that duplicate native event.
   if (appHandledAnswers.delete(key)) return;
 
-  try {
-    const { api } = require('./api');
-    await api.post(`/calls/${info.callId}/accept`);
-  } catch {
-    /* the persisted signaling path can still connect the call */
-  }
+  // Persist the destination before any network request. iOS may suspend the
+  // JavaScript runtime while the user is entering the device passcode; the
+  // AppState listener can then finish routing as soon as the app is active.
+  await routeOrDeferAnsweredCall(info);
+
   try {
     wsSend?.({
       type: 'call:accept',
@@ -187,9 +186,14 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
       conversation_id: info.conversationId,
     });
   } catch {
-    /* the API call remains authoritative */
+    /* the API call below remains authoritative */
   }
-  await routeOrDeferAnsweredCall(info);
+  try {
+    const { api } = require('./api');
+    api.post(`/calls/${info.callId}/accept`).catch(() => {});
+  } catch {
+    /* the persisted signaling path can still connect the call */
+  }
 }
 
 async function handleEndCall(callUUID: string): Promise<void> {

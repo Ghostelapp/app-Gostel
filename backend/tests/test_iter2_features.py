@@ -171,7 +171,7 @@ class TestCalls:
         )
         return r.json()["id"]
 
-    def test_start_and_end_call(self, api_client, admin_token, conv_id):
+    def test_start_and_end_call(self, api_client, admin_token, demo_token, conv_id):
         s = api_client.post(
             f"{BASE_URL}/api/calls/start",
             json={"conversation_id": conv_id, "mode": "audio"},
@@ -187,6 +187,15 @@ class TestCalls:
         assert call["encrypted"] is True
         assert call["e2ee_required"] is True
         assert call["e2ee_media"] == "webrtc-dtls-srtp"
+
+        active = api_client.get(
+            f"{BASE_URL}/api/calls/active-incoming",
+            headers=auth_headers(demo_token),
+        )
+        assert active.status_code == 200, active.text
+        assert active.json()["id"] == call["id"]
+        assert active.json()["caller_id"] == call["caller_id"]
+        assert active.json()["conversation_id"] == conv_id
 
         e = api_client.post(
             f"{BASE_URL}/api/calls/{call['id']}/end",

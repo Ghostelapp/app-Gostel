@@ -3712,6 +3712,34 @@ async def enrich_call_for_user(call: dict, user_id: str) -> dict:
     return call
 
 
+@api.get("/calls/active-incoming")
+async def get_active_incoming_call(user: dict = Depends(get_current_user)):
+    """Return a recent unanswered call so iOS can restore UI after unlock."""
+    cutoff = (now_utc() - timedelta(seconds=75)).isoformat()
+    call = await db.calls.find_one(
+        {
+            "member_ids": user["id"],
+            "caller_id": {"$ne": user["id"]},
+            "status": "ringing",
+            "answered_at": None,
+            "ended_at": None,
+            "started_at": {"$gte": cutoff},
+        },
+        {"_id": 0},
+        sort=[("started_at", -1)],
+    )
+    if not call:
+        return None
+    return {
+        "id": call.get("id"),
+        "caller_id": call.get("caller_id"),
+        "caller_name": call.get("caller_name") or "Unknown",
+        "conversation_id": call.get("conversation_id") or call.get("conv_id"),
+        "mode": call.get("mode") or "audio",
+        "received_at": int(_time.time() * 1000),
+    }
+
+
 @api.get("/calls")
 async def list_calls(
     user: dict = Depends(get_current_user),

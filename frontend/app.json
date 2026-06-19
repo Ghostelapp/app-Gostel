@@ -2,7 +2,7 @@
   "expo": {
     "name": "ghostel.app",
     "slug": "ghostel",
-    "version": "1.4.18",
+    "version": "1.4.19",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "ghostel",
@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "app.ghostel",
-      "buildNumber": "14",
+      "buildNumber": "15",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "Make encrypted voice calls and record voice messages",

@@ -117,25 +117,43 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
       return null;
     }
 
-    // Register a backend-compatible push token for the current platform.
-    // iOS is registered through Expo Push because the backend does not send
-    // raw APNs tokens directly.
+    // Calls on iOS are handled by the Firebase background handler. Register
+    // the FCM token first so an incoming-call push reaches that handler and
+    // can be handed to CallKit while the device is locked.
     let tokenResp: any = null;
     let token: string | null = null;
-    let tokenType = Platform.OS === 'ios' ? 'expo' : 'fcm';
+    let tokenType = 'fcm';
 
     if (Platform.OS === 'ios') {
       try {
-        const projectId = getExpoProjectId();
-        diag.expo_project_id = projectId || '';
-        tokenResp = await Notifications.getExpoPushTokenAsync(
-          projectId ? { projectId } : undefined,
-        );
-        token = tokenResp?.data || null;
-        tokenType = 'expo';
-        diag.token_source = 'expo_push_service';
+        const messaging = require('@react-native-firebase/messaging').default;
+        const firebaseAuthStatus = await messaging().requestPermission();
+        diag.firebase_permission = firebaseAuthStatus;
+        await messaging().registerDeviceForRemoteMessages();
+        diag.firebase_remote_registered = true;
+        token = await messaging().getToken();
+        tokenType = 'fcm';
+        diag.token_source = 'firebase_messaging';
       } catch (e: any) {
-        diag.expo_push_token_error = String(e?.message || e).slice(0, 300);
+        diag.firebase_token_error = String(e?.message || e).slice(0, 300);
+      }
+
+      // Keep Expo Push as a compatibility fallback if Firebase registration
+      // is temporarily unavailable. The active-call recovery endpoint still
+      // restores the ringing UI after the app becomes active.
+      if (!token) {
+        try {
+          const projectId = getExpoProjectId();
+          diag.expo_project_id = projectId || '';
+          tokenResp = await Notifications.getExpoPushTokenAsync(
+            projectId ? { projectId } : undefined,
+          );
+          token = tokenResp?.data || null;
+          tokenType = 'expo';
+          diag.token_source = 'expo_push_service_fallback';
+        } catch (e: any) {
+          diag.expo_push_token_error = String(e?.message || e).slice(0, 300);
+        }
       }
     } else {
       try {
@@ -148,7 +166,7 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
       }
     }
 
-    // Fallback for Android release builds using @react-native-firebase/messaging.
+    // Fallback for release builds using @react-native-firebase/messaging.
     // This avoids depending solely on expo-notifications for raw FCM token
     // retrieval while the backend sends directly through FCM HTTP v1.
     if (!token) {
@@ -179,6 +197,10 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
     diag.token_type = tokenType;
     diag.token_prefix = String(token).slice(0, 30);
     try {
+      const previousRaw = await AsyncStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
+      const previous = previousRaw ? JSON.parse(previousRaw) : null;
+      const previousToken = typeof previous?.token === 'string' ? previous.token : '';
+
       // Send token + type so backend chooses FCM or Expo Push correctly.
       await api.post('/push/register', {
         token,
@@ -188,6 +210,12 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
         os_version: diag.os_version,
         source: diag.token_source,
       });
+
+      // Migrating iOS from Expo Push to FCM creates a different token for the
+      // same installation. Remove the old token to avoid duplicate alerts.
+      if (previousToken && previousToken !== token) {
+        await api.post('/push/unregister', { token: previousToken }).catch(() => {});
+      }
       await AsyncStorage.setItem(
         PUSH_TOKEN_STORAGE_KEY,
         JSON.stringify({ token, token_type: tokenType, platform: Platform.OS }),

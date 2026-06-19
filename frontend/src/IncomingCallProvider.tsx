@@ -267,9 +267,28 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       if (mounted) showIncoming(call, { persist: false, notifyNative: false });
     };
 
+    const recoverActiveIncomingCall = async () => {
+      if (Platform.OS !== 'ios' || AppState.currentState !== 'active') return;
+      try {
+        const { data } = await api.get('/calls/active-incoming');
+        const call = normalizeIncomingCallPayload(data);
+        if (!mounted || !call || call.caller_id === user.id) return;
+
+        // The backend is authoritative here. A lifecycle-only CallKit event
+        // must not permanently suppress a call that is still ringing.
+        dismissedCallIdsRef.current.delete(call.id);
+        showIncoming(call, { persist: true, notifyNative: false });
+      } catch {
+        /* pending storage and WebSocket delivery remain available */
+      }
+    };
+
     const restore = async () => {
       const handledNativeIntent = await consumeNativeIntent();
-      if (!handledNativeIntent) await restorePendingCall();
+      if (!handledNativeIntent) {
+        await restorePendingCall();
+        await recoverActiveIncomingCall();
+      }
     };
 
     restore().catch(() => {});
