@@ -10,7 +10,7 @@ echo "Updating ghostel.app backend and browser app..."
 cd "$APP_ROOT"
 git pull --ff-only origin main
 
-cd backend
+cd "$APP_ROOT/backend"
 . .venv/bin/activate
 pip install -r requirements.txt
 sudo systemctl restart ghostel-app
@@ -26,12 +26,12 @@ echo "Updating ghostel.app landing page..."
 cd "$WEBSITE_ROOT"
 git pull --ff-only origin GhostelWebApp
 
-cd backend
+cd "$WEBSITE_ROOT/backend"
 . .venv/bin/activate
 pip install -r requirements.txt
 sudo systemctl restart ghostel-web-api
 
-cd frontend
+cd "$WEBSITE_ROOT/frontend"
 corepack yarn install --frozen-lockfile
 corepack yarn build
 sudo install -d -o www-data -g www-data "$WEBSITE_STATIC_ROOT"
