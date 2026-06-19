@@ -22,7 +22,7 @@
  *     non-call notifications). Only `type: incoming_call` data messages
  *     enter this call-notification path.
  */
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 type FcmDataMessage = {
   data?: Record<string, string>;
@@ -60,6 +60,9 @@ export function registerFcmHandlers(): void {
         if (msg?.data?.type === 'incoming_call') {
           const { showIncomingCallFromPush } = require('./incomingCallStore');
           await showIncomingCallFromPush(msg.data);
+          if (Platform.OS === 'ios' && AppState.currentState !== 'active') {
+            await _showIncomingCallKit(msg.data);
+          }
         }
       } catch (e) {
         console.warn('[fcm] foreground handler error', e);
@@ -105,21 +108,39 @@ async function _handleVoipPayload(msg: FcmDataMessage): Promise<void> {
     console.warn('[fcm] could not store incoming call', e);
   }
 
-  // Android has a native FirebaseMessagingService that posts the real
-  // full-screen call notification. Do not post a second JS notification here:
-  // on Samsung devices that duplicate can briefly win as a heads-up banner
-  // and make the incoming call feel like a normal top notification.
-  if (Platform.OS !== 'android') {
-    await _showIncomingCallPushNotification({
+  if (Platform.OS === 'ios') {
+    await _showIncomingCallKit({
       ...d,
       call_id: callId,
       caller_id: callerId,
       caller_name: callerName,
       conversation_id: conversationId || '',
     });
+    return;
+  }
+
+  // Android has a native FirebaseMessagingService that posts the real
+  // full-screen call notification. Do not post a second JS notification here:
+  // on Samsung devices that duplicate can briefly win as a heads-up banner
+  // and make the incoming call feel like a normal top notification.
+}
+
+async function _showIncomingCallKit(data: Record<string, string>): Promise<void> {
+  if (Platform.OS !== 'ios') return;
+  try {
+    const { displayIncomingCallNative } = require('./callkeep');
+    await displayIncomingCallNative({
+      callId: data.call_id,
+      conversationId: data.conversation_id || '',
+      callerId: data.caller_id,
+      callerName: data.caller_name || data.sender_name || 'Unknown',
+    });
+  } catch (e) {
+    console.warn('[fcm] could not display iOS CallKit call', e);
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function _showIncomingCallPushNotification(data: Record<string, string>): Promise<void> {
   if (Platform.OS !== 'android') return;
   try {

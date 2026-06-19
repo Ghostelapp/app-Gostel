@@ -5,6 +5,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   Platform,
+  AppState,
   Vibration,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -24,7 +25,11 @@ import { api, formatApiErrorDetail } from '../../src/api';
 import { useWebSocket } from '../../src/ws';
 import { theme } from '../../src/theme';
 import { getInCallManager } from '../../src/incall';
-import { markCallActive, endIncomingCallNative } from '../../src/callkeep';
+import {
+  markCallActive,
+  endIncomingCallNative,
+  subscribeToCallKeepActions,
+} from '../../src/callkeep';
 import {
   activateWebRtcAudioSession,
   deactivateWebRtcAudioSession,
@@ -1152,6 +1157,52 @@ export default function CallScreen() {
     }, 3_000);
     return () => clearInterval(timer);
   }, [reportCallDiag]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    let previousState = AppState.currentState;
+    const sub = AppState.addEventListener('change', (nextState) => {
+      const fromState = previousState;
+      previousState = nextState;
+      reportCallDiag('app_state_change', {
+        app_state_from: fromState,
+        app_state_to: nextState,
+      }).catch(() => {});
+
+      if (nextState !== 'active' || endedRef.current) return;
+
+      // iOS can hand AVAudioSession back to the app while unlocking. Rebind
+      // WebRTC and restore routing without rebuilding the peer connection.
+      startNativeCallAudio(speakerOn);
+      if (connectedRef.current) startAudioRepairLoop();
+
+      const pc = pcRef.current;
+      if (
+        pc &&
+        pc.connectionState !== 'connected' &&
+        pc.iceConnectionState !== 'connected' &&
+        pc.iceConnectionState !== 'completed'
+      ) {
+        scheduleConnectionRecovery(pc);
+      }
+    });
+    return () => sub.remove();
+  }, [
+    reportCallDiag,
+    scheduleConnectionRecovery,
+    speakerOn,
+    startAudioRepairLoop,
+    startNativeCallAudio,
+  ]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    return subscribeToCallKeepActions(({ callId, action }) => {
+      if (callId === id && action === 'end') {
+        closeCallFromPeer('Call ended');
+      }
+    });
+  }, [closeCallFromPeer, id]);
 
   // ---------------------------------------------------------------------------
   // Lifecycle: bootstrap the call when component mounts

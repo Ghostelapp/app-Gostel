@@ -3,6 +3,7 @@
 .vscode/
 .emergent/
 website-GhostelAPPweb/
+artifacts/
 backend/
 IOS/
 memory/

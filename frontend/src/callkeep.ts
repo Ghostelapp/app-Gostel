@@ -1,44 +1,41 @@
 /**
- * src/callkeep.ts — CallKeep integration.
- *
- * `react-native-callkeep` exposes iOS CallKit native incoming-call UI. Android
- * uses our own Firebase full-screen notification implementation instead, so
- * this module returns early there and never requests Telecom permissions.
- *
- * Lifecycle:
- *   1. setupCallKeep() runs once at app boot (called from _layout.tsx).
- *   2. FCM background handler (src/fcmBackground.ts) calls this on iOS when
- *      `displayIncomingCallNative()` when a `type: incoming_call` data push
- *      arrives — this shows the OS-level call screen even if the app is killed.
- *   3. User taps "Answer" on the native screen → CallKeep emits `answerCall`,
- *      which we forward to React Navigation → opens /call/{id}.
- *   4. User taps "Decline" → CallKeep emits `endCall` → we POST /calls/{id}/end
- *      AND send a WS `call:reject` so the caller updates in real time.
- *
- * Android support is intentionally a no-op.
+ * iOS CallKit integration. Android uses its own full-screen notification
+ * implementation and never enters this module's native call path.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import {
   activateWebRtcAudioSession,
   deactivateWebRtcAudioSession,
 } from './webrtcAudioSession';
 
-let _initialized = false;
-let _lastPhoneAccountWarningAt = 0;
-const _activeCalls = new Map<string, IncomingCallInfo>();
+let initialized = false;
+let setupPromise: Promise<boolean> | null = null;
+const activeCalls = new Map<string, IncomingCallInfo>();
+const displayedCalls = new Set<string>();
+const answeredCalls = new Set<string>();
+const appHandledAnswers = new Set<string>();
+const suppressedEndEvents = new Set<string>();
+const actionListeners = new Set<(action: CallKeepAction) => void>();
+
 const ACTIVE_CALL_PREFIX = 'ghostel_active_call_v1:';
 const PENDING_ANSWERED_CALL_KEY = 'ghostel_pending_answered_call_v1';
+
 type RouterLike = { push: (href: any) => void; replace?: (href: any) => void };
-let _router: RouterLike | null = null;
-let _wsSend: ((msg: any) => void) | null = null;
+let router: RouterLike | null = null;
+let wsSend: ((msg: any) => void) | null = null;
 
 export type IncomingCallInfo = {
-  callId: string;            // UUID — used as CallKeep callUUID
+  callId: string;
   conversationId: string;
   callerId: string;
   callerName: string;
   callerAvatar?: string | null;
+};
+
+export type CallKeepAction = {
+  callId: string;
+  action: 'answer' | 'end';
 };
 
 const callKeepOptions = {
@@ -49,7 +46,7 @@ const callKeepOptions = {
     maximumCallGroups: '1',
     maximumCallsPerCallGroup: '1',
     audioSession: {
-      categoryOptions: 0x4, // allowBluetooth; speaker is enabled only from the in-call button
+      categoryOptions: 0x4,
       mode: 'AVAudioSessionModeVoiceChat',
     },
   },
@@ -58,15 +55,35 @@ const callKeepOptions = {
   },
 };
 
-/** Provide the router + WebSocket send handle so CallKeep events can act. */
 export function bindCallKeepBridge(opts: {
   router: RouterLike;
   wsSend: (msg: any) => void;
-}) {
-  if (Platform.OS === 'android') return;
-  _router = opts.router;
-  _wsSend = opts.wsSend;
+}): void {
+  if (Platform.OS !== 'ios') return;
+  router = opts.router;
+  wsSend = opts.wsSend;
   flushPendingAnsweredCall().catch(() => {});
+}
+
+export function subscribeToCallKeepActions(
+  listener: (action: CallKeepAction) => void,
+): () => void {
+  actionListeners.add(listener);
+  return () => actionListeners.delete(listener);
+}
+
+export function isIncomingCallNativeDisplayed(callId: string): boolean {
+  return Platform.OS === 'ios' && displayedCalls.has(normalizeCallId(callId));
+}
+
+function emitCallKeepAction(action: CallKeepAction): void {
+  for (const listener of actionListeners) {
+    try {
+      listener(action);
+    } catch {
+      /* one consumer must not block the others */
+    }
+  }
 }
 
 function normalizeCallId(callId: string): string {
@@ -84,25 +101,26 @@ function callHref(info: IncomingCallInfo): string {
 async function rememberIncomingCall(info: IncomingCallInfo): Promise<void> {
   const key = normalizeCallId(info.callId);
   if (!key) return;
-  _activeCalls.set(key, info);
+  activeCalls.set(key, info);
   await AsyncStorage.setItem(activeCallKey(info.callId), JSON.stringify(info));
 }
 
 async function getIncomingCallInfo(callId: string): Promise<IncomingCallInfo | null> {
   const key = normalizeCallId(callId);
   if (!key) return null;
-  const cached = _activeCalls.get(key);
+  const cached = activeCalls.get(key);
   if (cached) return cached;
+
   const raw = await AsyncStorage.getItem(activeCallKey(callId));
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as IncomingCallInfo;
     if (parsed.callId && parsed.conversationId && parsed.callerId) {
-      _activeCalls.set(key, parsed);
+      activeCalls.set(key, parsed);
       return parsed;
     }
   } catch {
-    /* ignore corrupt cache */
+    await AsyncStorage.removeItem(activeCallKey(callId));
   }
   return null;
 }
@@ -110,160 +128,242 @@ async function getIncomingCallInfo(callId: string): Promise<IncomingCallInfo | n
 async function forgetIncomingCall(callId: string): Promise<void> {
   const key = normalizeCallId(callId);
   if (!key) return;
-  _activeCalls.delete(key);
+  activeCalls.delete(key);
+  displayedCalls.delete(key);
   await AsyncStorage.removeItem(activeCallKey(callId));
+}
+
+async function clearPendingIncomingCall(callId: string): Promise<void> {
+  try {
+    const store = require('./incomingCallStore');
+    await store.clearPendingIncomingCall(callId);
+  } catch {
+    /* best-effort state cleanup */
+  }
 }
 
 async function routeOrDeferAnsweredCall(info: IncomingCallInfo): Promise<void> {
   const href = callHref(info);
-  if (_router) {
-    _router.push(href);
+  if (router && AppState.currentState === 'active') {
+    router.push(href);
     return;
   }
   await AsyncStorage.setItem(PENDING_ANSWERED_CALL_KEY, href);
 }
 
 async function flushPendingAnsweredCall(): Promise<void> {
-  if (!_router) return;
+  if (!router || AppState.currentState !== 'active') return;
   const href = await AsyncStorage.getItem(PENDING_ANSWERED_CALL_KEY);
   if (!href) return;
   await AsyncStorage.removeItem(PENDING_ANSWERED_CALL_KEY);
-  _router.push(href);
+  router.push(href);
 }
 
-/**
- * One-time setup of CallKeep + event listeners. Safe to call multiple times.
- */
-export async function setupCallKeep(): Promise<boolean> {
-  if (_initialized) return true;
-  if (Platform.OS === 'web' || Platform.OS === 'android') return false;
+async function handleAnswerCall(callUUID: string): Promise<void> {
+  const key = normalizeCallId(callUUID);
+  if (!key) return;
+  const info = await getIncomingCallInfo(callUUID);
+  if (!info) return;
+
+  answeredCalls.add(key);
+  await clearPendingIncomingCall(info.callId);
+  emitCallKeepAction({ callId: info.callId, action: 'answer' });
+
+  // answerIncomingCall() also emits answerCall. The in-app answer button owns
+  // API and navigation, so consume that duplicate native event.
+  if (appHandledAnswers.delete(key)) return;
+
   try {
-    const RNCallKeep = require('react-native-callkeep').default;
-    await RNCallKeep.setup(callKeepOptions);
-    // Safe on iOS CallKit; Android never reaches this branch.
+    const { api } = require('./api');
+    await api.post(`/calls/${info.callId}/accept`);
+  } catch {
+    /* the persisted signaling path can still connect the call */
+  }
+  try {
+    wsSend?.({
+      type: 'call:accept',
+      to: info.callerId,
+      call_id: info.callId,
+      conversation_id: info.conversationId,
+    });
+  } catch {
+    /* the API call remains authoritative */
+  }
+  await routeOrDeferAnsweredCall(info);
+}
+
+async function handleEndCall(callUUID: string): Promise<void> {
+  const key = normalizeCallId(callUUID);
+  if (!key) return;
+
+  if (suppressedEndEvents.delete(key)) {
+    answeredCalls.delete(key);
+    appHandledAnswers.delete(key);
+    await forgetIncomingCall(callUUID);
+    return;
+  }
+
+  const info = await getIncomingCallInfo(callUUID);
+  const wasAnswered = answeredCalls.has(key);
+  answeredCalls.delete(key);
+  appHandledAnswers.delete(key);
+  await forgetIncomingCall(callUUID);
+  await clearPendingIncomingCall(callUUID);
+  if (!info) return;
+  emitCallKeepAction({ callId: info.callId, action: 'end' });
+
+  try {
+    wsSend?.({
+      type: wasAnswered ? 'call:end' : 'call:reject',
+      to: info.callerId,
+      call_id: info.callId,
+      conversation_id: info.conversationId,
+    });
+  } catch {
+    /* the server update below remains authoritative */
+  }
+  try {
+    const { api } = require('./api');
+    await api.post(`/calls/${info.callId}/end`);
+  } catch {
+    /* best-effort server record */
+  }
+}
+
+export async function setupCallKeep(): Promise<boolean> {
+  if (initialized) return true;
+  if (Platform.OS !== 'ios') return false;
+  if (setupPromise) return setupPromise;
+
+  setupPromise = (async () => {
     try {
-      RNCallKeep.setAvailable(true);
-    } catch {
-      /* iOS doesn't support this */
-    }
+      const RNCallKeep = require('react-native-callkeep').default;
+      await RNCallKeep.setup(callKeepOptions);
 
-    // ---------- Event handlers ----------
-    RNCallKeep.addEventListener('answerCall', async ({ callUUID }: { callUUID: string }) => {
-      const info = await getIncomingCallInfo(callUUID);
-      if (!info) return;
-      // Tell CallKeep we've accepted; navigate to our WebRTC screen.
-      try {
-        RNCallKeep.setCurrentCallActive(callUUID);
-      } catch {
-        /* ignore */
-      }
-      try {
-        const { api } = require('./api');
-        api.post(`/calls/${info.callId}/accept`).catch(() => {});
-      } catch {
-        /* ignore */
-      }
-      try {
-        _wsSend?.({
-          type: 'call:accept',
-          to: info.callerId,
-          call_id: info.callId,
-          conversation_id: info.conversationId,
-        });
-      } catch {
-        /* ignore */
-      }
-      await routeOrDeferAnsweredCall(info);
-    });
-
-    RNCallKeep.addEventListener('endCall', async ({ callUUID }: { callUUID: string }) => {
-      const info = await getIncomingCallInfo(callUUID);
-      await forgetIncomingCall(callUUID);
-      if (!info) return;
-      // User declined or ended before answering → notify caller + server.
-      try {
-        _wsSend?.({
-          type: 'call:reject',
-          to: info.callerId,
-          call_id: info.callId,
-          conversation_id: info.conversationId,
-        });
-      } catch {
-        /* ignore */
-      }
-      // Best-effort server record.
-      try {
-        const { api } = require('./api');
-        api.post(`/calls/${info.callId}/end`).catch(() => {});
-      } catch {
-        /* ignore */
-      }
-    });
-
-    // Fired when user taps the foreground-service notification — opens the app.
-    RNCallKeep.addEventListener(
-      'didActivateAudioSession',
-      () => {
+      RNCallKeep.addEventListener(
+        'answerCall',
+        ({ callUUID }: { callUUID: string }) => {
+          handleAnswerCall(callUUID).catch(() => {});
+        },
+      );
+      RNCallKeep.addEventListener(
+        'endCall',
+        ({ callUUID }: { callUUID: string }) => {
+          handleEndCall(callUUID).catch(() => {});
+        },
+      );
+      RNCallKeep.addEventListener('didActivateAudioSession', () => {
         activateWebRtcAudioSession();
-        /* iOS hook — could (re)start incall manager here */
-      },
-    );
-
-    RNCallKeep.addEventListener(
-      'didDeactivateAudioSession',
-      () => {
+      });
+      RNCallKeep.addEventListener('didDeactivateAudioSession', () => {
         deactivateWebRtcAudioSession();
-      },
-    );
+      });
 
-    _initialized = true;
+      AppState.addEventListener('change', (state) => {
+        if (state !== 'active') return;
+        flushPendingAnsweredCall().catch(() => {});
+        if (answeredCalls.size > 0) activateWebRtcAudioSession();
+      });
+
+      initialized = true;
+
+      // Replay a CallKit action made before the JavaScript bridge was ready.
+      try {
+        const events = await RNCallKeep.getInitialEvents?.();
+        for (const event of Array.isArray(events) ? events : []) {
+          const name = String(event?.name || '');
+          const callUUID = String(event?.data?.callUUID || '');
+          if (!callUUID) continue;
+          if (name.includes('PerformAnswerCallAction')) {
+            await handleAnswerCall(callUUID);
+          } else if (name.includes('PerformEndCallAction')) {
+            await handleEndCall(callUUID);
+          }
+        }
+        RNCallKeep.clearInitialEvents?.();
+      } catch {
+        /* live event listeners remain available */
+      }
+      return true;
+    } catch (error) {
+      console.warn('[callkeep] setup failed', error);
+      setupPromise = null;
+      return false;
+    }
+  })();
+
+  return setupPromise;
+}
+
+export async function displayIncomingCallNative(
+  info: IncomingCallInfo,
+): Promise<boolean> {
+  if (Platform.OS !== 'ios') return false;
+  const key = normalizeCallId(info.callId);
+  if (!key || displayedCalls.has(key)) return !!key;
+  displayedCalls.add(key);
+
+  try {
+    if (!(await setupCallKeep())) throw new Error('CallKeep unavailable');
+    const RNCallKeep = require('react-native-callkeep').default;
+    await rememberIncomingCall(info);
+    await RNCallKeep.displayIncomingCall(
+      info.callId,
+      info.callerId,
+      info.callerName,
+      'generic',
+      false,
+    );
     return true;
-  } catch (e) {
-    console.warn('[callkeep] setup failed', e);
+  } catch (error) {
+    displayedCalls.delete(key);
+    console.warn('[callkeep] displayIncomingCall failed', error);
     return false;
   }
 }
 
-/**
- * Show the native OS-level incoming-call screen. Called from the FCM background
- * handler — works even when the app is killed.
- */
-export function displayIncomingCallNative(info: IncomingCallInfo): void {
-  if (Platform.OS === 'web' || Platform.OS === 'android') return;
+export async function answerIncomingCallNative(callId: string): Promise<boolean> {
+  if (Platform.OS !== 'ios') return false;
+  const key = normalizeCallId(callId);
+  if (!key) return false;
+
   try {
+    if (!(await setupCallKeep())) return false;
     const RNCallKeep = require('react-native-callkeep').default;
-    rememberIncomingCall(info).catch(() => {});
-    RNCallKeep.displayIncomingCall(
-      info.callId,           // callUUID (must be a valid UUID-like string)
-      info.callerId,         // handle (caller "phone number"-like identifier)
-      info.callerName,       // localized name shown on the lockscreen
-      'generic',             // handleType
-      false,                 // hasVideo
-    );
-  } catch (e) {
-    console.warn('[callkeep] displayIncomingCall failed', e);
+    answeredCalls.add(key);
+    appHandledAnswers.add(key);
+    await clearPendingIncomingCall(callId);
+    await RNCallKeep.answerIncomingCall(callId);
+    setTimeout(() => appHandledAnswers.delete(key), 5_000);
+    return true;
+  } catch {
+    appHandledAnswers.delete(key);
+    return false;
   }
 }
 
-/** Programmatically end a call (e.g. caller cancelled before we answered). */
+/** End CallKit UI without treating the resulting native event as a rejection. */
 export function endIncomingCallNative(callId: string): void {
-  if (Platform.OS === 'web' || Platform.OS === 'android') return;
+  if (Platform.OS !== 'ios') return;
+  const key = normalizeCallId(callId);
+  if (!key) return;
+
   try {
     const RNCallKeep = require('react-native-callkeep').default;
+    suppressedEndEvents.add(key);
     RNCallKeep.endCall(callId);
     forgetIncomingCall(callId).catch(() => {});
+    answeredCalls.delete(key);
+    appHandledAnswers.delete(key);
+    setTimeout(() => suppressedEndEvents.delete(key), 5_000);
   } catch {
-    /* ignore */
+    suppressedEndEvents.delete(key);
   }
 }
 
-/** Report the call as connected so OS shows it in the system call log. */
 export function markCallActive(callId: string): void {
-  if (Platform.OS === 'web' || Platform.OS === 'android') return;
-  try {
-    const RNCallKeep = require('react-native-callkeep').default;
-    RNCallKeep.setCurrentCallActive(callId);
-  } catch {
-    /* ignore */
-  }
+  if (Platform.OS !== 'ios') return;
+  const key = normalizeCallId(callId);
+  if (key) answeredCalls.add(key);
+  activateWebRtcAudioSession();
 }

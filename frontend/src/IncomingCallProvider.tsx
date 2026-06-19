@@ -17,7 +17,14 @@ import { useWebSocket } from './ws';
 import { useAuth } from './auth';
 import { api } from './api';
 import { theme } from './theme';
-import { bindCallKeepBridge, endIncomingCallNative } from './callkeep';
+import {
+  answerIncomingCallNative,
+  bindCallKeepBridge,
+  displayIncomingCallNative,
+  endIncomingCallNative,
+  isIncomingCallNativeDisplayed,
+  subscribeToCallKeepActions,
+} from './callkeep';
 import {
   clearPendingIncomingCall,
   getPendingIncomingCall,
@@ -54,10 +61,15 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const { user } = useAuth();
   const router = useRouter();
   const [incoming, setIncoming] = useState<IncomingCall | null>(null);
+  const incomingRef = useRef<IncomingCall | null>(null);
   const vibratingRef = useRef(false);
   const incomingCallIdRef = useRef<string | null>(null);
   const dismissedCallIdsRef = useRef(new Set<string>());
   const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    incomingRef.current = incoming;
+  }, [incoming]);
 
   const startVibration = useCallback(() => {
     if (vibratingRef.current) return;
@@ -86,10 +98,20 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     ) => {
       if (call.caller_id === user?.id || dismissedCallIdsRef.current.has(call.id)) return;
       if (persist) savePendingIncomingCall(call).catch(() => {});
+      if (Platform.OS === 'ios' && AppState.currentState !== 'active') {
+        displayIncomingCallNative({
+          callId: call.id,
+          conversationId: call.conversation_id,
+          callerId: call.caller_id,
+          callerName: call.caller_name,
+        }).catch(() => {});
+        return;
+      }
       if (incomingCallIdRef.current === call.id) return;
       incomingCallIdRef.current = call.id;
       setIncoming((current) => (current?.id === call.id ? current : call));
-      startVibration();
+      const nativeIosCall = isIncomingCallNativeDisplayed(call.id);
+      if (!nativeIosCall) startVibration();
       if (Platform.OS === 'android') {
         if (notifyNative) {
           // Keep one native full-screen call notification alive until the call
@@ -102,7 +124,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
             mode: call.mode,
           }).catch(() => {});
         }
-      } else {
+      } else if (!nativeIosCall) {
         import('./sounds').then((s) => s.startRingtone(0.85)).catch(() => {});
       }
     },
@@ -181,7 +203,15 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   useEffect(() => {
     if (!user) return;
     bindCallKeepBridge({ router, wsSend });
-  }, [user, router, wsSend]);
+    return subscribeToCallKeepActions(({ callId }) => {
+      dismissedCallIdsRef.current.add(callId);
+      if (incomingCallIdRef.current === callId) incomingCallIdRef.current = null;
+      setIncoming((current) => (current?.id === callId ? null : current));
+      clearPendingIncomingCall(callId).catch(() => {});
+      stopVibration();
+      import('./sounds').then((sounds) => sounds.stopRingtone()).catch(() => {});
+    });
+  }, [user, router, stopVibration, wsSend]);
 
   useEffect(() => {
     if (!user) return;
@@ -247,6 +277,18 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         restore().catch(() => {});
+      } else if (Platform.OS === 'ios') {
+        const current = incomingRef.current;
+        if (current) {
+          displayIncomingCallNative({
+            callId: current.id,
+            conversationId: current.conversation_id,
+            callerId: current.caller_id,
+            callerName: current.caller_name,
+          }).catch(() => {});
+          stopVibration();
+          import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
+        }
       }
     });
     // Android delivers notification action taps through MainActivity.onNewIntent.
@@ -261,7 +303,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       sub.remove();
       clearInterval(nativeActionTimer);
     };
-  }, [user, showIncoming, handleNativeCallAction]);
+  }, [user, showIncoming, handleNativeCallAction, stopVibration]);
 
   // Stop vibration AND ringtone whenever incoming clears
   useEffect(() => {
@@ -312,12 +354,15 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     clearPendingIncomingCall(call.id).catch(() => {});
     cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
     stopVibration();
-    // If the OS already showed a native CallKeep screen for this call (e.g.
-    // from a background push), clear it now — we're handling it in-app.
-    try {
-      endIncomingCallNative(call.id);
-    } catch {
-      /* ignore */
+    if (Platform.OS === 'ios') {
+      // Keep CallKit and its AVAudioSession alive through device unlock.
+      await answerIncomingCallNative(call.id).catch(() => false);
+    } else {
+      try {
+        endIncomingCallNative(call.id);
+      } catch {
+        /* ignore */
+      }
     }
     try {
       await api.post(`/calls/${call.id}/accept`);

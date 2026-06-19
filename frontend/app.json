@@ -11,12 +11,16 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "app.ghostel",
-      "buildNumber": "13",
+      "buildNumber": "14",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSMicrophoneUsageDescription": "Record voice messages",
+        "NSMicrophoneUsageDescription": "Make encrypted voice calls and record voice messages",
         "NSCameraUsageDescription": "Share photos in chats",
-        "NSPhotoLibraryUsageDescription": "Send photos from your library"
+        "NSPhotoLibraryUsageDescription": "Send photos from your library",
+        "UIBackgroundModes": [
+          "audio",
+          "remote-notification"
+        ]
       }
     },
     "android": {

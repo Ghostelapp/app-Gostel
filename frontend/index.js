@@ -1,5 +1,6 @@
-import { LogBox } from 'react-native';
+import { LogBox, Platform } from 'react-native';
 import { registerFcmHandlers } from './src/fcmBackground';
+import { setupCallKeep } from './src/callkeep';
 
 if (__DEV__) {
   LogBox.ignoreLogs([
@@ -14,6 +15,12 @@ try {
   registerFcmHandlers();
 } catch (error) {
   console.warn('[boot] registerFcmHandlers failed', error);
+}
+
+if (Platform.OS === 'ios') {
+  setupCallKeep().catch((error) => {
+    console.warn('[boot] setupCallKeep failed', error);
+  });
 }
 
 import 'expo-router/entry';
