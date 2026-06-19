@@ -5,6 +5,39 @@ import { api } from './api';
 
 let _channelsConfigured = false;
 const PUSH_TOKEN_STORAGE_KEY = 'ghostel_push_token_v1';
+const IOS_FCM_RETRY_DELAYS_MS = [0, 300, 900, 1_800, 3_000];
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getIosFirebaseToken(diag: Record<string, any>): Promise<string | null> {
+  const messaging = require('@react-native-firebase/messaging').default;
+  const firebaseAuthStatus = await messaging().requestPermission();
+  diag.firebase_permission = firebaseAuthStatus;
+  await messaging().registerDeviceForRemoteMessages();
+  diag.firebase_remote_registered = true;
+
+  let lastError = '';
+  for (let attempt = 0; attempt < IOS_FCM_RETRY_DELAYS_MS.length; attempt += 1) {
+    const delay = IOS_FCM_RETRY_DELAYS_MS[attempt];
+    if (delay > 0) await wait(delay);
+    try {
+      const apnsToken = await messaging().getAPNSToken?.();
+      diag.firebase_apns_ready = !!apnsToken;
+      const token = await messaging().getToken();
+      if (token) {
+        diag.firebase_token_attempt = attempt + 1;
+        return token;
+      }
+    } catch (error: any) {
+      lastError = String(error?.message || error).slice(0, 300);
+    }
+  }
+
+  if (lastError) diag.firebase_token_error = lastError;
+  return null;
+}
 
 function getExpoProjectId(): string | undefined {
   const c: any = Constants as any;
@@ -126,14 +159,9 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
 
     if (Platform.OS === 'ios') {
       try {
-        const messaging = require('@react-native-firebase/messaging').default;
-        const firebaseAuthStatus = await messaging().requestPermission();
-        diag.firebase_permission = firebaseAuthStatus;
-        await messaging().registerDeviceForRemoteMessages();
-        diag.firebase_remote_registered = true;
-        token = await messaging().getToken();
+        token = await getIosFirebaseToken(diag);
         tokenType = 'fcm';
-        diag.token_source = 'firebase_messaging';
+        if (token) diag.token_source = 'firebase_messaging';
       } catch (e: any) {
         diag.firebase_token_error = String(e?.message || e).slice(0, 300);
       }

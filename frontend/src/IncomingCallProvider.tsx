@@ -61,15 +61,10 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const { user } = useAuth();
   const router = useRouter();
   const [incoming, setIncoming] = useState<IncomingCall | null>(null);
-  const incomingRef = useRef<IncomingCall | null>(null);
   const vibratingRef = useRef(false);
   const incomingCallIdRef = useRef<string | null>(null);
   const dismissedCallIdsRef = useRef(new Set<string>());
   const pulse = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    incomingRef.current = incoming;
-  }, [incoming]);
 
   const startVibration = useCallback(() => {
     if (vibratingRef.current) return;
@@ -99,12 +94,14 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       if (call.caller_id === user?.id || dismissedCallIdsRef.current.has(call.id)) return;
       if (persist) savePendingIncomingCall(call).catch(() => {});
       if (Platform.OS === 'ios' && AppState.currentState !== 'active') {
-        displayIncomingCallNative({
-          callId: call.id,
-          conversationId: call.conversation_id,
-          callerId: call.caller_id,
-          callerName: call.caller_name,
-        }).catch(() => {});
+        if (notifyNative) {
+          displayIncomingCallNative({
+            callId: call.id,
+            conversationId: call.conversation_id,
+            callerId: call.caller_id,
+            callerName: call.caller_name,
+          }).catch(() => {});
+        }
         return;
       }
       if (incomingCallIdRef.current === call.id) return;
@@ -296,18 +293,6 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         restore().catch(() => {});
-      } else if (Platform.OS === 'ios') {
-        const current = incomingRef.current;
-        if (current) {
-          displayIncomingCallNative({
-            callId: current.id,
-            conversationId: current.conversation_id,
-            callerId: current.caller_id,
-            callerName: current.caller_name,
-          }).catch(() => {});
-          stopVibration();
-          import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
-        }
       }
     });
     // Android delivers notification action taps through MainActivity.onNewIntent.
@@ -391,9 +376,15 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     router.push(`/call/${call.id}?role=callee&conversation_id=${call.conversation_id}&caller_id=${call.caller_id}`);
   };
 
-  const reject = async () => {
+  const reject = async (source: 'button' | 'modal_request_close' = 'button') => {
     if (!incoming) return;
     const call = incoming;
+    api.post(`/calls/${call.id}/diag`, {
+      reason: 'incoming_call_reject_requested',
+      status: 'ringing',
+      source,
+      app_state: AppState.currentState,
+    }).catch(() => {});
     dismissedCallIdsRef.current.add(call.id);
     incomingCallIdRef.current = null;
     setIncoming(null);
@@ -434,7 +425,11 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         visible={!!incoming}
         transparent={false}
         animationType="fade"
-        onRequestClose={reject}
+        onRequestClose={() => {
+          // iOS can request a modal close during system UI transitions. Only
+          // the explicit red button may reject an iOS call.
+          if (Platform.OS !== 'ios') reject('modal_request_close');
+        }}
       >
         <View style={styles.screen}>
           <View style={styles.topGlow} />
@@ -503,7 +498,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
             <View style={styles.actions}>
               <TouchableOpacity
                 testID="reject-call-button"
-                onPress={reject}
+                onPress={() => reject('button')}
                 style={[styles.actionBtn, styles.rejectBtn]}
                 activeOpacity={0.86}
               >

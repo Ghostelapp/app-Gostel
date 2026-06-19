@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useCallback } from 'react';
+import { AppState, Platform } from 'react-native';
 import { api, formatApiErrorDetail } from './api';
 import { getStoredToken, removeStoredToken, setStoredToken } from './tokenStorage';
 import { registerPushNotificationsAsync, unregisterCurrentPushDeviceAsync } from './push';
@@ -43,6 +44,7 @@ const AuthContext = createContext<AuthState | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const userId = user?.id;
 
   const refreshUser = useCallback(async () => {
     try {
@@ -71,11 +73,63 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Register device capabilities once a user is authenticated.
   useEffect(() => {
-    if (user) {
-      registerPushNotificationsAsync().catch(() => {});
-      registerE2EEKey(user.id).catch(() => {});
+    if (!userId) return;
+
+    let cancelled = false;
+    let registrationInFlight = false;
+    const retryTimers = new Set<ReturnType<typeof setTimeout>>();
+    const registerPush = async () => {
+      if (cancelled || registrationInFlight) return;
+      registrationInFlight = true;
+      try {
+        await registerPushNotificationsAsync();
+      } catch {
+        /* registration is retried below */
+      } finally {
+        registrationInFlight = false;
+      }
+    };
+    const schedulePushRegistration = (delayMs: number) => {
+      const timer = setTimeout(() => {
+        retryTimers.delete(timer);
+        registerPush();
+      }, delayMs);
+      retryTimers.add(timer);
+    };
+
+    registerPush();
+    registerE2EEKey(userId).catch(() => {});
+
+    // APNs may expose its device token a few seconds after the first iOS app
+    // launch. Retry once, then refresh registration whenever the app becomes
+    // active so an Expo fallback cannot remain the call channel indefinitely.
+    if (Platform.OS === 'ios') {
+      schedulePushRegistration(10_000);
     }
-  }, [user?.id]);
+    const appStateSub = Platform.OS === 'ios'
+      ? AppState.addEventListener('change', (state) => {
+          if (state === 'active') schedulePushRegistration(1_000);
+        })
+      : null;
+
+    let tokenRefreshUnsub: (() => void) | null = null;
+    try {
+      const messaging = require('@react-native-firebase/messaging').default;
+      tokenRefreshUnsub = messaging().onTokenRefresh(() => {
+        registerPush();
+      });
+    } catch {
+      /* Firebase messaging is unavailable in Expo Go/web */
+    }
+
+    return () => {
+      cancelled = true;
+      retryTimers.forEach(clearTimeout);
+      retryTimers.clear();
+      appStateSub?.remove();
+      tokenRefreshUnsub?.();
+    };
+  }, [userId]);
 
   // Periodically ping /heartbeat while in foreground to keep `last_active` fresh.
   useHeartbeat(!!user, 60_000);

@@ -24,6 +24,9 @@ const PENDING_ANSWERED_CALL_KEY = 'ghostel_pending_answered_call_v1';
 type RouterLike = { push: (href: any) => void; replace?: (href: any) => void };
 let router: RouterLike | null = null;
 let wsSend: ((msg: any) => void) | null = null;
+let lastBecameActiveAt = AppState.currentState === 'active' ? Date.now() : 0;
+
+const ACTIVE_TRANSITION_END_GUARD_MS = 12_000;
 
 export type IncomingCallInfo = {
   callId: string;
@@ -196,7 +199,49 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   }
 }
 
-async function handleEndCall(callUUID: string): Promise<void> {
+function reportCallKeepDiag(
+  info: IncomingCallInfo,
+  reason: string,
+  extra: Record<string, unknown> = {},
+): void {
+  try {
+    const { api } = require('./api');
+    api.post(`/calls/${info.callId}/diag`, {
+      reason,
+      status: 'callkeep',
+      app_state: AppState.currentState,
+      ...extra,
+    }).catch(() => {});
+  } catch {
+    /* diagnostics must never affect call handling */
+  }
+}
+
+async function restoreAfterTransientNativeEnd(info: IncomingCallInfo): Promise<void> {
+  const key = normalizeCallId(info.callId);
+  displayedCalls.delete(key);
+  answeredCalls.delete(key);
+  appHandledAnswers.delete(key);
+
+  try {
+    const { showIncomingCallFromPush } = require('./incomingCallStore');
+    await showIncomingCallFromPush({
+      call_id: info.callId,
+      caller_id: info.callerId,
+      caller_name: info.callerName,
+      conversation_id: info.conversationId,
+      mode: 'audio',
+      received_at: Date.now(),
+    });
+  } catch {
+    /* active-call recovery will query the backend as a second fallback */
+  }
+}
+
+async function handleEndCall(
+  callUUID: string,
+  { fromInitialEvent = false }: { fromInitialEvent?: boolean } = {},
+): Promise<void> {
   const key = normalizeCallId(callUUID);
   if (!key) return;
 
@@ -209,12 +254,42 @@ async function handleEndCall(callUUID: string): Promise<void> {
 
   const info = await getIncomingCallInfo(callUUID);
   const wasAnswered = answeredCalls.has(key);
+
+  // During iOS lockscreen -> passcode -> app transitions CallKit can emit a
+  // live end action while the server-side call is still ringing. Treating it
+  // as a user decline is what made the caller receive call:reject immediately
+  // after the callee unlocked the phone. A real lockscreen decline arrives
+  // while the app is background/inactive; an initial queued action is also
+  // always honored.
+  const activeTransitionAge = Date.now() - lastBecameActiveAt;
+  const isTransientUnlockEnd =
+    !!info &&
+    !wasAnswered &&
+    !fromInitialEvent &&
+    AppState.currentState === 'active' &&
+    activeTransitionAge >= 0 &&
+    activeTransitionAge <= ACTIVE_TRANSITION_END_GUARD_MS;
+
+  if (info && isTransientUnlockEnd) {
+    reportCallKeepDiag(info, 'callkeep_end_ignored_after_unlock', {
+      active_transition_age_ms: activeTransitionAge,
+      native_displayed: displayedCalls.has(key),
+    });
+    await restoreAfterTransientNativeEnd(info);
+    return;
+  }
+
   answeredCalls.delete(key);
   appHandledAnswers.delete(key);
   await forgetIncomingCall(callUUID);
   await clearPendingIncomingCall(callUUID);
   if (!info) return;
   emitCallKeepAction({ callId: info.callId, action: 'end' });
+  reportCallKeepDiag(info, 'callkeep_end_honored', {
+    answered: wasAnswered,
+    from_initial_event: fromInitialEvent,
+    active_transition_age_ms: activeTransitionAge,
+  });
 
   try {
     wsSend?.({
@@ -265,6 +340,7 @@ export async function setupCallKeep(): Promise<boolean> {
 
       AppState.addEventListener('change', (state) => {
         if (state !== 'active') return;
+        lastBecameActiveAt = Date.now();
         flushPendingAnsweredCall().catch(() => {});
         if (answeredCalls.size > 0) activateWebRtcAudioSession();
       });
@@ -281,7 +357,7 @@ export async function setupCallKeep(): Promise<boolean> {
           if (name.includes('PerformAnswerCallAction')) {
             await handleAnswerCall(callUUID);
           } else if (name.includes('PerformEndCallAction')) {
-            await handleEndCall(callUUID);
+            await handleEndCall(callUUID, { fromInitialEvent: true });
           }
         }
         RNCallKeep.clearInitialEvents?.();
