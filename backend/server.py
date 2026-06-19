@@ -3199,6 +3199,7 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
 
         # ---- Direct FCM path ----
         fcm_ok = fcm_err = 0
+        fcm_success_users: set[str] = set()
         if fcm_recipients and fcm_is_configured():
             async with httpx.AsyncClient(timeout=10) as client:
                 for r in fcm_recipients:
@@ -3217,6 +3218,8 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                     )
                     if result.get("ok"):
                         fcm_ok += 1
+                        if r.get("user_id"):
+                            fcm_success_users.add(r["user_id"])
                     else:
                         fcm_err += 1
                         err_code = result.get("fcm_error_code") or result.get("error", "unknown")
@@ -3245,8 +3248,14 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                 f"FCM not configured — skipped {len(fcm_recipients)} recipients"
             )
 
-        # ---- Legacy Expo Push fallback ----
-        if expo_recipients:
+        # ---- Expo Push fallback ----
+        # Each iOS install registers both transports. Use Expo only for users
+        # whose direct FCM delivery did not succeed, avoiding duplicate alerts
+        # while retaining EAS-managed APNs as an independent fallback.
+        expo_fallback_recipients = [
+            r for r in expo_recipients if r.get("user_id") not in fcm_success_users
+        ]
+        if expo_fallback_recipients:
             messages_payload = [
                 {
                     "to": r["token"],
@@ -3256,9 +3265,10 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                     "priority": "high",
                     "channelId": channel_id,
                     "ttl": ttl_sec,
+                    "_contentAvailable": is_call,
                     "data": common_data,
                 }
-                for r in expo_recipients
+                for r in expo_fallback_recipients
             ]
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
@@ -3280,7 +3290,7 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                             ticket for ticket in tickets if ticket.get("status") != "ok"
                         ]
                         logger.info(
-                            f"Expo push (legacy): {ok_count} ok / {len(err_tickets)} err"
+                            f"Expo push fallback: {ok_count} ok / {len(err_tickets)} err"
                         )
                         for ticket in err_tickets[:5]:
                             details = ticket.get("details") or {}

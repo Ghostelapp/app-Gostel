@@ -302,6 +302,20 @@ def build_message(
     return msg
 
 
+def _response_fcm_error_code(response) -> str | None:
+    try:
+        body_data = response.json()
+    except Exception:
+        return None
+    if not isinstance(body_data, dict):
+        return None
+    details = (body_data.get("error") or {}).get("details") or []
+    for detail in details:
+        if isinstance(detail, dict) and detail.get("@type", "").endswith("FcmError"):
+            return detail.get("errorCode")
+    return None
+
+
 async def send_fcm(
     httpx_client,
     *,
@@ -355,7 +369,10 @@ async def send_fcm(
 
     try:
         resp = await httpx_client.post(url, headers=headers, json=payload, timeout=10)
-        if resp.status_code == 401:
+        if (
+            resp.status_code == 401
+            and _response_fcm_error_code(resp) != "THIRD_PARTY_AUTH_ERROR"
+        ):
             # A service-account token can occasionally be revoked before its
             # advertised expiry. Refresh once and replay the same idempotent
             # FCM request instead of dropping the notification until restart.

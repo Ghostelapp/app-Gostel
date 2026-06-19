@@ -7,6 +7,21 @@ let _channelsConfigured = false;
 const PUSH_TOKEN_STORAGE_KEY = 'ghostel_push_token_v1';
 const IOS_FCM_RETRY_DELAYS_MS = [0, 300, 900, 1_800, 3_000];
 
+type PushRegistration = {
+  token: string;
+  token_type: string;
+  source: string;
+};
+
+function getStoredPushTokens(value: any): string[] {
+  if (Array.isArray(value?.tokens)) {
+    return value.tokens
+      .map((entry: any) => (typeof entry?.token === 'string' ? entry.token : ''))
+      .filter(Boolean);
+  }
+  return typeof value?.token === 'string' && value.token ? [value.token] : [];
+}
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -150,45 +165,54 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
       return null;
     }
 
-    // Calls on iOS are handled by the Firebase background handler. Register
-    // the FCM token first so an incoming-call push reaches that handler and
-    // can be handed to CallKit while the device is locked.
+    // Keep both iOS transports registered. Direct FCM is preferred because it
+    // can wake the Firebase background handler. Expo Push is an independent
+    // APNs fallback when Firebase has no valid Apple push credential.
     let tokenResp: any = null;
-    let token: string | null = null;
-    let tokenType = 'fcm';
+    const registrations: PushRegistration[] = [];
 
     if (Platform.OS === 'ios') {
       try {
-        token = await getIosFirebaseToken(diag);
-        tokenType = 'fcm';
-        if (token) diag.token_source = 'firebase_messaging';
+        const firebaseToken = await getIosFirebaseToken(diag);
+        if (firebaseToken) {
+          registrations.push({
+            token: firebaseToken,
+            token_type: 'fcm',
+            source: 'firebase_messaging',
+          });
+        }
       } catch (e: any) {
         diag.firebase_token_error = String(e?.message || e).slice(0, 300);
       }
 
-      // Keep Expo Push as a compatibility fallback if Firebase registration
-      // is temporarily unavailable. The active-call recovery endpoint still
-      // restores the ringing UI after the app becomes active.
-      if (!token) {
-        try {
-          const projectId = getExpoProjectId();
-          diag.expo_project_id = projectId || '';
-          tokenResp = await Notifications.getExpoPushTokenAsync(
-            projectId ? { projectId } : undefined,
-          );
-          token = tokenResp?.data || null;
-          tokenType = 'expo';
-          diag.token_source = 'expo_push_service_fallback';
-        } catch (e: any) {
-          diag.expo_push_token_error = String(e?.message || e).slice(0, 300);
+      try {
+        const projectId = getExpoProjectId();
+        diag.expo_project_id = projectId || '';
+        tokenResp = await Notifications.getExpoPushTokenAsync(
+          projectId ? { projectId } : undefined,
+        );
+        const expoToken = tokenResp?.data || null;
+        if (expoToken) {
+          registrations.push({
+            token: expoToken,
+            token_type: 'expo',
+            source: 'expo_push_service_fallback',
+          });
         }
+      } catch (e: any) {
+        diag.expo_push_token_error = String(e?.message || e).slice(0, 300);
       }
     } else {
       try {
         tokenResp = await Notifications.getDevicePushTokenAsync();
-        token = tokenResp?.data || null;
-        tokenType = tokenResp?.type || 'fcm';
-        diag.token_source = 'expo_notifications';
+        const deviceToken = tokenResp?.data || null;
+        if (deviceToken) {
+          registrations.push({
+            token: deviceToken,
+            token_type: tokenResp?.type || 'fcm',
+            source: 'expo_notifications',
+          });
+        }
       } catch (e: any) {
         diag.expo_device_token_error = String(e?.message || e).slice(0, 300);
       }
@@ -197,7 +221,7 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
     // Fallback for release builds using @react-native-firebase/messaging.
     // This avoids depending solely on expo-notifications for raw FCM token
     // retrieval while the backend sends directly through FCM HTTP v1.
-    if (!token) {
+    if (registrations.length === 0) {
       try {
         const messaging = require('@react-native-firebase/messaging').default;
         const firebaseAuthStatus = await messaging().requestPermission();
@@ -206,48 +230,68 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
           await messaging().registerDeviceForRemoteMessages();
           diag.firebase_remote_registered = true;
         }
-        token = await messaging().getToken();
-        tokenType = 'fcm';
-        diag.token_source = 'firebase_messaging';
+        const firebaseToken = await messaging().getToken();
+        if (firebaseToken) {
+          registrations.push({
+            token: firebaseToken,
+            token_type: 'fcm',
+            source: 'firebase_messaging',
+          });
+        }
       } catch (e: any) {
         diag.firebase_token_error = String(e?.message || e).slice(0, 300);
       }
     }
 
-    if (!token) {
+    if (registrations.length === 0) {
       diag.reason = 'token_empty';
       diag.token_resp = String(JSON.stringify(tokenResp)).slice(0, 200);
       await reportDiag(diag);
       return null;
     }
 
-    diag.reason = 'success';
-    diag.token_type = tokenType;
-    diag.token_prefix = String(token).slice(0, 30);
+    diag.token_source = registrations.map((entry) => entry.source).join('+');
+    diag.token_type = registrations.map((entry) => entry.token_type).join('+');
+    diag.token_prefix = registrations.map((entry) => entry.token.slice(0, 12)).join(',');
+    let registered: PushRegistration[] = [];
     try {
       const previousRaw = await AsyncStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
       const previous = previousRaw ? JSON.parse(previousRaw) : null;
-      const previousToken = typeof previous?.token === 'string' ? previous.token : '';
+      const currentTokens = new Set(registrations.map((entry) => entry.token));
 
-      // Send token + type so backend chooses FCM or Expo Push correctly.
-      await api.post('/push/register', {
-        token,
-        platform: Platform.OS,
-        token_type: tokenType,
-        device_model: diag.device_model,
-        os_version: diag.os_version,
-        source: diag.token_source,
-      });
+      for (const entry of registrations) {
+        try {
+          await api.post('/push/register', {
+            token: entry.token,
+            platform: Platform.OS,
+            token_type: entry.token_type,
+            device_model: diag.device_model,
+            os_version: diag.os_version,
+            source: entry.source,
+          });
+          registered.push(entry);
+        } catch (error: any) {
+          diag.register_error = [
+            diag.register_error,
+            `${entry.token_type}:${String(error?.message || error).slice(0, 180)}`,
+          ].filter(Boolean).join(';').slice(0, 300);
+        }
+      }
 
-      // Migrating iOS from Expo Push to FCM creates a different token for the
-      // same installation. Remove the old token to avoid duplicate alerts.
-      if (previousToken && previousToken !== token) {
-        await api.post('/push/unregister', { token: previousToken }).catch(() => {});
+      if (registered.length === 0) {
+        throw new Error(diag.register_error || 'No push transport registered');
+      }
+
+      for (const previousToken of getStoredPushTokens(previous)) {
+        if (!currentTokens.has(previousToken)) {
+          await api.post('/push/unregister', { token: previousToken }).catch(() => {});
+        }
       }
       await AsyncStorage.setItem(
         PUSH_TOKEN_STORAGE_KEY,
-        JSON.stringify({ token, token_type: tokenType, platform: Platform.OS }),
+        JSON.stringify({ tokens: registered, platform: Platform.OS }),
       );
+      diag.reason = 'success';
     } catch (e: any) {
       diag.reason = 'register_failed';
       diag.register_error = String(e?.message || e).slice(0, 300);
@@ -255,7 +299,7 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
       return null;
     }
     await reportDiag(diag);
-    return token;
+    return registered[0].token;
   } catch (e: any) {
     diag.reason = 'outer_exception';
     diag.error = String(e?.message || e).slice(0, 300);
@@ -269,8 +313,14 @@ export async function unregisterCurrentPushDeviceAsync(): Promise<void> {
   try {
     const raw = await AsyncStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
     const cached = raw ? JSON.parse(raw) : null;
-    const token = typeof cached?.token === 'string' ? cached.token : '';
-    await api.post('/push/unregister', token ? { token } : {});
+    const tokens = getStoredPushTokens(cached);
+    if (tokens.length === 0) {
+      await api.post('/push/unregister', {});
+    } else {
+      for (const token of tokens) {
+        await api.post('/push/unregister', { token });
+      }
+    }
   } finally {
     await AsyncStorage.removeItem(PUSH_TOKEN_STORAGE_KEY);
   }
