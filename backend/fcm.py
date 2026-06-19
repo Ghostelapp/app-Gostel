@@ -122,23 +122,33 @@ def get_project_id() -> str | None:
     return _project_id
 
 
-def _get_access_token() -> str | None:
+def _get_access_token(*, force_refresh: bool = False) -> str | None:
     """Returns a cached OAuth2 access token, refreshing if needed."""
     _load_credentials()
     if not _credentials:
         return None
     now = time.time()
     with _token_lock:
-        if _token_cache["access_token"] and now < _token_cache["expires_at"] - 60:
+        if (
+            not force_refresh
+            and _token_cache["access_token"]
+            and now < _token_cache["expires_at"] - 60
+        ):
             return _token_cache["access_token"]
         try:
             from google.auth.transport.requests import Request  # type: ignore
 
+            if force_refresh:
+                _credentials.token = None
             _credentials.refresh(Request())
             _token_cache["access_token"] = _credentials.token
             # google.oauth2.credentials.expiry is naive UTC datetime
             if _credentials.expiry:
-                _token_cache["expires_at"] = _credentials.expiry.timestamp()
+                # Never keep an OAuth token longer than 55 minutes locally,
+                # even if a malformed/skewed expiry value is returned.
+                _token_cache["expires_at"] = min(
+                    _credentials.expiry.timestamp(), now + 3300
+                )
             else:
                 _token_cache["expires_at"] = now + 3300  # 55 min
             return _token_cache["access_token"]
@@ -345,6 +355,20 @@ async def send_fcm(
 
     try:
         resp = await httpx_client.post(url, headers=headers, json=payload, timeout=10)
+        if resp.status_code == 401:
+            # A service-account token can occasionally be revoked before its
+            # advertised expiry. Refresh once and replay the same idempotent
+            # FCM request instead of dropping the notification until restart.
+            logger.warning("FCM authorization rejected; refreshing OAuth token and retrying")
+            refreshed_token = _get_access_token(force_refresh=True)
+            if refreshed_token:
+                headers = {
+                    **headers,
+                    "Authorization": f"Bearer {refreshed_token}",
+                }
+                resp = await httpx_client.post(
+                    url, headers=headers, json=payload, timeout=10
+                )
         result: dict[str, Any] = {"status_code": resp.status_code}
         try:
             body_data = resp.json()
