@@ -8,6 +8,7 @@ export type IncomingCallPayload = {
   conversation_id: string;
   mode: string;
   action?: 'answer' | 'decline' | '';
+  received_at?: number;
 };
 
 const PENDING_INCOMING_CALL_KEY = 'ghostel_pending_incoming_call_v1';
@@ -28,25 +29,39 @@ export function normalizeIncomingCallPayload(data: any): IncomingCallPayload | n
     action: ['answer', 'decline'].includes(String(data.action || ''))
       ? data.action
       : '',
+    received_at: Number.isFinite(Number(data.received_at))
+      ? Number(data.received_at)
+      : undefined,
   };
 }
 
 export async function savePendingIncomingCall(data: any): Promise<IncomingCallPayload | null> {
   const call = normalizeIncomingCallPayload(data);
   if (!call) return null;
-  await AsyncStorage.setItem(PENDING_INCOMING_CALL_KEY, JSON.stringify(call));
-  return call;
+  const storedCall = {
+    ...call,
+    received_at: call.received_at || Date.now(),
+  };
+  await AsyncStorage.setItem(PENDING_INCOMING_CALL_KEY, JSON.stringify(storedCall));
+  return storedCall;
 }
 
-export async function consumePendingIncomingCall(): Promise<IncomingCallPayload | null> {
+export async function getPendingIncomingCall(): Promise<IncomingCallPayload | null> {
   const raw = await AsyncStorage.getItem(PENDING_INCOMING_CALL_KEY);
   if (!raw) return null;
-  await AsyncStorage.removeItem(PENDING_INCOMING_CALL_KEY);
   try {
     return normalizeIncomingCallPayload(JSON.parse(raw));
   } catch {
+    await AsyncStorage.removeItem(PENDING_INCOMING_CALL_KEY);
     return null;
   }
+}
+
+export async function consumePendingIncomingCall(): Promise<IncomingCallPayload | null> {
+  const call = await getPendingIncomingCall();
+  if (!call) return null;
+  await AsyncStorage.removeItem(PENDING_INCOMING_CALL_KEY);
+  return call;
 }
 
 export async function clearPendingIncomingCall(callId?: string): Promise<void> {

@@ -2,7 +2,7 @@
   "expo": {
     "name": "ghostel.app",
     "slug": "ghostel",
-    "version": "1.4.17",
+    "version": "1.4.18",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "ghostel",
@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "app.ghostel",
-      "buildNumber": "12",
+      "buildNumber": "13",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "Record voice messages",
@@ -46,7 +46,7 @@
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE"
       ],
-      "versionCode": 18
+      "versionCode": 19
     },
     "web": {
       "bundler": "metro",

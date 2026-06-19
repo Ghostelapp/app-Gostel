@@ -20,8 +20,9 @@ import { theme } from './theme';
 import { bindCallKeepBridge, endIncomingCallNative } from './callkeep';
 import {
   clearPendingIncomingCall,
-  consumePendingIncomingCall,
+  getPendingIncomingCall,
   normalizeIncomingCallPayload,
+  savePendingIncomingCall,
   subscribeToIncomingCallEvents,
   type IncomingCallPayload,
 } from './incomingCallStore';
@@ -39,14 +40,23 @@ type IncomingCall = {
   mode: string;
 };
 
+type ShowIncomingOptions = {
+  persist?: boolean;
+  notifyNative?: boolean;
+};
+
 // Vibration pattern: 0ms wait, vibrate 1s, pause 1s — looped
 const VIBRATION_PATTERN = [0, 1000, 1000];
+const PENDING_CALL_MAX_AGE_MS = 60_000;
+const TERMINAL_CALL_STATUSES = new Set(['ended', 'rejected', 'cancelled', 'missed']);
 
 export default function IncomingCallProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const router = useRouter();
   const [incoming, setIncoming] = useState<IncomingCall | null>(null);
   const vibratingRef = useRef(false);
+  const incomingCallIdRef = useRef<string | null>(null);
+  const dismissedCallIdsRef = useRef(new Set<string>());
   const pulse = useRef(new Animated.Value(0)).current;
 
   const startVibration = useCallback(() => {
@@ -70,20 +80,28 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   }, []);
 
   const showIncoming = useCallback(
-    (call: IncomingCallPayload) => {
-      if (call.caller_id === user?.id) return;
+    (
+      call: IncomingCallPayload,
+      { persist = true, notifyNative = true }: ShowIncomingOptions = {},
+    ) => {
+      if (call.caller_id === user?.id || dismissedCallIdsRef.current.has(call.id)) return;
+      if (persist) savePendingIncomingCall(call).catch(() => {});
+      if (incomingCallIdRef.current === call.id) return;
+      incomingCallIdRef.current = call.id;
       setIncoming((current) => (current?.id === call.id ? current : call));
       startVibration();
       if (Platform.OS === 'android') {
-        // Keep one native full-screen call notification alive until the call
-        // is answered, rejected or ended. It owns the looping system ringtone.
-        showFullScreenIncomingCallNotification({
-          call_id: call.id,
-          caller_id: call.caller_id,
-          caller_name: call.caller_name,
-          conversation_id: call.conversation_id,
-          mode: call.mode,
-        }).catch(() => {});
+        if (notifyNative) {
+          // Keep one native full-screen call notification alive until the call
+          // is answered, rejected or ended. It owns the looping system ringtone.
+          showFullScreenIncomingCallNotification({
+            call_id: call.id,
+            caller_id: call.caller_id,
+            caller_name: call.caller_name,
+            conversation_id: call.conversation_id,
+            mode: call.mode,
+          }).catch(() => {});
+        }
       } else {
         import('./sounds').then((s) => s.startRingtone(0.85)).catch(() => {});
       }
@@ -94,6 +112,8 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const handleNativeCallAction = useCallback(
     async (call: IncomingCallPayload): Promise<boolean> => {
       if (!call.action) return false;
+      dismissedCallIdsRef.current.add(call.id);
+      if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
       await clearPendingIncomingCall(call.id).catch(() => {});
       await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
       setIncoming((current) => (current?.id === call.id ? null : current));
@@ -118,6 +138,8 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         showIncoming(msg.data);
       } else if (msg?.type === 'call:ended') {
         const cid = msg.data?.call_id;
+        if (cid) dismissedCallIdsRef.current.add(cid);
+        if (incomingCallIdRef.current === cid) incomingCallIdRef.current = null;
         setIncoming((cur) => (cur && cur.id === cid ? null : cur));
         clearPendingIncomingCall(cid).catch(() => {});
         // Also clear any pending native CallKeep screen (e.g. caller hung up
@@ -132,6 +154,8 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         }
       } else if (msg?.type === 'call:cancel' || msg?.type === 'call:end') {
         // Caller hung up before we accepted — close modal
+        if (msg.call_id) dismissedCallIdsRef.current.add(msg.call_id);
+        if (incomingCallIdRef.current === msg.call_id) incomingCallIdRef.current = null;
         setIncoming((cur) => (cur && cur.id === msg.call_id ? null : cur));
         clearPendingIncomingCall(msg.call_id).catch(() => {});
         if (msg.call_id) {
@@ -162,30 +186,74 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   useEffect(() => {
     if (!user) return;
     let mounted = true;
-    const consume = async () => {
+
+    const consumeNativeIntent = async (): Promise<boolean> => {
       const nativeCall = normalizeIncomingCallPayload(await consumeInitialNativeIncomingCall());
       if (mounted && nativeCall) {
-        if (!(await handleNativeCallAction(nativeCall))) showIncoming(nativeCall);
-        return;
+        if (!(await handleNativeCallAction(nativeCall))) {
+          showIncoming(nativeCall, { notifyNative: false });
+        }
+        return true;
       }
-      const call = await consumePendingIncomingCall();
-      if (mounted && call) {
-        showIncoming(call);
-        return;
-      }
+      return false;
     };
-    consume().catch(() => {});
+
+    const restorePendingCall = async () => {
+      const call = await getPendingIncomingCall();
+      if (!mounted || !call || dismissedCallIdsRef.current.has(call.id)) return;
+
+      const receivedAt = Number(call.received_at || 0);
+      if (receivedAt > 0 && Date.now() - receivedAt > PENDING_CALL_MAX_AGE_MS) {
+        dismissedCallIdsRef.current.add(call.id);
+        if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
+        setIncoming((current) => (current?.id === call.id ? null : current));
+        await clearPendingIncomingCall(call.id).catch(() => {});
+        await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
+        return;
+      }
+
+      try {
+        const { data } = await api.get(`/calls/${call.id}`);
+        const status = String(data?.status || '').toLowerCase();
+        if (data?.ended_at || TERMINAL_CALL_STATUSES.has(status) || status === 'answered') {
+          dismissedCallIdsRef.current.add(call.id);
+          if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
+          setIncoming((current) => (current?.id === call.id ? null : current));
+          await clearPendingIncomingCall(call.id).catch(() => {});
+          await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
+          return;
+        }
+      } catch (error: any) {
+        if (error?.response?.status === 403 || error?.response?.status === 404) {
+          dismissedCallIdsRef.current.add(call.id);
+          if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
+          setIncoming((current) => (current?.id === call.id ? null : current));
+          await clearPendingIncomingCall(call.id).catch(() => {});
+          await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
+          return;
+        }
+      }
+
+      if (mounted) showIncoming(call, { persist: false, notifyNative: false });
+    };
+
+    const restore = async () => {
+      const handledNativeIntent = await consumeNativeIntent();
+      if (!handledNativeIntent) await restorePendingCall();
+    };
+
+    restore().catch(() => {});
     const unsubIncoming = subscribeToIncomingCallEvents((call) => showIncoming(call));
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
-        consume().catch(() => {});
+        restore().catch(() => {});
       }
     });
     // Android delivers notification action taps through MainActivity.onNewIntent.
     // The app can already be active, in which case AppState does not change.
     // Poll the one-shot native intent slot so Answer/Decline is never missed.
     const nativeActionTimer = setInterval(() => {
-      consume().catch(() => {});
+      consumeNativeIntent().catch(() => {});
     }, 500);
     return () => {
       mounted = false;
@@ -238,6 +306,8 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const accept = async () => {
     if (!incoming) return;
     const call = incoming;
+    dismissedCallIdsRef.current.add(call.id);
+    incomingCallIdRef.current = null;
     setIncoming(null);
     clearPendingIncomingCall(call.id).catch(() => {});
     cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
@@ -260,6 +330,8 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const reject = async () => {
     if (!incoming) return;
     const call = incoming;
+    dismissedCallIdsRef.current.add(call.id);
+    incomingCallIdRef.current = null;
     setIncoming(null);
     clearPendingIncomingCall(call.id).catch(() => {});
     cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
