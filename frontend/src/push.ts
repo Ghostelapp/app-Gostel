@@ -2,6 +2,10 @@ import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { api } from './api';
+import {
+  clearStoredVoipPushToken,
+  getStoredVoipPushToken,
+} from './voipPush';
 
 let _channelsConfigured = false;
 const PUSH_TOKEN_STORAGE_KEY = 'ghostel_push_token_v1';
@@ -172,6 +176,16 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
     const registrations: PushRegistration[] = [];
 
     if (Platform.OS === 'ios') {
+      const voipToken = await getStoredVoipPushToken().catch(() => null);
+      diag.voip_token_ready = !!voipToken;
+      if (voipToken) {
+        registrations.push({
+          token: voipToken,
+          token_type: 'voip',
+          source: 'pushkit',
+        });
+      }
+
       try {
         const firebaseToken = await getIosFirebaseToken(diag);
         if (firebaseToken) {
@@ -323,6 +337,7 @@ export async function unregisterCurrentPushDeviceAsync(): Promise<void> {
     }
   } finally {
     await AsyncStorage.removeItem(PUSH_TOKEN_STORAGE_KEY);
+    await clearStoredVoipPushToken();
   }
 }
 

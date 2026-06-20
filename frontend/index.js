@@ -1,6 +1,7 @@
 import { LogBox, Platform } from 'react-native';
 import { registerFcmHandlers } from './src/fcmBackground';
 import { setupCallKeep } from './src/callkeep';
+import { setupVoipPushNotifications } from './src/voipPush';
 
 if (__DEV__) {
   LogBox.ignoreLogs([
@@ -18,6 +19,7 @@ try {
 }
 
 if (Platform.OS === 'ios') {
+  setupVoipPushNotifications();
   setupCallKeep().catch((error) => {
     console.warn('[boot] setupCallKeep failed', error);
   });

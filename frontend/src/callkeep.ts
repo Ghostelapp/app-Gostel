@@ -79,6 +79,14 @@ export function isIncomingCallNativeDisplayed(callId: string): boolean {
   return Platform.OS === 'ios' && displayedCalls.has(normalizeCallId(callId));
 }
 
+export async function hydrateIncomingCallNative(info: IncomingCallInfo): Promise<void> {
+  if (Platform.OS !== 'ios') return;
+  const key = normalizeCallId(info.callId);
+  if (!key) return;
+  displayedCalls.add(key);
+  await rememberIncomingCall(info);
+}
+
 function emitCallKeepAction(action: CallKeepAction): void {
   for (const listener of actionListeners) {
     try {
@@ -217,6 +225,33 @@ function reportCallKeepDiag(
   }
 }
 
+async function hydrateFromCallKeepDisplay(event: any): Promise<void> {
+  const payload = event?.payload;
+  if (!payload || typeof payload !== 'object') return;
+  const callId = String(payload.call_id || payload.uuid || event?.callUUID || '');
+  const conversationId = String(payload.conversation_id || '');
+  const callerId = String(payload.caller_id || event?.handle || '');
+  if (!callId || !conversationId || !callerId) return;
+
+  const info: IncomingCallInfo = {
+    callId,
+    conversationId,
+    callerId,
+    callerName: String(payload.caller_name || event?.localizedCallerName || 'Caller'),
+  };
+  await hydrateIncomingCallNative(info);
+  try {
+    const { showIncomingCallFromPush } = require('./incomingCallStore');
+    await showIncomingCallFromPush({
+      ...payload,
+      call_id: callId,
+      received_at: Date.now(),
+    });
+  } catch {
+    /* active incoming-call recovery remains available */
+  }
+}
+
 async function restoreAfterTransientNativeEnd(info: IncomingCallInfo): Promise<void> {
   const key = normalizeCallId(info.callId);
   displayedCalls.delete(key);
@@ -331,6 +366,9 @@ export async function setupCallKeep(): Promise<boolean> {
           handleEndCall(callUUID).catch(() => {});
         },
       );
+      RNCallKeep.addEventListener('didDisplayIncomingCall', (event: any) => {
+        hydrateFromCallKeepDisplay(event).catch(() => {});
+      });
       RNCallKeep.addEventListener('didActivateAudioSession', () => {
         activateWebRtcAudioSession();
       });
@@ -353,6 +391,10 @@ export async function setupCallKeep(): Promise<boolean> {
         for (const event of Array.isArray(events) ? events : []) {
           const name = String(event?.name || '');
           const callUUID = String(event?.data?.callUUID || '');
+          if (name.includes('DidDisplayIncomingCall')) {
+            await hydrateFromCallKeepDisplay(event?.data);
+            continue;
+          }
           if (!callUUID) continue;
           if (name.includes('PerformAnswerCallAction')) {
             await handleAnswerCall(callUUID);

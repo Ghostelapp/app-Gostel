@@ -56,15 +56,32 @@ type ShowIncomingOptions = {
 const VIBRATION_PATTERN = [0, 1000, 1000];
 const PENDING_CALL_MAX_AGE_MS = 60_000;
 const TERMINAL_CALL_STATUSES = new Set(['ended', 'rejected', 'cancelled', 'missed']);
+const IOS_UNLOCK_ACTION_GUARD_MS = 1_800;
 
 export default function IncomingCallProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const router = useRouter();
   const [incoming, setIncoming] = useState<IncomingCall | null>(null);
+  const [callActionsGuarded, setCallActionsGuarded] = useState(false);
   const vibratingRef = useRef(false);
   const incomingCallIdRef = useRef<string | null>(null);
   const dismissedCallIdsRef = useRef(new Set<string>());
   const pulse = useRef(new Animated.Value(0)).current;
+  const actionGuardUntilRef = useRef(0);
+  const actionGuardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const guardCallActionsAfterUnlock = useCallback(() => {
+    if (Platform.OS !== 'ios') return;
+    const guardUntil = Date.now() + IOS_UNLOCK_ACTION_GUARD_MS;
+    actionGuardUntilRef.current = guardUntil;
+    setCallActionsGuarded(true);
+    if (actionGuardTimerRef.current) clearTimeout(actionGuardTimerRef.current);
+    actionGuardTimerRef.current = setTimeout(() => {
+      if (Date.now() >= actionGuardUntilRef.current) {
+        setCallActionsGuarded(false);
+      }
+    }, IOS_UNLOCK_ACTION_GUARD_MS + 50);
+  }, []);
 
   const startVibration = useCallback(() => {
     if (vibratingRef.current) return;
@@ -105,6 +122,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         return;
       }
       if (incomingCallIdRef.current === call.id) return;
+      guardCallActionsAfterUnlock();
       incomingCallIdRef.current = call.id;
       setIncoming((current) => (current?.id === call.id ? current : call));
       const nativeIosCall = isIncomingCallNativeDisplayed(call.id);
@@ -125,7 +143,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         import('./sounds').then((s) => s.startRingtone(0.85)).catch(() => {});
       }
     },
-    [user?.id, startVibration],
+    [user?.id, startVibration, guardCallActionsAfterUnlock],
   );
 
   const handleNativeCallAction = useCallback(
@@ -292,6 +310,9 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     const unsubIncoming = subscribeToIncomingCallEvents((call) => showIncoming(call));
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
+        // The final passcode/keypad touch can otherwise land on a newly
+        // rendered Answer/Decline button as iOS dismisses its lock screen.
+        guardCallActionsAfterUnlock();
         restore().catch(() => {});
       }
     });
@@ -307,7 +328,13 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       sub.remove();
       clearInterval(nativeActionTimer);
     };
-  }, [user, showIncoming, handleNativeCallAction, stopVibration]);
+  }, [
+    user,
+    showIncoming,
+    handleNativeCallAction,
+    stopVibration,
+    guardCallActionsAfterUnlock,
+  ]);
 
   // Stop vibration AND ringtone whenever incoming clears
   useEffect(() => {
@@ -344,6 +371,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      if (actionGuardTimerRef.current) clearTimeout(actionGuardTimerRef.current);
       stopVibration();
       import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
     };
@@ -379,6 +407,17 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const reject = async (source: 'button' | 'modal_request_close' = 'button') => {
     if (!incoming) return;
     const call = incoming;
+    const guardRemainingMs = actionGuardUntilRef.current - Date.now();
+    if (Platform.OS === 'ios' && source === 'button' && guardRemainingMs > 0) {
+      api.post(`/calls/${call.id}/diag`, {
+        reason: 'incoming_call_action_ignored_after_unlock',
+        status: 'ringing',
+        source,
+        app_state: AppState.currentState,
+        guard_remaining_ms: guardRemainingMs,
+      }).catch(() => {});
+      return;
+    }
     api.post(`/calls/${call.id}/diag`, {
       reason: 'incoming_call_reject_requested',
       status: 'ringing',
@@ -499,7 +538,13 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
               <TouchableOpacity
                 testID="reject-call-button"
                 onPress={() => reject('button')}
-                style={[styles.actionBtn, styles.rejectBtn]}
+                disabled={callActionsGuarded}
+                accessibilityState={{ disabled: callActionsGuarded }}
+                style={[
+                  styles.actionBtn,
+                  styles.rejectBtn,
+                  callActionsGuarded && styles.guardedAction,
+                ]}
                 activeOpacity={0.86}
               >
                 <PhoneOff color="#fff" size={30} strokeWidth={2.4} />
@@ -507,7 +552,13 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
               <TouchableOpacity
                 testID="accept-call-button"
                 onPress={accept}
-                style={[styles.actionBtn, styles.acceptBtn]}
+                disabled={callActionsGuarded}
+                accessibilityState={{ disabled: callActionsGuarded }}
+                style={[
+                  styles.actionBtn,
+                  styles.acceptBtn,
+                  callActionsGuarded && styles.guardedAction,
+                ]}
                 activeOpacity={0.86}
               >
                 <Phone color="#fff" size={30} strokeWidth={2.4} />
@@ -648,6 +699,9 @@ const styles = StyleSheet.create({
   },
   acceptBtn: {
     backgroundColor: theme.colors.success,
+  },
+  guardedAction: {
+    opacity: 0.55,
   },
   actionLabels: {
     flexDirection: 'row',
