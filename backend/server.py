@@ -510,7 +510,7 @@ class PushTokenIn(BaseModel):
     platform: Literal["ios", "android", "web"] = "web"
     # Accepts both raw Expo-style names ('android'/'ios') and explicit names
     # ('fcm'/'apns'). 'expo' kept for legacy ExpoPushToken[...] tokens.
-    token_type: Literal["fcm", "apns", "expo", "android", "ios"] = "fcm"
+    token_type: Literal["fcm", "apns", "expo", "voip", "android", "ios"] = "fcm"
     device_model: Optional[str] = None
     os_version: Optional[str] = None
     source: Optional[str] = None
@@ -2675,9 +2675,11 @@ def sanitize_diag_value(value, depth: int = 0):
 @api.get("/push/status")
 async def push_status(admin: dict = Depends(require_admin)):
     """Returns FCM configuration status — useful to verify Service Account loaded."""
+    from apns import is_configured as apns_is_configured
     from fcm import is_configured
     return {
         "fcm_configured": is_configured(),
+        "apns_voip_configured": apns_is_configured(),
     }
 
 
@@ -3196,6 +3198,51 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
             r for r in push_targets if (r.get("token_type") or "fcm") in ("fcm", "apns")
         ]
         expo_recipients = [r for r in push_targets if r.get("token_type") == "expo"]
+        voip_recipients = [
+            r for r in push_targets if is_call and r.get("token_type") == "voip"
+        ]
+
+        # ---- Native iOS PushKit path ----
+        # A VoIP push wakes iOS and is reported to CallKit by AppDelegate before
+        # React Native starts. This is the only reliable full-screen call path
+        # for a locked or terminated iOS app.
+        voip_ok = voip_err = 0
+        voip_success_users: set[str] = set()
+        if voip_recipients:
+            from apns import is_configured as apns_is_configured, send_voip_push
+
+            if apns_is_configured():
+                async with httpx.AsyncClient(http2=True, timeout=10) as apns_client:
+                    for r in voip_recipients:
+                        token = r["token"]
+                        result = await send_voip_push(
+                            apns_client,
+                            token=token,
+                            data=common_data,
+                        )
+                        if result.get("ok"):
+                            voip_ok += 1
+                            if r.get("user_id"):
+                                voip_success_users.add(r["user_id"])
+                        else:
+                            voip_err += 1
+                            reason = result.get("error", "unknown")
+                            logger.warning(
+                                f"APNs VoIP send failed for token={token[:18]}... reason={reason}"
+                            )
+                            if reason in (
+                                "BadDeviceToken",
+                                "DeviceTokenNotForTopic",
+                                "Unregistered",
+                            ):
+                                await remove_push_token_from_users(token)
+                logger.info(
+                    f"APNs VoIP push: {voip_ok} ok / {voip_err} err, call={common_data.get('call_id', '')[:8]}"
+                )
+            else:
+                logger.warning(
+                    f"APNs VoIP not configured - skipped {len(voip_recipients)} recipients"
+                )
 
         # ---- Direct FCM path ----
         fcm_ok = fcm_err = 0
@@ -3203,6 +3250,8 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         if fcm_recipients and fcm_is_configured():
             async with httpx.AsyncClient(timeout=10) as client:
                 for r in fcm_recipients:
+                    if r.get("user_id") in voip_success_users:
+                        continue
                     token = r["token"]
                     result = await send_fcm(
                         client,
@@ -3252,8 +3301,9 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         # Each iOS install registers both transports. Use Expo only for users
         # whose direct FCM delivery did not succeed, avoiding duplicate alerts
         # while retaining EAS-managed APNs as an independent fallback.
+        delivered_users = fcm_success_users | voip_success_users
         expo_fallback_recipients = [
-            r for r in expo_recipients if r.get("user_id") not in fcm_success_users
+            r for r in expo_recipients if r.get("user_id") not in delivered_users
         ]
         if expo_fallback_recipients:
             messages_payload = [
