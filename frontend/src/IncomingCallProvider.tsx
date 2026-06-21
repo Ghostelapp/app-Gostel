@@ -56,7 +56,7 @@ type ShowIncomingOptions = {
 const VIBRATION_PATTERN = [0, 1000, 1000];
 const PENDING_CALL_MAX_AGE_MS = 60_000;
 const TERMINAL_CALL_STATUSES = new Set(['ended', 'rejected', 'cancelled', 'missed']);
-const IOS_UNLOCK_ACTION_GUARD_MS = 1_800;
+const MOBILE_UNLOCK_ACTION_GUARD_MS = 1_800;
 
 export default function IncomingCallProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
@@ -71,8 +71,8 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const actionGuardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const guardCallActionsAfterUnlock = useCallback(() => {
-    if (Platform.OS !== 'ios') return;
-    const guardUntil = Date.now() + IOS_UNLOCK_ACTION_GUARD_MS;
+    if (Platform.OS === 'web') return;
+    const guardUntil = Date.now() + MOBILE_UNLOCK_ACTION_GUARD_MS;
     actionGuardUntilRef.current = guardUntil;
     setCallActionsGuarded(true);
     if (actionGuardTimerRef.current) clearTimeout(actionGuardTimerRef.current);
@@ -80,7 +80,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       if (Date.now() >= actionGuardUntilRef.current) {
         setCallActionsGuarded(false);
       }
-    }, IOS_UNLOCK_ACTION_GUARD_MS + 50);
+    }, MOBILE_UNLOCK_ACTION_GUARD_MS + 50);
   }, []);
 
   const startVibration = useCallback(() => {
@@ -283,13 +283,13 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     };
 
     const recoverActiveIncomingCall = async () => {
-      if (Platform.OS !== 'ios' || AppState.currentState !== 'active') return;
+      if (Platform.OS === 'web' || AppState.currentState !== 'active') return;
       try {
         const { data } = await api.get('/calls/active-incoming');
         const call = normalizeIncomingCallPayload(data);
         if (!mounted || !call || call.caller_id === user.id) return;
 
-        // The backend is authoritative here. A lifecycle-only CallKit event
+        // The backend is authoritative here. A lifecycle-only native event
         // must not permanently suppress a call that is still ringing.
         dismissedCallIdsRef.current.delete(call.id);
         showIncoming(call, { persist: true, notifyNative: false });
@@ -311,7 +311,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         // The final passcode/keypad touch can otherwise land on a newly
-        // rendered Answer/Decline button as iOS dismisses its lock screen.
+        // rendered Answer/Decline button as the OS dismisses its lock screen.
         guardCallActionsAfterUnlock();
         restore().catch(() => {});
       }
@@ -408,7 +408,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     if (!incoming) return;
     const call = incoming;
     const guardRemainingMs = actionGuardUntilRef.current - Date.now();
-    if (Platform.OS === 'ios' && source === 'button' && guardRemainingMs > 0) {
+    if (Platform.OS !== 'web' && source === 'button' && guardRemainingMs > 0) {
       api.post(`/calls/${call.id}/diag`, {
         reason: 'incoming_call_action_ignored_after_unlock',
         status: 'ringing',

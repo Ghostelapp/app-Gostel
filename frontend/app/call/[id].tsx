@@ -1159,7 +1159,7 @@ export default function CallScreen() {
   }, [reportCallDiag]);
 
   useEffect(() => {
-    if (Platform.OS !== 'ios') return;
+    if (Platform.OS === 'web') return;
     let previousState = AppState.currentState;
     const sub = AppState.addEventListener('change', (nextState) => {
       const fromState = previousState;
@@ -1171,9 +1171,14 @@ export default function CallScreen() {
 
       if (nextState !== 'active' || endedRef.current) return;
 
-      // iOS can hand AVAudioSession back to the app while unlocking. Rebind
-      // WebRTC and restore routing without rebuilding the peer connection.
+      // Mobile OSes can hand the audio route back to the app while unlocking.
+      // Rebind WebRTC and restore routing without rebuilding the peer connection.
       startNativeCallAudio(speakerOn);
+      if (Platform.OS === 'android' && localStreamRef.current) {
+        startActiveCallService(id, callerName).catch(() => {
+          reportCallDiag('android_active_call_service_resume_failed').catch(() => {});
+        });
+      }
       if (connectedRef.current) startAudioRepairLoop();
 
       const pc = pcRef.current;
@@ -1188,6 +1193,8 @@ export default function CallScreen() {
     });
     return () => sub.remove();
   }, [
+    callerName,
+    id,
     reportCallDiag,
     scheduleConnectionRecovery,
     speakerOn,
@@ -1266,6 +1273,18 @@ export default function CallScreen() {
       if (cancelled || endedRef.current) return;
       localStreamRef.current = stream;
       reportCallDiag('local_media_ready').catch(() => {});
+
+      // Android must own a microphone foreground service before the app can
+      // move behind the lock screen. Waiting for ICE to connect is too late:
+      // Android 12+ can reject a foreground-service start from the background.
+      if (Platform.OS === 'android') {
+        try {
+          await startActiveCallService(id, callerName);
+          reportCallDiag('android_active_call_service_started').catch(() => {});
+        } catch {
+          reportCallDiag('android_active_call_service_start_failed').catch(() => {});
+        }
+      }
 
       // 4. Setup PC
       const pc = setupPeer(stream);

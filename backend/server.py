@@ -3774,7 +3774,7 @@ async def enrich_call_for_user(call: dict, user_id: str) -> dict:
 
 @api.get("/calls/active-incoming")
 async def get_active_incoming_call(user: dict = Depends(get_current_user)):
-    """Return a recent unanswered call so iOS can restore UI after unlock."""
+    """Return a recent unanswered call so mobile clients can restore UI after unlock."""
     cutoff = (now_utc() - timedelta(seconds=75)).isoformat()
     call = await db.calls.find_one(
         {
