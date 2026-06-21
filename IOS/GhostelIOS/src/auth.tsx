@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode, useCallback } from 'react';
 import { api, formatApiErrorDetail } from './api';
 import { getStoredToken, removeStoredToken, setStoredToken } from './tokenStorage';
-import { registerPushNotificationsAsync } from './push';
+import { registerPushNotificationsAsync, unregisterCurrentPushDeviceAsync } from './push';
 import { useHeartbeat } from './presence';
 import { registerE2EEKey } from './e2ee';
 
@@ -104,6 +104,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
+    try {
+      await unregisterCurrentPushDeviceAsync();
+    } catch {
+      // Push unregister is best-effort; auth logout must still run.
+    }
+    try {
+      await api.post('/auth/logout');
+    } catch {
+      // Local logout must still succeed when the network is unavailable.
+    }
     await removeStoredToken();
     setUser(null);
   };

@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Crypto from 'expo-crypto';
 import { api } from './api';
 import {
   clearStoredVoipPushToken,
@@ -9,12 +10,20 @@ import {
 
 let _channelsConfigured = false;
 const PUSH_TOKEN_STORAGE_KEY = 'ghostel_push_token_v1';
+const PUSH_DEVICE_ID_STORAGE_KEY = 'ghostel_push_device_id_v1';
 const IOS_FCM_RETRY_DELAYS_MS = [0, 300, 900, 1_800, 3_000];
 
 type PushRegistration = {
   token: string;
   token_type: string;
   source: string;
+};
+
+type StoredPushState = {
+  device_id?: string;
+  token?: string;
+  tokens?: PushRegistration[];
+  platform?: string;
 };
 
 function getStoredPushTokens(value: any): string[] {
@@ -28,6 +37,27 @@ function getStoredPushTokens(value: any): string[] {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getStoredPushState(): Promise<StoredPushState | null> {
+  const raw = await AsyncStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function getOrCreatePushDeviceId(): Promise<string> {
+  const existing = (await AsyncStorage.getItem(PUSH_DEVICE_ID_STORAGE_KEY)) || '';
+  if (existing) return existing;
+  const generated =
+    typeof Crypto.randomUUID === 'function'
+      ? Crypto.randomUUID()
+      : `ghostel-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  await AsyncStorage.setItem(PUSH_DEVICE_ID_STORAGE_KEY, generated);
+  return generated;
 }
 
 async function getIosFirebaseToken(diag: Record<string, any>): Promise<string | null> {
@@ -145,6 +175,8 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
       await reportDiag(diag);
       return null;
     }
+    const deviceId = await getOrCreatePushDeviceId();
+    diag.device_id_prefix = deviceId.slice(0, 12);
 
     await configureAndroidChannels();
     diag.channels_configured = _channelsConfigured;
@@ -269,8 +301,7 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
     diag.token_prefix = registrations.map((entry) => entry.token.slice(0, 12)).join(',');
     let registered: PushRegistration[] = [];
     try {
-      const previousRaw = await AsyncStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
-      const previous = previousRaw ? JSON.parse(previousRaw) : null;
+      const previous = await getStoredPushState();
       const currentTokens = new Set(registrations.map((entry) => entry.token));
 
       for (const entry of registrations) {
@@ -279,6 +310,7 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
             token: entry.token,
             platform: Platform.OS,
             token_type: entry.token_type,
+            device_id: deviceId,
             device_model: diag.device_model,
             os_version: diag.os_version,
             source: entry.source,
@@ -303,7 +335,7 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
       }
       await AsyncStorage.setItem(
         PUSH_TOKEN_STORAGE_KEY,
-        JSON.stringify({ tokens: registered, platform: Platform.OS }),
+        JSON.stringify({ device_id: deviceId, tokens: registered, platform: Platform.OS }),
       );
       diag.reason = 'success';
     } catch (e: any) {
@@ -325,10 +357,11 @@ export async function registerPushNotificationsAsync(): Promise<string | null> {
 export async function unregisterCurrentPushDeviceAsync(): Promise<void> {
   if (Platform.OS === 'web') return;
   try {
-    const raw = await AsyncStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
-    const cached = raw ? JSON.parse(raw) : null;
+    const cached = await getStoredPushState();
     const tokens = getStoredPushTokens(cached);
-    if (tokens.length === 0) {
+    if (cached?.device_id) {
+      await api.post('/push/unregister', { device_id: cached.device_id });
+    } else if (tokens.length === 0) {
       await api.post('/push/unregister', {});
     } else {
       for (const token of tokens) {

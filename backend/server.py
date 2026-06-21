@@ -253,6 +253,10 @@ def user_has_push_token(u: dict) -> bool:
     return bool(u.get("push_tokens") or u.get("push_token") or u.get("expo_push_token"))
 
 
+def normalize_push_device_id(value: Optional[str]) -> str:
+    return (value or "").strip()[:80]
+
+
 def user_push_targets(u: dict) -> list[dict]:
     """Return all registered push targets, including legacy single-token fields."""
     targets: list[dict] = []
@@ -269,6 +273,8 @@ def user_push_targets(u: dict) -> list[dict]:
                 "token": token,
                 "token_type": (entry.get("token_type") or "fcm").strip().lower(),
                 "platform": entry.get("platform") or "unknown",
+                "device_id": normalize_push_device_id(entry.get("device_id")),
+                "session_id": (entry.get("session_id") or "").strip(),
                 "device_model": entry.get("device_model") or "",
                 "os_version": entry.get("os_version") or "",
                 "source": entry.get("source") or "",
@@ -282,6 +288,8 @@ def user_push_targets(u: dict) -> list[dict]:
                 "token": legacy,
                 "token_type": (u.get("push_token_type") or "fcm").strip().lower(),
                 "platform": u.get("push_platform") or "unknown",
+                "device_id": "",
+                "session_id": "",
                 "device_model": "",
                 "os_version": "",
                 "source": "legacy",
@@ -291,11 +299,73 @@ def user_push_targets(u: dict) -> list[dict]:
     return targets
 
 
-async def remove_push_token_from_users(token: str, user_id: Optional[str] = None) -> None:
+async def sync_user_push_legacy_fields(user_id: str) -> None:
+    user = await db.users.find_one(
+        {"id": user_id},
+        {
+            "_id": 0,
+            "id": 1,
+            "push_tokens": 1,
+            "push_token": 1,
+            "expo_push_token": 1,
+            "push_token_type": 1,
+            "push_platform": 1,
+        },
+    )
+    if not user:
+        return
+    targets = user_push_targets(user)
+    if targets:
+        primary = max(targets, key=lambda entry: entry.get("registered_at") or "")
+        await db.users.update_one(
+            {"id": user_id},
+            {
+                "$set": {
+                    "expo_push_token": primary.get("token") or "",
+                    "push_token": primary.get("token") or "",
+                    "push_token_type": primary.get("token_type") or "fcm",
+                    "push_platform": primary.get("platform") or "unknown",
+                }
+            },
+        )
+        return
+    await db.users.update_one(
+        {"id": user_id},
+        {
+            "$unset": {
+                "expo_push_token": "",
+                "push_platform": "",
+                "push_token": "",
+                "push_token_type": "",
+            }
+        },
+    )
+
+
+async def remove_push_token_from_users(
+    token: str,
+    user_id: Optional[str] = None,
+    *,
+    sync_legacy: bool = True,
+) -> int:
     """Remove one physical device token from one account or from every account."""
     token = (token or "").strip()
     if not token:
-        return
+        return 0
+    affected_ids: set[str] = set()
+    async for entry in db.users.find(
+        {
+            **({"id": user_id} if user_id else {}),
+            "$or": [
+                {"push_tokens.token": token},
+                {"push_token": token},
+                {"expo_push_token": token},
+            ],
+        },
+        {"_id": 0, "id": 1},
+    ):
+        if entry.get("id"):
+            affected_ids.add(entry["id"])
     user_filter = {"id": user_id} if user_id else {}
     await db.users.update_many(
         {**user_filter, "push_tokens.token": token},
@@ -318,6 +388,63 @@ async def remove_push_token_from_users(token: str, user_id: Optional[str] = None
             }
         },
     )
+    if sync_legacy:
+        for affected_id in affected_ids:
+            await sync_user_push_legacy_fields(affected_id)
+    return len(affected_ids)
+
+
+async def remove_push_device_from_users(device_id: str, user_id: Optional[str] = None) -> int:
+    device_id = normalize_push_device_id(device_id)
+    if not device_id:
+        return 0
+    affected_ids: set[str] = set()
+    async for entry in db.users.find(
+        {
+            **({"id": user_id} if user_id else {}),
+            "push_tokens.device_id": device_id,
+        },
+        {"_id": 0, "id": 1},
+    ):
+        if entry.get("id"):
+            affected_ids.add(entry["id"])
+    await db.users.update_many(
+        {
+            **({"id": user_id} if user_id else {}),
+            "push_tokens.device_id": device_id,
+        },
+        {"$pull": {"push_tokens": {"device_id": device_id}}},
+    )
+    for affected_id in affected_ids:
+        await sync_user_push_legacy_fields(affected_id)
+    return len(affected_ids)
+
+
+async def remove_push_tokens_for_session(user_id: str, session_id: Optional[str]) -> int:
+    session_id = (session_id or "").strip()
+    if not session_id:
+        return 0
+    user = await db.users.find_one(
+        {"id": user_id},
+        {"_id": 0, "push_tokens": 1},
+    )
+    if not user:
+        return 0
+    removed = len(
+        [
+            entry
+            for entry in (user.get("push_tokens") or [])
+            if isinstance(entry, dict) and (entry.get("session_id") or "").strip() == session_id
+        ]
+    )
+    if removed == 0:
+        return 0
+    await db.users.update_one(
+        {"id": user_id},
+        {"$pull": {"push_tokens": {"session_id": session_id}}},
+    )
+    await sync_user_push_legacy_fields(user_id)
+    return removed
 
 
 def public_user(u: dict) -> dict:
@@ -640,6 +767,7 @@ class PushTokenIn(BaseModel):
     # Accepts both raw Expo-style names ('android'/'ios') and explicit names
     # ('fcm'/'apns'). 'expo' kept for legacy ExpoPushToken[...] tokens.
     token_type: Literal["fcm", "apns", "expo", "voip", "android", "ios"] = "fcm"
+    device_id: Optional[str] = Field(default=None, min_length=8, max_length=80)
     device_model: Optional[str] = None
     os_version: Optional[str] = None
     source: Optional[str] = None
@@ -831,6 +959,7 @@ async def logout(request: Request, user: dict = Depends(get_current_user)):
         )
         expires = session.get("expires_at") if session else None
         await revoke_user_session(session_id, user["id"], reason="logout")
+        await remove_push_tokens_for_session(user["id"], session_id)
     await revoke_access_token_jti(jti, user["id"], expires)
     return {"ok": True}
 
@@ -853,6 +982,7 @@ async def revoke_session(session_id: str, user: dict = Depends(get_current_user)
     revoked = await revoke_user_session(session_id, user["id"], reason="user_revoke")
     if not revoked:
         raise HTTPException(status_code=404, detail="Session not found")
+    await remove_push_tokens_for_session(user["id"], session_id)
     return {
         "revoked": True,
         "session_id": session_id,
@@ -2861,6 +2991,7 @@ async def push_status(admin: dict = Depends(require_admin)):
 async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_current_user)):
     token = (payload.token or "").strip()
     platform = (payload.platform or "").strip()
+    device_id = normalize_push_device_id(payload.device_id)
     raw_type = (payload.token_type or "fcm").strip().lower()
     # Normalize Expo-style names to canonical FCM/APNS:
     _TYPE_MAP = {"android": "fcm", "ios": "apns"}
@@ -2877,6 +3008,8 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
         "token": token,
         "token_type": token_type,
         "platform": platform or "unknown",
+        "device_id": device_id,
+        "session_id": user.get("_auth_sid") or "",
         "device_model": (payload.device_model or "").strip()[:120],
         "os_version": (payload.os_version or "").strip()[:80],
         "source": (payload.source or "").strip()[:80],
@@ -2885,7 +3018,18 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
     # A push token identifies one physical app install. If a user logs out and
     # signs into another account on the same phone, move that phone to the new
     # account instead of ringing both accounts.
+    if device_id:
+        await remove_push_device_from_users(device_id)
     await remove_push_token_from_users(token)
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$pull": {"push_tokens": {"token": token}}},
+    )
+    if device_id:
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$pull": {"push_tokens": {"device_id": device_id, "token_type": token_type}}},
+        )
     await db.users.update_one(
         {"id": user["id"]},
         {
@@ -2898,31 +3042,56 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
             "$addToSet": {"push_tokens": token_entry},
         },
     )
+    await sync_user_push_legacy_fields(user["id"])
     logger.info(
-        f"Push token registered for {user.get('email')} type={token_type} (raw={raw_type}) platform={platform} token={token[:25]}..."
+        f"Push token registered for {user.get('email')} type={token_type} (raw={raw_type}) platform={platform} device_id={device_id or '-'} token={token[:25]}..."
     )
-    return {"registered": True, "platform": platform, "token_type": token_type}
+    return {"registered": True, "platform": platform, "token_type": token_type, "device_id": device_id}
 
 
 @api.get("/push/devices")
 async def list_push_devices(user: dict = Depends(get_current_user)):
     """Return masked push-token registrations for the current account."""
-    devices = []
+    grouped: dict[str, dict] = {}
+    current_session_id = user.get("_auth_sid") or ""
     for idx, target in enumerate(user_push_targets(user), start=1):
         token = target.get("token") or ""
-        devices.append(
-            {
-                "id": hashlib.sha256(token.encode("utf-8")).hexdigest()[:16] if token else str(idx),
+        resolved_id = target.get("device_id") or (
+            hashlib.sha256(token.encode("utf-8")).hexdigest()[:16] if token else str(idx)
+        )
+        entry = grouped.get(resolved_id)
+        if not entry:
+            entry = {
+                "id": resolved_id,
                 "platform": target.get("platform") or "unknown",
                 "token_type": target.get("token_type") or "unknown",
+                "token_types": [],
                 "token_prefix": token[:18],
                 "token_suffix": token[-6:] if len(token) > 6 else "",
                 "device_model": target.get("device_model") or "",
                 "os_version": target.get("os_version") or "",
                 "source": target.get("source") or "",
                 "registered_at": target.get("registered_at") or "",
+                "current_session": False,
             }
-        )
+            grouped[resolved_id] = entry
+        token_type = target.get("token_type") or "unknown"
+        if token_type not in entry["token_types"]:
+            entry["token_types"].append(token_type)
+        if (target.get("session_id") or "") == current_session_id and current_session_id:
+            entry["current_session"] = True
+        if (target.get("registered_at") or "") > (entry.get("registered_at") or ""):
+            entry["token_type"] = token_type
+            entry["platform"] = target.get("platform") or entry["platform"]
+            entry["token_prefix"] = token[:18]
+            entry["token_suffix"] = token[-6:] if len(token) > 6 else ""
+            entry["device_model"] = target.get("device_model") or entry["device_model"]
+            entry["os_version"] = target.get("os_version") or entry["os_version"]
+            entry["source"] = target.get("source") or entry["source"]
+            entry["registered_at"] = target.get("registered_at") or entry["registered_at"]
+    devices = list(grouped.values())
+    for entry in devices:
+        entry["token_types"].sort()
     return {
         "count": len(devices),
         "devices": devices,
@@ -2936,33 +3105,19 @@ async def unregister_push(
     user: dict = Depends(get_current_user),
 ):
     token = ((payload.token if payload else None) or "").strip()
-    device_id = ((payload.device_id if payload else None) or "").strip()
+    device_id = normalize_push_device_id((payload.device_id if payload else None) or "")
     if device_id:
-        for target in user_push_targets(user):
-            target_token = target.get("token") or ""
-            target_id = hashlib.sha256(target_token.encode("utf-8")).hexdigest()[:16] if target_token else ""
-            if target_id == device_id:
-                await remove_push_token_from_users(target_token, user["id"])
-                return {"unregistered": True, "device_id": device_id}
-        raise HTTPException(status_code=404, detail="Push device not found")
+        removed = await remove_push_device_from_users(device_id, user["id"])
+        if not removed:
+            raise HTTPException(status_code=404, detail="Push device not found")
+        return {"unregistered": True, "device_id": device_id, "scope": "device"}
 
     if token:
-        await remove_push_token_from_users(token)
-        return {"unregistered": True, "token_scoped": True}
+        await remove_push_token_from_users(token, user["id"])
+        return {"unregistered": True, "token_scoped": True, "scope": "token"}
 
-    await db.users.update_one(
-        {"id": user["id"]},
-        {
-            "$unset": {
-                "expo_push_token": "",
-                "push_platform": "",
-                "push_token": "",
-                "push_token_type": "",
-            },
-            "$set": {"push_tokens": []},
-        },
-    )
-    return {"unregistered": True}
+    removed = await remove_push_tokens_for_session(user["id"], user.get("_auth_sid"))
+    return {"unregistered": True, "scope": "session", "removed": removed}
 
 
 @api.post("/push/diag")
