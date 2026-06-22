@@ -173,6 +173,24 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     (msg: any) => {
       if (msg?.type === 'call:incoming' && msg.data && msg.data.caller_id !== user?.id) {
         showIncoming(msg.data);
+      } else if (msg?.type === 'call:accepted') {
+        const cid = msg.call_id ?? msg.data?.call_id;
+        const acceptedBy = msg.from ?? msg.data?.accepted_by;
+        // Stop duplicate ringing on another device using the callee account.
+        if (cid && acceptedBy === user?.id) {
+          dismissedCallIdsRef.current.add(cid);
+          if (incomingCallIdRef.current === cid) incomingCallIdRef.current = null;
+          setIncoming((cur) => (cur?.id === cid ? null : cur));
+          clearPendingIncomingCall(cid).catch(() => {});
+          cancelFullScreenIncomingCallNotification(cid).catch(() => {});
+          stopVibration();
+          import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
+          try {
+            endIncomingCallNative(cid);
+          } catch {
+            /* ignore */
+          }
+        }
       } else if (msg?.type === 'call:ended') {
         const cid = msg.data?.call_id;
         if (cid) dismissedCallIdsRef.current.add(cid);
@@ -205,7 +223,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         }
       }
     },
-    [user?.id, showIncoming]
+    [user?.id, showIncoming, stopVibration]
   );
 
   // Single WebSocket connection — capture the send() handle so reject() can

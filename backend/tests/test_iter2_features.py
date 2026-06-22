@@ -197,6 +197,26 @@ class TestCalls:
         assert active.json()["caller_id"] == call["caller_id"]
         assert active.json()["conversation_id"] == conv_id
 
+        accepted = api_client.post(
+            f"{BASE_URL}/api/calls/{call['id']}/accept",
+            headers=auth_headers(demo_token),
+        )
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["accepted"] is True
+
+        accepted_signals = api_client.get(
+            f"{BASE_URL}/api/calls/{call['id']}/signals",
+            headers=auth_headers(admin_token),
+        )
+        assert accepted_signals.status_code == 200, accepted_signals.text
+        matching = [
+            signal
+            for signal in accepted_signals.json()
+            if signal.get("type") == "call:accepted"
+        ]
+        assert len(matching) == 1
+        assert matching[0]["data"]["accepted_by"] != call["caller_id"]
+
         e = api_client.post(
             f"{BASE_URL}/api/calls/{call['id']}/end",
             headers=auth_headers(admin_token),

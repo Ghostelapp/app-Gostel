@@ -3876,12 +3876,42 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
         return {"accepted": True, "ephemeral": True}
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
-    if call.get("answered_at"):
-        return {"accepted": True}
-    await db.calls.update_one(
-        {"id": call_id},
-        {"$set": {"status": "answered", "answered_at": now_utc().isoformat()}},
-    )
+    if user["id"] == call.get("caller_id"):
+        raise HTTPException(status_code=403, detail="Caller cannot accept own call")
+    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "cancelled", "missed"}:
+        raise HTTPException(status_code=409, detail="Call is no longer ringing")
+
+    answered_at = call.get("answered_at") or now_utc().isoformat()
+    if not call.get("answered_at"):
+        await db.calls.update_one(
+            {"id": call_id, "answered_at": None, "ended_at": None},
+            {"$set": {"status": "answered", "answered_at": answered_at}},
+        )
+
+    accepted_event = {
+        "type": "call:accepted",
+        "call_id": call_id,
+        "from": user["id"],
+        "data": {
+            "call_id": call_id,
+            "accepted_by": user["id"],
+            "status": "answered",
+            "answered_at": answered_at,
+        },
+    }
+    for member_id in call.get("member_ids", []):
+        signal = {
+            **accepted_event,
+            "signal_id": f"{call_id}:accepted:{member_id}",
+            "to": member_id,
+            "created_at": answered_at,
+        }
+        await db.call_signals.update_one(
+            {"signal_id": signal["signal_id"]},
+            {"$setOnInsert": signal},
+            upsert=True,
+        )
+    await broadcast_to_members(call.get("member_ids", []), accepted_event)
     return {"accepted": True}
 
 

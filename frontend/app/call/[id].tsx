@@ -962,8 +962,19 @@ export default function CallScreen() {
         }
       }
 
+      // Acceptance is separate from WebRTC readiness. Stop ringback as soon
+      // as the callee answers, even if their media setup still needs time.
+      if (msg.type === 'call:accepted' || msg.type === 'call:accept') {
+        if (isCaller) {
+          stopRingback();
+          if (!connectedRef.current) setStatus('connecting');
+        }
+        return;
+      }
+
       // ----- Caller side: callee is ready, can send offer -----
       if (msg.type === 'call:ready' && isCaller) {
+        stopRingback();
         if (offerSentRef.current) return; // already sent offer for this call
         const from = msg.from;
         if (!from) return;
@@ -1083,7 +1094,7 @@ export default function CallScreen() {
         return;
       }
     },
-    [id, isCaller, drainPendingIce, endCall, closeCallFromPeer, sendEncryptedSignal, decryptPeerSignal]
+    [id, isCaller, drainPendingIce, endCall, closeCallFromPeer, sendEncryptedSignal, decryptPeerSignal, stopRingback]
   );
 
   const { send } = useWebSocket(onWs, !!user);
