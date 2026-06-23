@@ -88,6 +88,12 @@ const FALLBACK_ICE: IceServer[] = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
 ];
 
+const hasTurnServer = (servers: IceServer[]) =>
+  servers.some((server) => {
+    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+    return urls.some((url) => String(url).toLowerCase().startsWith('turn'));
+  });
+
 const candidateTypeFromText = (candidate: unknown): string | null => {
   const text =
     typeof candidate === 'string'
@@ -803,12 +809,15 @@ export default function CallScreen() {
   const setupPeer = useCallback(
     (stream: any): any => {
       let pc: any;
+      const hasRelay = hasTurnServer(iceServersRef.current);
       const config = {
         iceServers: iceServersRef.current,
         iceCandidatePoolSize: 10,
-        // Prefer a low-latency direct route and keep Cloudflare TURN as the
-        // fallback when NAT or a mobile network blocks peer-to-peer traffic.
-        iceTransportPolicy: 'all',
+        // Native mobile-to-mobile calls were getting valid SDP and relay
+        // candidates but stayed in ICE "checking" when WebRTC preferred a
+        // direct candidate pair. Use TURN as the primary route on iOS/Android;
+        // keep browser calls on the default policy.
+        iceTransportPolicy: Platform.OS === 'web' || !hasRelay ? 'all' : 'relay',
       };
 
       if (Platform.OS === 'web') {
@@ -868,7 +877,7 @@ export default function CallScreen() {
         reportCallDiag('ice_state_change', { ice_state_event: String(st || '') }).catch(() => {});
         if (st === 'connected' || st === 'completed') {
           markConnected();
-        } else if (st === 'failed' || st === 'disconnected') {
+        } else if (st === 'checking' || st === 'failed' || st === 'disconnected') {
           scheduleConnectionRecovery(pc);
         }
       };
@@ -878,7 +887,11 @@ export default function CallScreen() {
           connection_state_event: String(pc.connectionState || ''),
         }).catch(() => {});
         if (pc.connectionState === 'connected') markConnected();
-        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        if (
+          pc.connectionState === 'connecting' ||
+          pc.connectionState === 'failed' ||
+          pc.connectionState === 'disconnected'
+        ) {
           scheduleConnectionRecovery(pc);
         }
       };
