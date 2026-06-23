@@ -13,7 +13,7 @@
   </defs>
   <rect width="1600" height="900" rx="28" fill="url(#bg2)"/>
   <text x="90" y="105" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="46" font-weight="700">iPhone / iOS - testy Ghostel</text>
-  <text x="90" y="155" fill="#93c5fd" font-family="Arial, Helvetica, sans-serif" font-size="26">Build testowy: 1.4.26 (22)</text>
+  <text x="90" y="155" fill="#93c5fd" font-family="Arial, Helvetica, sans-serif" font-size="26">Build testowy: 1.4.27 (23)</text>
 
   <g transform="translate(80,220)">
     <rect width="320" height="520" rx="28" fill="url(#card2)" stroke="#93c5fd" stroke-width="2"/>
@@ -52,7 +52,7 @@
     <text x="40" y="222" fill="#dbeafe" font-family="Arial, Helvetica, sans-serif" font-size="23">wejdz do Ghostel.</text>
     <rect x="56" y="300" width="208" height="170" rx="24" fill="#0f172a" stroke="#93c5fd" stroke-width="3"/>
     <text x="88" y="356" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="700">Ghostel</text>
-    <text x="88" y="395" fill="#bfdbfe" font-family="Arial, Helvetica, sans-serif" font-size="22">Version 1.4.26</text>
+    <text x="88" y="395" fill="#bfdbfe" font-family="Arial, Helvetica, sans-serif" font-size="22">Version 1.4.27</text>
     <rect x="88" y="416" width="120" height="28" rx="14" fill="#60a5fa"/>
     <text x="123" y="436" fill="#082f49" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700">INSTALL</text>
   </g>

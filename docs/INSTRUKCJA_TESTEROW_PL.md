@@ -4,9 +4,9 @@ Ta instrukcja opisuje, jak dołączyć do testów aplikacji Ghostel na Androidzi
 
 ## Aktualna wersja testowa
 
-- Android APK `1.4.26 (26)`:
+- Android APK `1.4.27 (27)`:
   `https://api.ghostel.app/app-release.apk`
-- iOS `1.4.26 (22)`:
+- iOS `1.4.27 (23)`:
   instalacja tylko przez `TestFlight` po otrzymaniu zaproszenia albo publicznego linku TestFlight
 
 ## Android
@@ -16,7 +16,7 @@ Ta instrukcja opisuje, jak dołączyć do testów aplikacji Ghostel na Androidzi
 ### Jak dołączyć do testów na Androidzie
 
 1. Otwórz na telefonie link do pliku APK.
-2. Pobierz plik `Ghostel 1.4.26`.
+2. Pobierz plik `Ghostel 1.4.27`.
 3. Jeśli telefon zapyta o instalację z nieznanego źródła, wybierz:
    `Ustawienia` -> `Zezwól z tego źródła`.
 4. Wróć do pobranego pliku i wybierz `Instaluj`.
@@ -72,7 +72,7 @@ Przy zgłaszaniu błędu tester powinien od razu podać:
 
 1. model telefonu
 2. wersję systemu
-3. numer wersji aplikacji `1.4.26`
+3. numer wersji aplikacji `1.4.27`
 4. dokładny opis, co zrobił krok po kroku
 5. screen albo nagranie ekranu, jeśli to możliwe
 
