@@ -27,6 +27,7 @@ let wsSend: ((msg: any) => void) | null = null;
 let lastBecameActiveAt = AppState.currentState === 'active' ? Date.now() : 0;
 
 const ACTIVE_TRANSITION_END_GUARD_MS = 12_000;
+const INACTIVE_END_DEFER_MS = 2_500;
 
 export type IncomingCallInfo = {
   callId: string;
@@ -95,6 +96,10 @@ function emitCallKeepAction(action: CallKeepAction): void {
       /* one consumer must not block the others */
     }
   }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeCallId(callId: string): string {
@@ -289,6 +294,23 @@ async function handleEndCall(
 
   const info = await getIncomingCallInfo(callUUID);
   const wasAnswered = answeredCalls.has(key);
+
+  if (
+    info &&
+    !wasAnswered &&
+    !fromInitialEvent &&
+    AppState.currentState !== 'active'
+  ) {
+    await wait(INACTIVE_END_DEFER_MS);
+    if (String(AppState.currentState) === 'active') {
+      reportCallKeepDiag(info, 'callkeep_end_ignored_after_unlock_deferred', {
+        deferred_ms: INACTIVE_END_DEFER_MS,
+        native_displayed: displayedCalls.has(key),
+      });
+      await restoreAfterTransientNativeEnd(info);
+      return;
+    }
+  }
 
   // During iOS lockscreen -> passcode -> app transitions CallKit can emit a
   // live end action while the server-side call is still ringing. Treating it
