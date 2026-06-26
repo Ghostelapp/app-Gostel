@@ -120,6 +120,17 @@ class TestAdminStats:
                   "two_factor_enabled", "push_ready"):
             assert k in d, f"missing stats key {k}"
             assert isinstance(d[k], int), f"{k} is not int: {type(d[k])}"
+        for chart_key, value_key in (
+            ("activity_chart", "active"),
+            ("registrations_chart", "count"),
+            ("messages_chart", "count"),
+        ):
+            assert chart_key in d, f"missing stats key {chart_key}"
+            assert isinstance(d[chart_key], list)
+            assert len(d[chart_key]) == 14
+            for row in d[chart_key]:
+                assert isinstance(row.get("day"), str) and row["day"]
+                assert isinstance(row.get(value_key), int)
         assert d["users"] >= 2
 
     def test_non_admin_cannot_get_stats(self):
