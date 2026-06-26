@@ -101,8 +101,8 @@ android {
         applicationId 'app.ghostel'
         minSdkVersion = rootProject.ext.minSdkVersion
         targetSdkVersion = rootProject.ext.targetSdkVersion
-        versionCode = 29
-        versionName = "1.4.29"
+        versionCode = 30
+        versionName = "1.4.30"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
