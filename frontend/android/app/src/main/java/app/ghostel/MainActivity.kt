@@ -48,6 +48,7 @@ class MainActivity : ReactActivity() {
   override fun onResume() {
     super.onResume()
     removePrivacyOverlay()
+    markActivityResumed(isIncomingCallWindowActive())
   }
 
   /**
@@ -149,6 +150,8 @@ class MainActivity : ReactActivity() {
   companion object {
     private const val INCOMING_CALL_WINDOW_MS = 2 * 60 * 1000L
     private var pendingIncomingCallIntent: Intent? = null
+    private var pendingResumeAtMs: Long = 0L
+    private var pendingResumeIncomingWindowActive: Boolean = false
 
     fun consumePendingIncomingCallIntent(): Intent? =
       synchronized(MainActivity::class.java) {
@@ -156,5 +159,26 @@ class MainActivity : ReactActivity() {
         pendingIncomingCallIntent = null
         intent
       }
+
+    fun markActivityResumed(incomingWindowActive: Boolean) {
+      synchronized(MainActivity::class.java) {
+        pendingResumeAtMs = System.currentTimeMillis()
+        pendingResumeIncomingWindowActive = incomingWindowActive
+      }
+    }
+
+    fun consumePendingResumeEvent(): ResumeEvent? =
+      synchronized(MainActivity::class.java) {
+        if (pendingResumeAtMs <= 0L) return@synchronized null
+        val event = ResumeEvent(pendingResumeAtMs, pendingResumeIncomingWindowActive)
+        pendingResumeAtMs = 0L
+        pendingResumeIncomingWindowActive = false
+        event
+      }
   }
 }
+
+data class ResumeEvent(
+  val resumedAtMs: Long,
+  val incomingWindowActive: Boolean,
+)

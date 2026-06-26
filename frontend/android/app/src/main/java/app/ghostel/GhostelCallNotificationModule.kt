@@ -166,6 +166,25 @@ class GhostelCallNotificationModule(
   }
 
   @ReactMethod
+  fun consumeResumeEvent(promise: Promise) {
+    try {
+      val event = MainActivity.consumePendingResumeEvent()
+      if (event == null) {
+        promise.resolve(null)
+        return
+      }
+      val map = Arguments.createMap().apply {
+        putString("reason", "activity_resume")
+        putDouble("resumed_at_ms", event.resumedAtMs.toDouble())
+        putBoolean("incoming_call_window_active", event.incomingWindowActive)
+      }
+      promise.resolve(map)
+    } catch (e: Exception) {
+      promise.reject("ghostel_call_resume_event_failed", e)
+    }
+  }
+
+  @ReactMethod
   fun startActiveCall(callId: String, peerName: String, promise: Promise) {
     try {
       val intent = Intent(reactContext, GhostelActiveCallService::class.java).apply {
