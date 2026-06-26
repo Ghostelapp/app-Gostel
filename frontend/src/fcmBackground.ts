@@ -146,12 +146,19 @@ function _isCallControlPayload(data?: Record<string, string>): boolean {
 async function _handleCallControlPayload(data: Record<string, string>): Promise<void> {
   const callId = data.call_id || '';
   if (!callId) return;
+  const action = data.call_control_action || data.status || data.type;
+  let locallyAccepted = false;
   try {
-    const { clearPendingIncomingCall, emitCallControlEvent } = require('./incomingCallStore');
+    const {
+      clearPendingIncomingCall,
+      emitCallControlEvent,
+      wasCallLocallyAccepted,
+    } = require('./incomingCallStore');
+    locallyAccepted = action === 'accepted' && Boolean(await wasCallLocallyAccepted(callId));
     await clearPendingIncomingCall(callId);
     emitCallControlEvent({
       call_id: callId,
-      action: data.call_control_action || data.status || data.type,
+      action,
       actor_id: data.actor_id || data.accepted_by || data.ended_by || '',
     });
   } catch {
@@ -160,7 +167,7 @@ async function _handleCallControlPayload(data: Record<string, string>): Promise<
   try {
     const { cancelFullScreenIncomingCallNotification, stopActiveCallService } = require('./androidCallNotification');
     await cancelFullScreenIncomingCallNotification(callId);
-    if (data.call_control_action !== 'accepted') {
+    if (action !== 'accepted') {
       await stopActiveCallService();
     }
   } catch {
@@ -168,7 +175,9 @@ async function _handleCallControlPayload(data: Record<string, string>): Promise<
   }
   try {
     const { endIncomingCallNative } = require('./callkeep');
-    endIncomingCallNative(callId);
+    if (action !== 'accepted' || !locallyAccepted) {
+      endIncomingCallNative(callId);
+    }
   } catch {
     /* native iOS cleanup is best-effort */
   }

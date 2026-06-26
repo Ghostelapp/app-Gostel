@@ -299,6 +299,30 @@ def user_push_targets(u: dict) -> list[dict]:
     return targets
 
 
+def compact_push_targets(targets: list[dict]) -> list[dict]:
+    """Keep one latest token per user/device/type delivery lane.
+
+    A single install can register multiple times over app upgrades. Sending to
+    every historical token is what produces duplicate ringing for one incoming
+    call, so call pushes use the newest entry for each device/token type.
+    """
+    compacted: dict[tuple[str, str, str], dict] = {}
+    token_seen: set[str] = set()
+    for target in targets:
+        token = (target.get("token") or "").strip()
+        if not token or token in token_seen:
+            continue
+        token_seen.add(token)
+        user_id = (target.get("user_id") or "").strip()
+        device_id = normalize_push_device_id(target.get("device_id"))
+        token_type = (target.get("token_type") or "fcm").strip().lower()
+        key = (user_id, device_id or token, token_type)
+        current = compacted.get(key)
+        if not current or (target.get("registered_at") or "") >= (current.get("registered_at") or ""):
+            compacted[key] = target
+    return list(compacted.values())
+
+
 async def sync_user_push_legacy_fields(user_id: str) -> None:
     user = await db.users.find_one(
         {"id": user_id},
@@ -3523,6 +3547,7 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         for r in recipients:
             for target in user_push_targets(r):
                 push_targets.append({**target, "user_id": r.get("id")})
+        push_targets = compact_push_targets(push_targets)
         fcm_recipients = [
             r for r in push_targets if (r.get("token_type") or "fcm") in ("fcm", "apns")
         ]
@@ -3685,7 +3710,12 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         logger.warning(f"_send_push_to_members failed: {exc}")
 
 
-async def _send_call_control_push(call: dict, action: str, actor_id: str) -> None:
+async def _send_call_control_push(
+    call: dict,
+    action: str,
+    actor_id: str,
+    actor_session_id: Optional[str] = None,
+) -> None:
     """Wake background devices so native incoming-call UI stops ringing.
 
     WebSocket remains the primary real-time path while the app is active, but
@@ -3730,6 +3760,16 @@ async def _send_call_control_push(call: dict, action: str, actor_id: str) -> Non
                 token_type = (target.get("token_type") or "fcm").lower()
                 if token_type in {"fcm", "apns"}:
                     targets.append({**target, "user_id": user_doc.get("id")})
+        targets = compact_push_targets(targets)
+        if action == "accepted" and actor_session_id:
+            targets = [
+                target
+                for target in targets
+                if not (
+                    target.get("user_id") == actor_id
+                    and (target.get("session_id") or "") == actor_session_id
+                )
+            ]
         if not targets:
             return
 
@@ -4004,7 +4044,9 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
             upsert=True,
         )
     await broadcast_to_members(call.get("member_ids", []), accepted_event)
-    asyncio.create_task(_send_call_control_push(call, "accepted", user["id"]))
+    asyncio.create_task(
+        _send_call_control_push(call, "accepted", user["id"], user.get("_auth_sid"))
+    )
     return {"accepted": True}
 
 

@@ -28,6 +28,7 @@ import {
 import {
   clearPendingIncomingCall,
   getPendingIncomingCall,
+  markCallLocallyAccepted,
   normalizeIncomingCallPayload,
   savePendingIncomingCall,
   subscribeToCallControlEvents,
@@ -67,6 +68,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const vibratingRef = useRef(false);
   const incomingCallIdRef = useRef<string | null>(null);
   const dismissedCallIdsRef = useRef(new Set<string>());
+  const locallyAcceptedCallIdsRef = useRef(new Set<string>());
   const pulse = useRef(new Animated.Value(0)).current;
   const actionGuardUntilRef = useRef(0);
   const actionGuardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -154,6 +156,8 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
       await clearPendingIncomingCall(call.id).catch(() => {});
       await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
+      locallyAcceptedCallIdsRef.current.add(call.id);
+      await markCallLocallyAccepted(call.id).catch(() => {});
       setIncoming((current) => (current?.id === call.id ? null : current));
       stopVibration();
       import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
@@ -186,10 +190,12 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
           cancelFullScreenIncomingCallNotification(cid).catch(() => {});
           stopVibration();
           import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
-          try {
-            endIncomingCallNative(cid);
-          } catch {
-            /* ignore */
+          if (!locallyAcceptedCallIdsRef.current.has(cid)) {
+            try {
+              endIncomingCallNative(cid);
+            } catch {
+              /* ignore */
+            }
           }
         }
       } else if (msg?.type === 'call:ended') {
@@ -327,7 +333,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
 
     restore().catch(() => {});
     const unsubIncoming = subscribeToIncomingCallEvents((call) => showIncoming(call));
-    const unsubControl = subscribeToCallControlEvents(({ call_id }) => {
+    const unsubControl = subscribeToCallControlEvents(({ call_id, action }) => {
       if (!call_id) return;
       dismissedCallIdsRef.current.add(call_id);
       if (incomingCallIdRef.current === call_id) incomingCallIdRef.current = null;
@@ -336,10 +342,12 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       cancelFullScreenIncomingCallNotification(call_id).catch(() => {});
       stopVibration();
       import('./sounds').then((sounds) => sounds.stopRingtone()).catch(() => {});
-      try {
-        endIncomingCallNative(call_id);
-      } catch {
-        /* ignore */
+      if (action !== 'accepted' || !locallyAcceptedCallIdsRef.current.has(call_id)) {
+        try {
+          endIncomingCallNative(call_id);
+        } catch {
+          /* ignore */
+        }
       }
     });
     const sub = AppState.addEventListener('change', (state) => {
@@ -418,6 +426,8 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     dismissedCallIdsRef.current.add(call.id);
     incomingCallIdRef.current = null;
     setIncoming(null);
+    locallyAcceptedCallIdsRef.current.add(call.id);
+    await markCallLocallyAccepted(call.id).catch(() => {});
     clearPendingIncomingCall(call.id).catch(() => {});
     cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
     stopVibration();
