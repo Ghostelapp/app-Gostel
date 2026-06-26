@@ -3685,6 +3685,98 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         logger.warning(f"_send_push_to_members failed: {exc}")
 
 
+async def _send_call_control_push(call: dict, action: str, actor_id: str) -> None:
+    """Wake background devices so native incoming-call UI stops ringing.
+
+    WebSocket remains the primary real-time path while the app is active, but
+    locked/background devices can be showing a native call UI without a live WS.
+    This data-only FCM message is intentionally silent and only carries enough
+    state to cancel ringing or clear active-call UI.
+    """
+    try:
+        from fcm import is_configured as fcm_is_configured, send_fcm
+
+        if not fcm_is_configured():
+            logger.warning("FCM not configured - skipped call control push")
+            return
+
+        member_ids = [member_id for member_id in call.get("member_ids", []) if member_id]
+        if not member_ids:
+            return
+
+        users = await db.users.find(
+            {
+                "id": {"$in": member_ids},
+                "$or": [
+                    {"push_tokens.0": {"$exists": True}},
+                    {"push_token": {"$exists": True, "$ne": None}},
+                    {"expo_push_token": {"$exists": True, "$ne": None}},
+                ],
+            },
+            {
+                "_id": 0,
+                "id": 1,
+                "push_tokens": 1,
+                "push_token": 1,
+                "push_token_type": 1,
+                "push_platform": 1,
+                "expo_push_token": 1,
+            },
+        ).to_list(1000)
+
+        targets: list[dict] = []
+        for user_doc in users:
+            for target in user_push_targets(user_doc):
+                token_type = (target.get("token_type") or "fcm").lower()
+                if token_type in {"fcm", "apns"}:
+                    targets.append({**target, "user_id": user_doc.get("id")})
+        if not targets:
+            return
+
+        data = {
+            "type": "call_control",
+            "call_control_action": action,
+            "call_id": call.get("id", ""),
+            "conversation_id": call.get("conversation_id", ""),
+            "actor_id": actor_id,
+            "accepted_by": actor_id if action == "accepted" else "",
+            "ended_by": actor_id if action != "accepted" else "",
+            "status": action,
+        }
+
+        ok = err = 0
+        async with httpx.AsyncClient(timeout=10) as client:
+            for target in targets:
+                token = target["token"]
+                result = await send_fcm(
+                    client,
+                    token=token,
+                    title="ghostel.app call",
+                    body="",
+                    channel_id="calls",
+                    sound="default",
+                    priority="high",
+                    ttl_seconds=30,
+                    data=data,
+                    data_only=True,
+                )
+                if result.get("ok"):
+                    ok += 1
+                else:
+                    err += 1
+                    err_code = result.get("fcm_error_code") or result.get("error", "unknown")
+                    logger.warning(
+                        f"Call control push failed token={token[:30]}... action={action} err={err_code}"
+                    )
+                    if err_code in ("UNREGISTERED", "INVALID_ARGUMENT", "NOT_FOUND"):
+                        await remove_push_token_from_users(token)
+        logger.info(
+            f"Call control push action={action} call={str(call.get('id', ''))[:8]} ok={ok} err={err}"
+        )
+    except Exception as exc:
+        logger.warning(f"_send_call_control_push failed: {exc}")
+
+
 # ----------------- Calls (signaling + record) -----------------
 # ICE servers cache (TTL 50min — Cloudflare creds valid 1h, refresh every 50min)
 _ice_cache = {"servers": None, "source": None, "expires_at": 0.0}
@@ -3912,6 +4004,7 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
             upsert=True,
         )
     await broadcast_to_members(call.get("member_ids", []), accepted_event)
+    asyncio.create_task(_send_call_control_push(call, "accepted", user["id"]))
     return {"accepted": True}
 
 
@@ -4097,6 +4190,7 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
         call["member_ids"],
         ended_event,
     )
+    asyncio.create_task(_send_call_control_push(call, update_doc.get("status", "ended"), user["id"]))
     if call.get("ephemeral"):
         await db.calls.delete_one({"id": call_id})
     return {"ended": True, "status": update_doc.get("status", "ended")}

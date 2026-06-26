@@ -13,6 +13,7 @@ export type IncomingCallPayload = {
 
 const PENDING_INCOMING_CALL_KEY = 'ghostel_pending_incoming_call_v1';
 const INCOMING_CALL_EVENT = 'ghostel:incoming-call';
+const CALL_CONTROL_EVENT = 'ghostel:call-control';
 
 export function normalizeIncomingCallPayload(data: any): IncomingCallPayload | null {
   if (!data) return null;
@@ -94,5 +95,22 @@ export function subscribeToIncomingCallEvents(
 ): () => void {
   if (Platform.OS === 'web') return () => {};
   const sub = DeviceEventEmitter.addListener(INCOMING_CALL_EVENT, handler);
+  return () => sub.remove();
+}
+
+export function emitCallControlEvent(data: {
+  call_id: string;
+  action?: string;
+  actor_id?: string;
+}): void {
+  if (Platform.OS === 'web' || !data.call_id) return;
+  DeviceEventEmitter.emit(CALL_CONTROL_EVENT, data);
+}
+
+export function subscribeToCallControlEvents(
+  handler: (data: { call_id: string; action?: string; actor_id?: string }) => void,
+): () => void {
+  if (Platform.OS === 'web') return () => {};
+  const sub = DeviceEventEmitter.addListener(CALL_CONTROL_EVENT, handler);
   return () => sub.remove();
 }

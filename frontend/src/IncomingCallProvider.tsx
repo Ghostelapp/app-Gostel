@@ -30,6 +30,7 @@ import {
   getPendingIncomingCall,
   normalizeIncomingCallPayload,
   savePendingIncomingCall,
+  subscribeToCallControlEvents,
   subscribeToIncomingCallEvents,
   type IncomingCallPayload,
 } from './incomingCallStore';
@@ -326,6 +327,21 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
 
     restore().catch(() => {});
     const unsubIncoming = subscribeToIncomingCallEvents((call) => showIncoming(call));
+    const unsubControl = subscribeToCallControlEvents(({ call_id }) => {
+      if (!call_id) return;
+      dismissedCallIdsRef.current.add(call_id);
+      if (incomingCallIdRef.current === call_id) incomingCallIdRef.current = null;
+      setIncoming((current) => (current?.id === call_id ? null : current));
+      clearPendingIncomingCall(call_id).catch(() => {});
+      cancelFullScreenIncomingCallNotification(call_id).catch(() => {});
+      stopVibration();
+      import('./sounds').then((sounds) => sounds.stopRingtone()).catch(() => {});
+      try {
+        endIncomingCallNative(call_id);
+      } catch {
+        /* ignore */
+      }
+    });
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         // The final passcode/keypad touch can otherwise land on a newly
@@ -343,6 +359,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     return () => {
       mounted = false;
       unsubIncoming();
+      unsubControl();
       sub.remove();
       clearInterval(nativeActionTimer);
     };

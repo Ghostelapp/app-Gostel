@@ -188,7 +188,7 @@ export default function CallScreen() {
   );
   const [status, setStatus] = useState<CallStatus>('init');
   const [muted, setMuted] = useState(false);
-  const [speakerOn, setSpeakerOn] = useState(false);
+  const [speakerOn, setSpeakerOn] = useState(true);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [remoteStreamUrl, setRemoteStreamUrl] = useState<string | null>(null);
@@ -395,7 +395,7 @@ export default function CallScreen() {
   }, []);
 
   const startNativeCallAudio = useCallback(
-    (forceSpeaker = speakerOn) => {
+    (forceSpeaker = true) => {
       if (Platform.OS === 'web') return;
       try {
         if (!inCallStartedRef.current) {
@@ -413,7 +413,7 @@ export default function CallScreen() {
         /* native audio routing is best-effort */
       }
     },
-    [InCall, speakerOn],
+    [InCall],
   );
 
   const buildCallDiag = useCallback(
@@ -1257,7 +1257,7 @@ export default function CallScreen() {
 
       // 2b. Native audio session must be active before microphone/WebRTC setup,
       // especially on iOS when the call was answered from CallKit.
-      startNativeCallAudio(false);
+      startNativeCallAudio(true);
 
       // 3. Get microphone access
       const stream = await ensureMedia();

@@ -55,6 +55,10 @@ export function registerFcmHandlers(): void {
     // socket happens to be down we use CallKeep as a fallback.
     _fgUnsub = messaging().onMessage(async (msg: FcmDataMessage) => {
       try {
+        if (_isCallControlPayload(msg?.data)) {
+          await _handleCallControlPayload(msg.data || {});
+          return;
+        }
         // Only show the native UI if the data type is a call. Everything else
         // is handled by expo-notifications + our existing in-app UI.
         if (msg?.data?.type === 'incoming_call') {
@@ -82,6 +86,10 @@ async function _handleVoipPayload(msg: FcmDataMessage): Promise<void> {
   // Accept both `incoming_call` (new payload) and legacy `call` for backward
   // compatibility with older clients / servers.
   if (!d) return;
+  if (_isCallControlPayload(d)) {
+    await _handleCallControlPayload(d);
+    return;
+  }
   const isCall =
     d.type === 'incoming_call' ||
     d.type === 'call' ||
@@ -123,6 +131,53 @@ async function _handleVoipPayload(msg: FcmDataMessage): Promise<void> {
   // full-screen call notification. Do not post a second JS notification here:
   // on Samsung devices that duplicate can briefly win as a heads-up banner
   // and make the incoming call feel like a normal top notification.
+}
+
+function _isCallControlPayload(data?: Record<string, string>): boolean {
+  if (!data) return false;
+  return (
+    data.type === 'call_control' ||
+    data.type === 'call:accepted' ||
+    data.type === 'call:ended' ||
+    !!data.call_control_action
+  );
+}
+
+async function _handleCallControlPayload(data: Record<string, string>): Promise<void> {
+  const callId = data.call_id || '';
+  if (!callId) return;
+  try {
+    const { clearPendingIncomingCall, emitCallControlEvent } = require('./incomingCallStore');
+    await clearPendingIncomingCall(callId);
+    emitCallControlEvent({
+      call_id: callId,
+      action: data.call_control_action || data.status || data.type,
+      actor_id: data.actor_id || data.accepted_by || data.ended_by || '',
+    });
+  } catch {
+    /* pending call storage is best-effort */
+  }
+  try {
+    const { cancelFullScreenIncomingCallNotification, stopActiveCallService } = require('./androidCallNotification');
+    await cancelFullScreenIncomingCallNotification(callId);
+    if (data.call_control_action !== 'accepted') {
+      await stopActiveCallService();
+    }
+  } catch {
+    /* native Android cleanup is best-effort */
+  }
+  try {
+    const { endIncomingCallNative } = require('./callkeep');
+    endIncomingCallNative(callId);
+  } catch {
+    /* native iOS cleanup is best-effort */
+  }
+  try {
+    const sounds = require('./sounds');
+    await sounds.stopRingtone?.();
+  } catch {
+    /* sound cleanup is best-effort */
+  }
 }
 
 async function _showIncomingCallKit(data: Record<string, string>): Promise<void> {
