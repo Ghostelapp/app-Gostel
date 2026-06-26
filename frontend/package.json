@@ -7,7 +7,7 @@
     "email": "support@ghostel.app"
   },
   "main": "./index.js",
-  "version": "1.4.30",
+  "version": "1.4.31",
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",

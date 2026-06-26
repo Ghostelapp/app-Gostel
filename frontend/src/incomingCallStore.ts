@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DeviceEventEmitter, Platform } from 'react-native';
+import { saveActiveCallState } from './callState';
 
 export type IncomingCallPayload = {
   id: string;
@@ -86,6 +87,17 @@ export async function clearPendingIncomingCall(callId?: string): Promise<void> {
 
 export async function showIncomingCallFromPush(data: any): Promise<IncomingCallPayload | null> {
   const call = await savePendingIncomingCall(data);
+  if (call) {
+    await saveActiveCallState({
+      activeCallId: call.id,
+      callStatus: 'INCOMING_RINGING',
+      callerId: call.caller_id,
+      conversationId: call.conversation_id,
+      mode: call.mode,
+      createdAt: String(data.created_at || data.createdAt || ''),
+      expiresAt: String(data.expires_at || data.expiresAt || ''),
+    }).catch(() => {});
+  }
   if (call && Platform.OS !== 'web') {
     DeviceEventEmitter.emit(INCOMING_CALL_EVENT, call);
   }
