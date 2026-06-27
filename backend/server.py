@@ -1509,9 +1509,18 @@ async def list_invitations(user: dict = Depends(get_current_user)):
 
 @api.post("/contacts/invite")
 async def invite_contact(payload: ContactInviteIn, user: dict = Depends(get_current_user)):
+    await enforce_rate_limit(
+        "contact-invite-user", user["id"], limit=40, window_seconds=60 * 60
+    )
     target_un = normalize_username(payload.username)
     if not target_un:
         raise HTTPException(status_code=400, detail="Invalid username")
+    await enforce_rate_limit(
+        "contact-invite-target",
+        f"{user['id']}:{target_un}",
+        limit=8,
+        window_seconds=60 * 60,
+    )
     target = await db.users.find_one({"username": target_un}, {"_id": 0})
     if not target:
         raise HTTPException(status_code=404, detail="No user with that username")
@@ -2425,6 +2434,15 @@ async def list_messages(conv_id: str, user: dict = Depends(get_current_user)):
 
 @api.post("/messages")
 async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_user)):
+    await enforce_rate_limit(
+        "message-send-user", user["id"], limit=180, window_seconds=60
+    )
+    await enforce_rate_limit(
+        "message-send-conversation",
+        f"{user['id']}:{payload.conversation_id}",
+        limit=90,
+        window_seconds=60,
+    )
     conv = await db.conversations.find_one(
         {"id": payload.conversation_id, "member_ids": user["id"]}, {"_id": 0}
     )
@@ -3024,6 +3042,12 @@ async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)):
 # ----------------- Uploads (base64 attachments) -----------------
 @api.post("/uploads")
 async def upload_attachment(payload: UploadIn, user: dict = Depends(get_current_user)):
+    await enforce_rate_limit(
+        "upload-user-minute", user["id"], limit=12, window_seconds=60
+    )
+    await enforce_rate_limit(
+        "upload-user-hour", user["id"], limit=80, window_seconds=60 * 60
+    )
     try:
         decoded = base64.b64decode(payload.data, validate=True)
     except (binascii.Error, ValueError):
@@ -3113,12 +3137,40 @@ def sanitize_diag_value(value, depth: int = 0):
 
 @api.get("/push/status")
 async def push_status(admin: dict = Depends(require_admin)):
-    """Returns FCM configuration status — useful to verify Service Account loaded."""
+    """Return push/call transport readiness without exposing credentials."""
     from apns import is_configured as apns_is_configured
-    from fcm import is_configured
+    from fcm import get_config_error, get_project_id, is_configured
+
+    fcm_ok = is_configured()
+    apns_ok = apns_is_configured()
+    configured_turn = bool(os.environ.get("TURN_URLS", "").strip())
+    cloudflare_turn = bool(
+        os.environ.get("CLOUDFLARE_TURN_APP_ID", "").strip()
+        and os.environ.get("CLOUDFLARE_TURN_API_TOKEN", "").strip()
+    )
+    if configured_turn:
+        turn_source = "configured"
+    elif cloudflare_turn:
+        turn_source = "cloudflare"
+    else:
+        turn_source = "public-fallback"
+    warnings = []
+    if not fcm_ok:
+        warnings.append("FCM is not configured; Android/APNs fallback pushes may fail.")
+    if not apns_ok:
+        warnings.append("APNs VoIP is not configured; locked iOS incoming calls may fail.")
+    if turn_source == "public-fallback":
+        warnings.append("TURN uses public fallback; configure production TURN for reliable mobile calls.")
     return {
-        "fcm_configured": is_configured(),
-        "apns_voip_configured": apns_is_configured(),
+        "fcm_configured": fcm_ok,
+        "fcm_project_configured": bool(get_project_id()),
+        "fcm_config_error": get_config_error() if not fcm_ok else None,
+        "apns_voip_configured": apns_ok,
+        "apns_voip_topic_configured": bool(os.environ.get("APNS_VOIP_TOPIC", "").strip()),
+        "turn_configured": turn_source != "public-fallback",
+        "turn_source": turn_source,
+        "production_call_ready": bool(fcm_ok and apns_ok and turn_source != "public-fallback"),
+        "warnings": warnings,
     }
 
 
@@ -4056,6 +4108,15 @@ async def get_ice_servers(user: dict = Depends(get_current_user)):
 
 @api.post("/calls/start")
 async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user)):
+    await enforce_rate_limit(
+        "call-start-user", user["id"], limit=30, window_seconds=10 * 60
+    )
+    await enforce_rate_limit(
+        "call-start-conversation",
+        f"{user['id']}:{payload.conversation_id}",
+        limit=12,
+        window_seconds=10 * 60,
+    )
     conv = await db.conversations.find_one(
         {"id": payload.conversation_id, "member_ids": user["id"]}, {"_id": 0}
     )
@@ -4283,6 +4344,9 @@ async def get_active_call(user: dict = Depends(get_current_user)):
 
 @api.post("/calls/{call_id}/ring")
 async def ring_call(call_id: str, user: dict = Depends(get_current_user)):
+    await enforce_rate_limit(
+        "call-ring-user", user["id"], limit=120, window_seconds=60 * 60
+    )
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
@@ -4316,6 +4380,9 @@ async def ring_call(call_id: str, user: dict = Depends(get_current_user)):
 async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
     """Callee marks the call as accepted — sets answered_at so it doesn't
     count as missed."""
+    await enforce_rate_limit(
+        "call-accept-user", user["id"], limit=120, window_seconds=60 * 60
+    )
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})
     if not call:
         return {"accepted": True, "ephemeral": True}
@@ -4450,6 +4517,15 @@ async def _persist_call_signal_payload(
     forced_type: Optional[str] = None,
 ) -> dict:
     """Persist encrypted WebRTC signaling briefly as a WebSocket fallback."""
+    await enforce_rate_limit(
+        "call-signal-user-minute", user["id"], limit=600, window_seconds=60
+    )
+    await enforce_rate_limit(
+        "call-signal-call-window",
+        f"{user['id']}:{call_id}",
+        limit=1800,
+        window_seconds=10 * 60,
+    )
     signal_type = forced_type or str(payload.get("type") or "")
     allowed = {
         "call:offer", "call:answer", "call:ice", "call:ready",
@@ -4548,6 +4624,9 @@ async def list_call_signals(call_id: str, user: dict = Depends(get_current_user)
 
 @api.post("/calls/{call_id}/end")
 async def end_call(call_id: str, user: dict = Depends(get_current_user)):
+    await enforce_rate_limit(
+        "call-end-user", user["id"], limit=120, window_seconds=60 * 60
+    )
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})
     if not call:
         return {"ended": True, "ephemeral": True}
@@ -4729,6 +4808,9 @@ async def update_call_client_state(
     payload: CallStateUpdateIn,
     user: dict = Depends(get_current_user),
 ):
+    await enforce_rate_limit(
+        "call-state-user-minute", user["id"], limit=120, window_seconds=60
+    )
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})
     if not call:
         return {"updated": False, "ephemeral": True}
