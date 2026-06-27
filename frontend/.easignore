@@ -1,6 +1,16 @@
 node_modules/
 .expo/
 .metro-cache/
+.pytest_cache/
+.npm-cache*/
+.codex_ghostel_vps*
+../.pytest_cache/
+../.npm-cache*/
+../.codex_ghostel_vps*
+../artifacts/
+../website-GhostelAPPweb/
+../backend/
+../IOS/
 desktop-dist/
 dist-web/
 android/.gradle/

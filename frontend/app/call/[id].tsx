@@ -46,6 +46,7 @@ import {
   syncConversationKeyTrust,
   type E2EECallSignalPayload,
 } from '../../src/e2ee';
+import { logCallEvent } from '../../src/callState';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -87,6 +88,12 @@ const CONNECTION_RECOVERY_MS = 12_000;
 const FALLBACK_ICE: IceServer[] = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
 ];
+
+const hasTurnServer = (servers: IceServer[]) =>
+  servers.some((server) => {
+    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+    return urls.some((url) => String(url).toLowerCase().startsWith('turn'));
+  });
 
 const candidateTypeFromText = (candidate: unknown): string | null => {
   const text =
@@ -182,7 +189,7 @@ export default function CallScreen() {
   );
   const [status, setStatus] = useState<CallStatus>('init');
   const [muted, setMuted] = useState(false);
-  const [speakerOn, setSpeakerOn] = useState(false);
+  const [speakerOn, setSpeakerOn] = useState(true);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [remoteStreamUrl, setRemoteStreamUrl] = useState<string | null>(null);
@@ -206,7 +213,6 @@ export default function CallScreen() {
   const timeoutTimerRef = useRef<any>(null);
   const readyRetryRef = useRef<any>(null);
   const reconnectTimerRef = useRef<any>(null);
-  const audioRepairTimerRef = useRef<any>(null);
   const statusRef = useRef<CallStatus>('init');
   const endedRef = useRef(false);
   const connectedRef = useRef(false);
@@ -330,10 +336,9 @@ export default function CallScreen() {
         // Persist first so signaling still works while the WebSocket is
         // reconnecting after the app is opened from a native call alert.
         await api.post(`/calls/${id}/signals`, payload);
-        wsSendRef.current?.(payload);
         return true;
       } catch (e: any) {
-        setErrMsg(`Signal encryption failed: ${e?.message || e}`);
+        setErrMsg(`Call signaling failed: ${e?.message || e}`);
         return false;
       }
     },
@@ -388,14 +393,10 @@ export default function CallScreen() {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    if (audioRepairTimerRef.current) {
-      clearInterval(audioRepairTimerRef.current);
-      audioRepairTimerRef.current = null;
-    }
   }, []);
 
   const startNativeCallAudio = useCallback(
-    (forceSpeaker = speakerOn) => {
+    (forceSpeaker = true) => {
       if (Platform.OS === 'web') return;
       try {
         if (!inCallStartedRef.current) {
@@ -413,7 +414,7 @@ export default function CallScreen() {
         /* native audio routing is best-effort */
       }
     },
-    [InCall, speakerOn],
+    [InCall],
   );
 
   const buildCallDiag = useCallback(
@@ -493,24 +494,6 @@ export default function CallScreen() {
     [buildCallDiag, id],
   );
 
-  const startAudioRepairLoop = useCallback(() => {
-    if (Platform.OS === 'web') return;
-    if (audioRepairTimerRef.current) {
-      clearInterval(audioRepairTimerRef.current);
-    }
-    let ticks = 0;
-    audioRepairTimerRef.current = setInterval(() => {
-      ticks += 1;
-      if (endedRef.current || !connectedRef.current || ticks > 8) {
-        clearInterval(audioRepairTimerRef.current);
-        audioRepairTimerRef.current = null;
-        return;
-      }
-      startNativeCallAudio(speakerOn);
-      reportCallDiag('audio_route_repair', { audio_repair_tick: ticks }).catch(() => {});
-    }, 1_000);
-  }, [reportCallDiag, speakerOn, startNativeCallAudio]);
-
   // ---------------------------------------------------------------------------
   // Cleanup + endCall
   // ---------------------------------------------------------------------------
@@ -561,7 +544,11 @@ export default function CallScreen() {
       Vibration.cancel();
     } catch {}
     stopActiveCallService().catch(() => {});
-  }, [clearTimers, stopRingback, InCall]);
+    logCallEvent('CALL_ENDED_CLEANUP', {
+      callId: id,
+      status: statusRef.current,
+    });
+  }, [clearTimers, stopRingback, InCall, id]);
 
   const returnToChat = useCallback(() => {
     if (conversationIdParam) {
@@ -724,6 +711,7 @@ export default function CallScreen() {
 
   const markConnected = useCallback(() => {
     if (endedRef.current) return;
+    const firstConnection = !connectedRef.current;
     connectedRef.current = true;
     statusRef.current = 'connected';
     stopRingback();
@@ -732,16 +720,33 @@ export default function CallScreen() {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    startNativeCallAudio(speakerOn);
-    startAudioRepairLoop();
-    startTimer();
-    setStatus('connected');
-    try {
-      markCallActive(id);
-    } catch {
-      /* ignore */
+    if (firstConnection) {
+      // Re-applying the native audio manager rewrites the active audio session
+      // and causes short dropouts, so configure it once per connection.
+      startNativeCallAudio(speakerOn);
+      startTimer();
+      logCallEvent('WEBRTC_CONNECTED', {
+        callId: id,
+        iceState: lastIceStateRef.current,
+        connectionState: lastConnectionStateRef.current,
+        remoteTracks: remoteTrackCountRef.current,
+      });
     }
-    startActiveCallService(id, callerName).catch(() => {});
+    setStatus('connected');
+    if (firstConnection) {
+      try {
+        markCallActive(id);
+      } catch {
+        /* ignore */
+      }
+      api.post(`/calls/${id}/state`, {
+        status: 'active',
+        peer_connection_state: lastConnectionStateRef.current,
+        local_audio_enabled: true,
+        remote_audio_connected: remoteTrackCountRef.current > 0,
+      }).catch(() => {});
+      startActiveCallService(id, callerName).catch(() => {});
+    }
     if (timeoutTimerRef.current) {
       clearTimeout(timeoutTimerRef.current);
       timeoutTimerRef.current = null;
@@ -752,7 +757,6 @@ export default function CallScreen() {
     id,
     reportCallDiag,
     speakerOn,
-    startAudioRepairLoop,
     startNativeCallAudio,
     startTimer,
     stopRingback,
@@ -766,7 +770,13 @@ export default function CallScreen() {
     remoteSetRef.current = false;
     pendingIceRef.current = [];
     setStatus('connecting');
-    setErrMsg('Reconnecting through TURN…');
+    api.post(`/calls/${id}/state`, {
+      status: 'reconnecting',
+      peer_connection_state: lastConnectionStateRef.current,
+      local_audio_enabled: true,
+      remote_audio_connected: remoteTrackCountRef.current > 0,
+    }).catch(() => {});
+    setErrMsg('Reconnecting…');
     try {
       pc.restartIce?.();
       const offer = await pc.createOffer({
@@ -822,12 +832,15 @@ export default function CallScreen() {
   const setupPeer = useCallback(
     (stream: any): any => {
       let pc: any;
+      const hasRelay = hasTurnServer(iceServersRef.current);
       const config = {
         iceServers: iceServersRef.current,
         iceCandidatePoolSize: 10,
-        // Mobile NAT paths often connect briefly and then drop media. We have
-        // Cloudflare TURN in production, so native calls should prefer relay.
-        iceTransportPolicy: Platform.OS === 'web' ? 'all' : 'relay',
+        // Native mobile-to-mobile calls were getting valid SDP and relay
+        // candidates but stayed in ICE "checking" when WebRTC preferred a
+        // direct candidate pair. Use TURN as the primary route on iOS/Android;
+        // keep browser calls on the default policy.
+        iceTransportPolicy: Platform.OS === 'web' || !hasRelay ? 'all' : 'relay',
       };
 
       if (Platform.OS === 'web') {
@@ -839,12 +852,17 @@ export default function CallScreen() {
         if (!WebRTC) return null;
         pc = new WebRTC.RTCPeerConnection(config);
       }
+      logCallEvent('WEBRTC_PEER_CONNECTION_CREATED', {
+        callId: id,
+        platform: Platform.OS,
+        icePolicy: config.iceTransportPolicy,
+        iceSource: iceSourceRef.current,
+      });
 
       // remote track → attach
       const handleRemoteStream = (remoteStream: any) => {
         if (!remoteStream) return;
         attachRemoteStream(remoteStream);
-        markConnected();
       };
 
       pc.ontrack = (e: any) => {
@@ -858,7 +876,7 @@ export default function CallScreen() {
       };
       // ICE candidates → relay to peer
       pc.onicecandidate = (e: any) => {
-        if (e?.candidate && peerIdRef.current && wsSendRef.current) {
+        if (e?.candidate && peerIdRef.current) {
           const candidateText = String(e.candidate?.candidate || e.candidate || '');
           const type = bumpCandidateCount(localCandidateTypeCountsRef, e.candidate);
           if (type === 'relay' || candidateText.includes(' typ relay ')) {
@@ -885,10 +903,22 @@ export default function CallScreen() {
       pc.oniceconnectionstatechange = () => {
         const st = pc.iceConnectionState;
         lastIceStateRef.current = String(st || 'unknown');
+        logCallEvent('WEBRTC_ICE_STATE_CHANGED', {
+          callId: id,
+          iceState: lastIceStateRef.current,
+          connectionState: String(pc.connectionState || ''),
+        });
         reportCallDiag('ice_state_change', { ice_state_event: String(st || '') }).catch(() => {});
         if (st === 'connected' || st === 'completed') {
           markConnected();
-        } else if (st === 'failed' || st === 'disconnected') {
+        } else if (st === 'checking' || st === 'failed' || st === 'disconnected') {
+          if (st === 'failed') {
+            logCallEvent('WEBRTC_FAILED', {
+              callId: id,
+              iceState: String(st || ''),
+              connectionState: String(pc.connectionState || ''),
+            });
+          }
           scheduleConnectionRecovery(pc);
         }
       };
@@ -898,31 +928,39 @@ export default function CallScreen() {
           connection_state_event: String(pc.connectionState || ''),
         }).catch(() => {});
         if (pc.connectionState === 'connected') markConnected();
-        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        if (
+          pc.connectionState === 'connecting' ||
+          pc.connectionState === 'failed' ||
+          pc.connectionState === 'disconnected'
+        ) {
+          if (pc.connectionState === 'failed') {
+            logCallEvent('WEBRTC_FAILED', {
+              callId: id,
+              iceState: String(pc.iceConnectionState || ''),
+              connectionState: String(pc.connectionState || ''),
+            });
+          }
           scheduleConnectionRecovery(pc);
         }
       };
 
-      // Add local audio tracks
+      // react-native-webrtc uses Unified Plan on iOS and Android. addTrack
+      // keeps the SDP shape identical across platforms; addStream is only a
+      // compatibility fallback for an older native runtime.
       if (stream) {
-        if (Platform.OS !== 'web' && typeof pc.addStream === 'function') {
+        try {
+          stream.getTracks().forEach((t: any) => pc.addTrack(t, stream));
+        } catch {
           try {
-            pc.addStream(stream);
+            pc.addStream?.(stream);
           } catch {}
-        } else {
-          try {
-            stream.getTracks().forEach((t: any) => pc.addTrack(t, stream));
-          } catch {
-            try {
-              pc.addStream?.(stream);
-            } catch {}
-          }
         }
       }
       return pc;
     },
     [
       attachRemoteStream,
+      id,
       makeRemoteStreamFromTrack,
       markConnected,
       reportCallDiag,
@@ -986,8 +1024,19 @@ export default function CallScreen() {
         }
       }
 
+      // Acceptance is separate from WebRTC readiness. Stop ringback as soon
+      // as the callee answers, even if their media setup still needs time.
+      if (msg.type === 'call:accepted' || msg.type === 'call:accept') {
+        if (isCaller) {
+          stopRingback();
+          if (!connectedRef.current) setStatus('connecting');
+        }
+        return;
+      }
+
       // ----- Caller side: callee is ready, can send offer -----
       if (msg.type === 'call:ready' && isCaller) {
+        stopRingback();
         if (offerSentRef.current) return; // already sent offer for this call
         const from = msg.from;
         if (!from) return;
@@ -1098,7 +1147,7 @@ export default function CallScreen() {
         if (evCallId && evCallId !== id) return;
         const status = msg.data?.status;
         closeCallFromPeer(
-          msg.type === 'call:reject' || status === 'rejected'
+          msg.type === 'call:reject' || status === 'rejected' || status === 'declined'
             ? 'Call rejected'
             : msg.type === 'call:cancel' || status === 'cancelled'
               ? 'Call cancelled'
@@ -1107,7 +1156,7 @@ export default function CallScreen() {
         return;
       }
     },
-    [id, isCaller, drainPendingIce, endCall, closeCallFromPeer, sendEncryptedSignal, decryptPeerSignal]
+    [id, isCaller, drainPendingIce, endCall, closeCallFromPeer, sendEncryptedSignal, decryptPeerSignal, stopRingback]
   );
 
   const { send } = useWebSocket(onWs, !!user);
@@ -1159,7 +1208,7 @@ export default function CallScreen() {
   }, [reportCallDiag]);
 
   useEffect(() => {
-    if (Platform.OS !== 'ios') return;
+    if (Platform.OS === 'web') return;
     let previousState = AppState.currentState;
     const sub = AppState.addEventListener('change', (nextState) => {
       const fromState = previousState;
@@ -1171,11 +1220,14 @@ export default function CallScreen() {
 
       if (nextState !== 'active' || endedRef.current) return;
 
-      // iOS can hand AVAudioSession back to the app while unlocking. Rebind
-      // WebRTC and restore routing without rebuilding the peer connection.
+      // Mobile OSes can hand the audio route back to the app while unlocking.
+      // Rebind WebRTC and restore routing without rebuilding the peer connection.
       startNativeCallAudio(speakerOn);
-      if (connectedRef.current) startAudioRepairLoop();
-
+      if (Platform.OS === 'android' && localStreamRef.current) {
+        startActiveCallService(id, callerName).catch(() => {
+          reportCallDiag('android_active_call_service_resume_failed').catch(() => {});
+        });
+      }
       const pc = pcRef.current;
       if (
         pc &&
@@ -1188,10 +1240,11 @@ export default function CallScreen() {
     });
     return () => sub.remove();
   }, [
+    callerName,
+    id,
     reportCallDiag,
     scheduleConnectionRecovery,
     speakerOn,
-    startAudioRepairLoop,
     startNativeCallAudio,
   ]);
 
@@ -1253,7 +1306,7 @@ export default function CallScreen() {
 
       // 2b. Native audio session must be active before microphone/WebRTC setup,
       // especially on iOS when the call was answered from CallKit.
-      startNativeCallAudio(false);
+      startNativeCallAudio(true);
 
       // 3. Get microphone access
       const stream = await ensureMedia();
@@ -1266,6 +1319,18 @@ export default function CallScreen() {
       if (cancelled || endedRef.current) return;
       localStreamRef.current = stream;
       reportCallDiag('local_media_ready').catch(() => {});
+
+      // Android must own a microphone foreground service before the app can
+      // move behind the lock screen. Waiting for ICE to connect is too late:
+      // Android 12+ can reject a foreground-service start from the background.
+      if (Platform.OS === 'android') {
+        try {
+          await startActiveCallService(id, callerName);
+          reportCallDiag('android_active_call_service_started').catch(() => {});
+        } catch {
+          reportCallDiag('android_active_call_service_start_failed').catch(() => {});
+        }
+      }
 
       // 4. Setup PC
       const pc = setupPeer(stream);

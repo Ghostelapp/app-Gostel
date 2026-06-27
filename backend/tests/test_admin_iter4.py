@@ -33,6 +33,7 @@ class TestAdminAuth:
     def test_admin_login_returns_admin_role(self):
         body = _login(ADMIN_EMAIL, ADMIN_PW)
         assert "access_token" in body
+        assert isinstance(body.get("session_id"), str) and len(body["session_id"]) >= 8
         assert body["user"]["role"] == "admin"
         assert body["user"]["email"] == ADMIN_EMAIL
 
@@ -40,6 +41,46 @@ class TestAdminAuth:
         body = _login(DEMO_EMAIL, DEMO_PW)
         assert body["user"]["role"] in ("user", "moderator", "guest")
         assert body["user"]["role"] != "admin"
+
+    def test_logout_revokes_current_session(self):
+        body = _login(DEMO_EMAIL, DEMO_PW)
+        token = body["access_token"]
+        session_id = body["session_id"]
+        out = requests.post(f"{BASE_URL}/api/auth/logout", headers=_h(token), timeout=20)
+        assert out.status_code == 200, out.text
+
+        me = requests.get(f"{BASE_URL}/api/auth/me", headers=_h(token), timeout=20)
+        assert me.status_code == 401
+
+        fresh = _login(DEMO_EMAIL, DEMO_PW)
+        listed = requests.get(f"{BASE_URL}/api/auth/sessions", headers=_h(fresh["access_token"]), timeout=20)
+        assert listed.status_code == 200, listed.text
+        assert all(s["id"] != session_id or s["revoked_at"] for s in listed.json()["sessions"])
+
+    def test_revoke_other_session_invalidates_its_token(self):
+        current = _login(DEMO_EMAIL, DEMO_PW)
+        other = _login(DEMO_EMAIL, DEMO_PW)
+
+        listed = requests.get(f"{BASE_URL}/api/auth/sessions", headers=_h(current["access_token"]), timeout=20)
+        assert listed.status_code == 200, listed.text
+        data = listed.json()
+        assert any(s["id"] == current["session_id"] and s["current"] for s in data["sessions"])
+        assert any(s["id"] == other["session_id"] for s in data["sessions"])
+
+        revoked = requests.delete(
+            f"{BASE_URL}/api/auth/sessions/{other['session_id']}",
+            headers=_h(current["access_token"]),
+            timeout=20,
+        )
+        assert revoked.status_code == 200, revoked.text
+        assert revoked.json()["revoked"] is True
+        assert revoked.json()["current_session_revoked"] is False
+
+        me_other = requests.get(f"{BASE_URL}/api/auth/me", headers=_h(other["access_token"]), timeout=20)
+        assert me_other.status_code == 401
+
+        me_current = requests.get(f"{BASE_URL}/api/auth/me", headers=_h(current["access_token"]), timeout=20)
+        assert me_current.status_code == 200
 
 
 # ---------- /api/admin/users ----------
@@ -79,6 +120,17 @@ class TestAdminStats:
                   "two_factor_enabled", "push_ready"):
             assert k in d, f"missing stats key {k}"
             assert isinstance(d[k], int), f"{k} is not int: {type(d[k])}"
+        for chart_key, value_key in (
+            ("activity_chart", "active"),
+            ("registrations_chart", "count"),
+            ("messages_chart", "count"),
+        ):
+            assert chart_key in d, f"missing stats key {chart_key}"
+            assert isinstance(d[chart_key], list)
+            assert len(d[chart_key]) == 14
+            for row in d[chart_key]:
+                assert isinstance(row.get("day"), str) and row["day"]
+                assert isinstance(row.get(value_key), int)
         assert d["users"] >= 2
 
     def test_non_admin_cannot_get_stats(self):

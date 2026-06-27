@@ -49,6 +49,14 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    if not isinstance(dt, datetime):
+        return dt
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def client_ip(request: Request) -> str:
     peer = request.client.host if request.client else ""
     if peer in {"127.0.0.1", "::1"}:
@@ -108,35 +116,145 @@ def verify_password(pw: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, email: str) -> str:
+def create_access_token(
+    user_id: str,
+    email: str,
+    *,
+    session_id: Optional[str] = None,
+) -> tuple[str, str, datetime, str]:
+    jti = str(uuid.uuid4())
+    expires_at = now_utc() + timedelta(days=7)
+    sid = session_id or str(uuid.uuid4())
     payload = {
         "sub": user_id,
         "email": email,
-        "exp": now_utc() + timedelta(days=7),
+        "exp": expires_at,
         "type": "access",
-        "jti": str(uuid.uuid4()),
+        "jti": jti,
+        "sid": sid,
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG), jti, expires_at, sid
 
 
-def create_ws_ticket(user_id: str) -> tuple[str, str, datetime]:
+def create_ws_ticket(user_id: str, session_id: Optional[str] = None) -> tuple[str, str, datetime]:
     jti = str(uuid.uuid4())
     expires_at = now_utc() + timedelta(seconds=60)
-    token = jwt.encode(
-        {
-            "sub": user_id,
-            "exp": expires_at,
-            "type": "ws",
-            "jti": jti,
-        },
-        JWT_SECRET,
-        algorithm=JWT_ALG,
-    )
+    payload = {
+        "sub": user_id,
+        "exp": expires_at,
+        "type": "ws",
+        "jti": jti,
+    }
+    if session_id:
+        payload["sid"] = session_id
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
     return token, jti, expires_at
+
+
+def request_client_meta(request: Request) -> dict:
+    user_agent = (request.headers.get("user-agent") or "").strip()
+    forwarded = request.headers.get("x-device-name") or request.headers.get("x-device-id") or ""
+    device_label = (forwarded or user_agent or "Unknown device").strip()[:160]
+    return {
+        "ip_hash": hashlib.sha256(client_ip(request).encode("utf-8")).hexdigest(),
+        "user_agent": user_agent[:500],
+        "device_label": device_label,
+    }
+
+
+async def persist_user_session(
+    user: dict,
+    request: Request,
+    *,
+    session_id: str,
+    token_jti: str,
+    expires_at: datetime,
+) -> None:
+    meta = request_client_meta(request)
+    now_iso = now_utc().isoformat()
+    await db.user_sessions.update_one(
+        {"id": session_id},
+        {
+            "$set": {
+                "id": session_id,
+                "user_id": user["id"],
+                "email": user.get("email"),
+                "token_jti": token_jti,
+                "device_label": meta["device_label"],
+                "user_agent": meta["user_agent"],
+                "ip_hash": meta["ip_hash"],
+                "created_at": now_iso,
+                "last_seen_at": now_iso,
+                "expires_at": expires_at,
+                "revoked_at": None,
+                "revoked_reason": None,
+            }
+        },
+        upsert=True,
+    )
+
+
+async def revoke_access_token_jti(jti: Optional[str], user_id: str, expires_at: Optional[datetime]) -> None:
+    if not jti or not expires_at:
+        return
+    await db.revoked_tokens.update_one(
+        {"jti": jti},
+        {
+            "$set": {
+                "jti": jti,
+                "user_id": user_id,
+                "expires_at": expires_at,
+            }
+        },
+        upsert=True,
+    )
+
+
+async def revoke_user_session(session_id: str, user_id: str, *, reason: str) -> bool:
+    session = await db.user_sessions.find_one({"id": session_id, "user_id": user_id}, {"_id": 0})
+    if not session:
+        return False
+    now_iso = now_utc().isoformat()
+    await db.user_sessions.update_one(
+        {"id": session_id, "user_id": user_id},
+        {
+            "$set": {
+                "revoked_at": now_iso,
+                "revoked_reason": reason[:80],
+                "last_seen_at": now_iso,
+            }
+        },
+    )
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at)
+        except ValueError:
+            expires_at = None
+    expires_at = ensure_utc(expires_at)
+    await revoke_access_token_jti(session.get("token_jti"), user_id, expires_at)
+    return True
+
+
+def public_session(doc: dict, current_session_id: Optional[str]) -> dict:
+    return {
+        "id": doc["id"],
+        "current": doc["id"] == current_session_id,
+        "device_label": doc.get("device_label") or "Unknown device",
+        "created_at": doc.get("created_at"),
+        "last_seen_at": doc.get("last_seen_at"),
+        "expires_at": doc.get("expires_at").isoformat() if isinstance(doc.get("expires_at"), datetime) else doc.get("expires_at"),
+        "revoked_at": doc.get("revoked_at"),
+        "revoked_reason": doc.get("revoked_reason"),
+    }
 
 
 def user_has_push_token(u: dict) -> bool:
     return bool(u.get("push_tokens") or u.get("push_token") or u.get("expo_push_token"))
+
+
+def normalize_push_device_id(value: Optional[str]) -> str:
+    return (value or "").strip()[:80]
 
 
 def user_push_targets(u: dict) -> list[dict]:
@@ -155,6 +273,8 @@ def user_push_targets(u: dict) -> list[dict]:
                 "token": token,
                 "token_type": (entry.get("token_type") or "fcm").strip().lower(),
                 "platform": entry.get("platform") or "unknown",
+                "device_id": normalize_push_device_id(entry.get("device_id")),
+                "session_id": (entry.get("session_id") or "").strip(),
                 "device_model": entry.get("device_model") or "",
                 "os_version": entry.get("os_version") or "",
                 "source": entry.get("source") or "",
@@ -168,6 +288,8 @@ def user_push_targets(u: dict) -> list[dict]:
                 "token": legacy,
                 "token_type": (u.get("push_token_type") or "fcm").strip().lower(),
                 "platform": u.get("push_platform") or "unknown",
+                "device_id": "",
+                "session_id": "",
                 "device_model": "",
                 "os_version": "",
                 "source": "legacy",
@@ -177,11 +299,97 @@ def user_push_targets(u: dict) -> list[dict]:
     return targets
 
 
-async def remove_push_token_from_users(token: str, user_id: Optional[str] = None) -> None:
+def compact_push_targets(targets: list[dict]) -> list[dict]:
+    """Keep one latest token per user/device/type delivery lane.
+
+    A single install can register multiple times over app upgrades. Sending to
+    every historical token is what produces duplicate ringing for one incoming
+    call, so call pushes use the newest entry for each device/token type.
+    """
+    compacted: dict[tuple[str, str, str], dict] = {}
+    token_seen: set[str] = set()
+    for target in targets:
+        token = (target.get("token") or "").strip()
+        if not token or token in token_seen:
+            continue
+        token_seen.add(token)
+        user_id = (target.get("user_id") or "").strip()
+        device_id = normalize_push_device_id(target.get("device_id"))
+        token_type = (target.get("token_type") or "fcm").strip().lower()
+        key = (user_id, device_id or token, token_type)
+        current = compacted.get(key)
+        if not current or (target.get("registered_at") or "") >= (current.get("registered_at") or ""):
+            compacted[key] = target
+    return list(compacted.values())
+
+
+async def sync_user_push_legacy_fields(user_id: str) -> None:
+    user = await db.users.find_one(
+        {"id": user_id},
+        {
+            "_id": 0,
+            "id": 1,
+            "push_tokens": 1,
+            "push_token": 1,
+            "expo_push_token": 1,
+            "push_token_type": 1,
+            "push_platform": 1,
+        },
+    )
+    if not user:
+        return
+    targets = user_push_targets(user)
+    if targets:
+        primary = max(targets, key=lambda entry: entry.get("registered_at") or "")
+        await db.users.update_one(
+            {"id": user_id},
+            {
+                "$set": {
+                    "expo_push_token": primary.get("token") or "",
+                    "push_token": primary.get("token") or "",
+                    "push_token_type": primary.get("token_type") or "fcm",
+                    "push_platform": primary.get("platform") or "unknown",
+                }
+            },
+        )
+        return
+    await db.users.update_one(
+        {"id": user_id},
+        {
+            "$unset": {
+                "expo_push_token": "",
+                "push_platform": "",
+                "push_token": "",
+                "push_token_type": "",
+            }
+        },
+    )
+
+
+async def remove_push_token_from_users(
+    token: str,
+    user_id: Optional[str] = None,
+    *,
+    sync_legacy: bool = True,
+) -> int:
     """Remove one physical device token from one account or from every account."""
     token = (token or "").strip()
     if not token:
-        return
+        return 0
+    affected_ids: set[str] = set()
+    async for entry in db.users.find(
+        {
+            **({"id": user_id} if user_id else {}),
+            "$or": [
+                {"push_tokens.token": token},
+                {"push_token": token},
+                {"expo_push_token": token},
+            ],
+        },
+        {"_id": 0, "id": 1},
+    ):
+        if entry.get("id"):
+            affected_ids.add(entry["id"])
     user_filter = {"id": user_id} if user_id else {}
     await db.users.update_many(
         {**user_filter, "push_tokens.token": token},
@@ -204,6 +412,63 @@ async def remove_push_token_from_users(token: str, user_id: Optional[str] = None
             }
         },
     )
+    if sync_legacy:
+        for affected_id in affected_ids:
+            await sync_user_push_legacy_fields(affected_id)
+    return len(affected_ids)
+
+
+async def remove_push_device_from_users(device_id: str, user_id: Optional[str] = None) -> int:
+    device_id = normalize_push_device_id(device_id)
+    if not device_id:
+        return 0
+    affected_ids: set[str] = set()
+    async for entry in db.users.find(
+        {
+            **({"id": user_id} if user_id else {}),
+            "push_tokens.device_id": device_id,
+        },
+        {"_id": 0, "id": 1},
+    ):
+        if entry.get("id"):
+            affected_ids.add(entry["id"])
+    await db.users.update_many(
+        {
+            **({"id": user_id} if user_id else {}),
+            "push_tokens.device_id": device_id,
+        },
+        {"$pull": {"push_tokens": {"device_id": device_id}}},
+    )
+    for affected_id in affected_ids:
+        await sync_user_push_legacy_fields(affected_id)
+    return len(affected_ids)
+
+
+async def remove_push_tokens_for_session(user_id: str, session_id: Optional[str]) -> int:
+    session_id = (session_id or "").strip()
+    if not session_id:
+        return 0
+    user = await db.users.find_one(
+        {"id": user_id},
+        {"_id": 0, "push_tokens": 1},
+    )
+    if not user:
+        return 0
+    removed = len(
+        [
+            entry
+            for entry in (user.get("push_tokens") or [])
+            if isinstance(entry, dict) and (entry.get("session_id") or "").strip() == session_id
+        ]
+    )
+    if removed == 0:
+        return 0
+    await db.users.update_one(
+        {"id": user_id},
+        {"$pull": {"push_tokens": {"session_id": session_id}}},
+    )
+    await sync_user_push_legacy_fields(user_id)
+    return removed
 
 
 def public_user(u: dict) -> dict:
@@ -387,11 +652,26 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token")
 
     jti = payload.get("jti")
+    session_id = payload.get("sid")
     if jti and await db.revoked_tokens.find_one({"jti": jti}, {"_id": 1}):
         raise HTTPException(status_code=401, detail="Token revoked")
+    if session_id:
+        session = await db.user_sessions.find_one(
+            {"id": session_id, "user_id": payload["sub"]},
+            {"_id": 0, "revoked_at": 1, "expires_at": 1},
+        )
+        if not session:
+            raise HTTPException(status_code=401, detail="Session not found")
+        if session.get("revoked_at"):
+            raise HTTPException(status_code=401, detail="Session revoked")
+        expires_at = ensure_utc(session.get("expires_at"))
+        if isinstance(expires_at, datetime) and expires_at <= now_utc():
+            raise HTTPException(status_code=401, detail="Session expired")
     user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    user["_auth_jti"] = jti
+    user["_auth_sid"] = session_id
     return user
 
 
@@ -511,6 +791,7 @@ class PushTokenIn(BaseModel):
     # Accepts both raw Expo-style names ('android'/'ios') and explicit names
     # ('fcm'/'apns'). 'expo' kept for legacy ExpoPushToken[...] tokens.
     token_type: Literal["fcm", "apns", "expo", "voip", "android", "ios"] = "fcm"
+    device_id: Optional[str] = Field(default=None, min_length=8, max_length=80)
     device_model: Optional[str] = None
     os_version: Optional[str] = None
     source: Optional[str] = None
@@ -533,6 +814,14 @@ class SupportReportIn(BaseModel):
 class CallStartIn(BaseModel):
     conversation_id: str
     mode: Literal["audio", "video"] = "audio"
+    call_id: Optional[str] = Field(default=None, min_length=8, max_length=80)
+
+
+class CallStateUpdateIn(BaseModel):
+    status: Optional[Literal["connecting", "active", "reconnecting", "failed"]] = None
+    peer_connection_state: Optional[str] = Field(default=None, max_length=40)
+    local_audio_enabled: Optional[bool] = None
+    remote_audio_connected: Optional[bool] = None
 
 
 class DisappearingIn(BaseModel):
@@ -591,8 +880,20 @@ async def register(payload: RegisterIn, request: Request):
         "last_seen": now_utc().isoformat(),
     }
     await db.users.insert_one(user_doc)
-    token = create_access_token(user_id, email)
-    return {"access_token": token, "token_type": "bearer", "user": public_user(user_doc)}
+    token, jti, expires_at, session_id = create_access_token(user_id, email)
+    await persist_user_session(
+        user_doc,
+        request,
+        session_id=session_id,
+        token_jti=jti,
+        expires_at=expires_at,
+    )
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "session_id": session_id,
+        "user": public_user(user_doc),
+    }
 
 
 @api.post("/auth/login")
@@ -639,8 +940,20 @@ async def login(payload: LoginIn, request: Request):
         {"$set": {"last_seen": now_utc().isoformat(), "status": "online"}},
     )
     await db.login_attempts.delete_many({"identifier": identifier})
-    token = create_access_token(user["id"], user["email"])
-    return {"access_token": token, "token_type": "bearer", "user": public_user(user)}
+    token, jti, expires_at, session_id = create_access_token(user["id"], user["email"])
+    await persist_user_session(
+        user,
+        request,
+        session_id=session_id,
+        token_jti=jti,
+        expires_at=expires_at,
+    )
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "session_id": session_id,
+        "user": public_user(user),
+    }
 
 
 @api.get("/auth/username-available")
@@ -662,28 +975,51 @@ async def me(user: dict = Depends(get_current_user)):
     data["muted_conversation_ids"] = user.get("muted_conversation_ids") or []
     data["blocked_user_ids"] = user.get("blocked_user_ids") or []
     data["save_call_history"] = bool(user.get("save_call_history", True))
+    data["session_id"] = user.get("_auth_sid")
     return data
 
 
 @api.post("/auth/logout")
 async def logout(request: Request, user: dict = Depends(get_current_user)):
-    token = request.headers.get("Authorization", "")[7:]
-    payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-    jti = payload.get("jti")
-    expires = payload.get("exp")
-    if jti and expires:
-        await db.revoked_tokens.update_one(
-            {"jti": jti},
-            {
-                "$set": {
-                    "jti": jti,
-                    "user_id": user["id"],
-                    "expires_at": datetime.fromtimestamp(expires, tz=timezone.utc),
-                }
-            },
-            upsert=True,
+    jti = user.get("_auth_jti")
+    session_id = user.get("_auth_sid")
+    expires = None
+    if session_id:
+        session = await db.user_sessions.find_one(
+            {"id": session_id, "user_id": user["id"]},
+            {"_id": 0, "expires_at": 1},
         )
+        expires = session.get("expires_at") if session else None
+        await revoke_user_session(session_id, user["id"], reason="logout")
+        await remove_push_tokens_for_session(user["id"], session_id)
+    await revoke_access_token_jti(jti, user["id"], expires)
     return {"ok": True}
+
+
+@api.get("/auth/sessions")
+async def list_sessions(user: dict = Depends(get_current_user)):
+    sessions = await db.user_sessions.find(
+        {"user_id": user["id"]},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(50)
+    current_session_id = user.get("_auth_sid")
+    return {
+        "current_session_id": current_session_id,
+        "sessions": [public_session(session, current_session_id) for session in sessions],
+    }
+
+
+@api.delete("/auth/sessions/{session_id}")
+async def revoke_session(session_id: str, user: dict = Depends(get_current_user)):
+    revoked = await revoke_user_session(session_id, user["id"], reason="user_revoke")
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Session not found")
+    await remove_push_tokens_for_session(user["id"], session_id)
+    return {
+        "revoked": True,
+        "session_id": session_id,
+        "current_session_revoked": session_id == user.get("_auth_sid"),
+    }
 
 
 # ----------------- E2EE key registry -----------------
@@ -2518,6 +2854,103 @@ class RoleUpdateIn(BaseModel):
     role: Literal["admin", "moderator", "user", "guest"]
 
 
+def _parse_admin_chart_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return ensure_utc(value)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return ensure_utc(parsed)
+        except Exception:
+            return None
+    return None
+
+
+def _admin_chart_days(days_count: int = 14):
+    now = now_utc()
+    days = []
+    for offset in range(days_count - 1, -1, -1):
+        day = now - timedelta(days=offset)
+        start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        days.append((day.strftime("%d.%m"), start.strftime("%Y-%m-%d"), start, end))
+    return days
+
+
+def _admin_bucket_chart(rows: list[dict], field: str, value_key: str = "count", days_count: int = 14) -> list[dict]:
+    days = _admin_chart_days(days_count)
+    counts_by_day = {key: 0 for _, key, _, _ in days}
+    for row in rows:
+        dt = _parse_admin_chart_datetime(row.get(field))
+        if not dt:
+            continue
+        for _, key, start, end in days:
+            if start <= dt < end:
+                counts_by_day[key] += 1
+                break
+    return [{"day": label, value_key: counts_by_day[key]} for label, key, _, _ in days]
+
+
+async def _admin_collection_date_chart(collection, field: str, value_key: str = "count", days_count: int = 14) -> list[dict]:
+    days = _admin_chart_days(days_count)
+    start_dt = days[0][2]
+    try:
+        rows = await collection.aggregate(
+            [
+                {
+                    "$project": {
+                        "_chart_dt": {
+                            "$cond": [
+                                {"$eq": [{"$type": f"${field}"}, "date"]},
+                                f"${field}",
+                                {
+                                    "$dateFromString": {
+                                        "dateString": f"${field}",
+                                        "onError": None,
+                                        "onNull": None,
+                                    }
+                                },
+                            ]
+                        }
+                    }
+                },
+                {"$match": {"_chart_dt": {"$gte": start_dt}}},
+                {
+                    "$group": {
+                        "_id": {
+                            "$dateToString": {
+                                "format": "%Y-%m-%d",
+                                "date": "$_chart_dt",
+                                "timezone": "UTC",
+                            }
+                        },
+                        "count": {"$sum": 1},
+                    }
+                },
+            ]
+        ).to_list(days_count + 5)
+        counts_by_key = {row["_id"]: row["count"] for row in rows if row.get("_id")}
+        return [{"day": label, value_key: counts_by_key.get(key, 0)} for label, key, _, _ in days]
+    except Exception as exc:
+        logger.warning(f"admin stats chart fallback for {collection.name}.{field}: {exc}")
+        rows = await collection.find({}, {"_id": 0, field: 1}).to_list(50000)
+        return _admin_bucket_chart(rows, field, value_key, days_count)
+
+
+async def _admin_activity_chart(days_count: int = 14) -> list[dict]:
+    rows = await db.users.find(
+        {},
+        {"_id": 0, "last_seen": 1, "last_active": 1},
+    ).to_list(50000)
+    activity_rows = [
+        {"last_active": row.get("last_seen") or row.get("last_active")}
+        for row in rows
+    ]
+    return _admin_bucket_chart(activity_rows, "last_active", "active", days_count)
+
+
 @api.get("/admin/users")
 async def admin_list_users(
     admin: dict = Depends(require_admin),
@@ -2551,6 +2984,9 @@ async def admin_stats(admin: dict = Depends(require_admin)):
             ]
         }
     )
+    activity_chart = await _admin_activity_chart()
+    registrations_chart = await _admin_collection_date_chart(db.users, "created_at", "count")
+    messages_chart = await _admin_collection_date_chart(db.messages, "created_at", "count")
     return {
         "users": users,
         "conversations": convs,
@@ -2558,6 +2994,9 @@ async def admin_stats(admin: dict = Depends(require_admin)):
         "online": online,
         "two_factor_enabled": twofa,
         "push_ready": push_ready,
+        "activity_chart": activity_chart,
+        "registrations_chart": registrations_chart,
+        "messages_chart": messages_chart,
     }
 
 
@@ -2687,6 +3126,7 @@ async def push_status(admin: dict = Depends(require_admin)):
 async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_current_user)):
     token = (payload.token or "").strip()
     platform = (payload.platform or "").strip()
+    device_id = normalize_push_device_id(payload.device_id)
     raw_type = (payload.token_type or "fcm").strip().lower()
     # Normalize Expo-style names to canonical FCM/APNS:
     _TYPE_MAP = {"android": "fcm", "ios": "apns"}
@@ -2703,6 +3143,8 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
         "token": token,
         "token_type": token_type,
         "platform": platform or "unknown",
+        "device_id": device_id,
+        "session_id": user.get("_auth_sid") or "",
         "device_model": (payload.device_model or "").strip()[:120],
         "os_version": (payload.os_version or "").strip()[:80],
         "source": (payload.source or "").strip()[:80],
@@ -2711,7 +3153,18 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
     # A push token identifies one physical app install. If a user logs out and
     # signs into another account on the same phone, move that phone to the new
     # account instead of ringing both accounts.
+    if device_id:
+        await remove_push_device_from_users(device_id)
     await remove_push_token_from_users(token)
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$pull": {"push_tokens": {"token": token}}},
+    )
+    if device_id:
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$pull": {"push_tokens": {"device_id": device_id, "token_type": token_type}}},
+        )
     await db.users.update_one(
         {"id": user["id"]},
         {
@@ -2724,31 +3177,56 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
             "$addToSet": {"push_tokens": token_entry},
         },
     )
+    await sync_user_push_legacy_fields(user["id"])
     logger.info(
-        f"Push token registered for {user.get('email')} type={token_type} (raw={raw_type}) platform={platform} token={token[:25]}..."
+        f"Push token registered for {user.get('email')} type={token_type} (raw={raw_type}) platform={platform} device_id={device_id or '-'}"
     )
-    return {"registered": True, "platform": platform, "token_type": token_type}
+    return {"registered": True, "platform": platform, "token_type": token_type, "device_id": device_id}
 
 
 @api.get("/push/devices")
 async def list_push_devices(user: dict = Depends(get_current_user)):
     """Return masked push-token registrations for the current account."""
-    devices = []
+    grouped: dict[str, dict] = {}
+    current_session_id = user.get("_auth_sid") or ""
     for idx, target in enumerate(user_push_targets(user), start=1):
         token = target.get("token") or ""
-        devices.append(
-            {
-                "id": hashlib.sha256(token.encode("utf-8")).hexdigest()[:16] if token else str(idx),
+        resolved_id = target.get("device_id") or (
+            hashlib.sha256(token.encode("utf-8")).hexdigest()[:16] if token else str(idx)
+        )
+        entry = grouped.get(resolved_id)
+        if not entry:
+            entry = {
+                "id": resolved_id,
                 "platform": target.get("platform") or "unknown",
                 "token_type": target.get("token_type") or "unknown",
+                "token_types": [],
                 "token_prefix": token[:18],
                 "token_suffix": token[-6:] if len(token) > 6 else "",
                 "device_model": target.get("device_model") or "",
                 "os_version": target.get("os_version") or "",
                 "source": target.get("source") or "",
                 "registered_at": target.get("registered_at") or "",
+                "current_session": False,
             }
-        )
+            grouped[resolved_id] = entry
+        token_type = target.get("token_type") or "unknown"
+        if token_type not in entry["token_types"]:
+            entry["token_types"].append(token_type)
+        if (target.get("session_id") or "") == current_session_id and current_session_id:
+            entry["current_session"] = True
+        if (target.get("registered_at") or "") > (entry.get("registered_at") or ""):
+            entry["token_type"] = token_type
+            entry["platform"] = target.get("platform") or entry["platform"]
+            entry["token_prefix"] = token[:18]
+            entry["token_suffix"] = token[-6:] if len(token) > 6 else ""
+            entry["device_model"] = target.get("device_model") or entry["device_model"]
+            entry["os_version"] = target.get("os_version") or entry["os_version"]
+            entry["source"] = target.get("source") or entry["source"]
+            entry["registered_at"] = target.get("registered_at") or entry["registered_at"]
+    devices = list(grouped.values())
+    for entry in devices:
+        entry["token_types"].sort()
     return {
         "count": len(devices),
         "devices": devices,
@@ -2762,33 +3240,19 @@ async def unregister_push(
     user: dict = Depends(get_current_user),
 ):
     token = ((payload.token if payload else None) or "").strip()
-    device_id = ((payload.device_id if payload else None) or "").strip()
+    device_id = normalize_push_device_id((payload.device_id if payload else None) or "")
     if device_id:
-        for target in user_push_targets(user):
-            target_token = target.get("token") or ""
-            target_id = hashlib.sha256(target_token.encode("utf-8")).hexdigest()[:16] if target_token else ""
-            if target_id == device_id:
-                await remove_push_token_from_users(target_token, user["id"])
-                return {"unregistered": True, "device_id": device_id}
-        raise HTTPException(status_code=404, detail="Push device not found")
+        removed = await remove_push_device_from_users(device_id, user["id"])
+        if not removed:
+            raise HTTPException(status_code=404, detail="Push device not found")
+        return {"unregistered": True, "device_id": device_id, "scope": "device"}
 
     if token:
-        await remove_push_token_from_users(token)
-        return {"unregistered": True, "token_scoped": True}
+        await remove_push_token_from_users(token, user["id"])
+        return {"unregistered": True, "token_scoped": True, "scope": "token"}
 
-    await db.users.update_one(
-        {"id": user["id"]},
-        {
-            "$unset": {
-                "expo_push_token": "",
-                "push_platform": "",
-                "push_token": "",
-                "push_token_type": "",
-            },
-            "$set": {"push_tokens": []},
-        },
-    )
-    return {"unregistered": True}
+    removed = await remove_push_tokens_for_session(user["id"], user.get("_auth_sid"))
+    return {"unregistered": True, "scope": "session", "removed": removed}
 
 
 @api.post("/push/diag")
@@ -3149,7 +3613,10 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         if is_call:
             title = f"📞 {msg.get('sender_name', 'Someone')} is calling"
         body_preview = msg.get("content", "")
-        if msg.get("e2ee"):
+        if is_call:
+            title = "ghostel.app call"
+            body_preview = "Incoming encrypted call"
+        elif msg.get("e2ee"):
             body_preview = "Encrypted message"
         elif msg.get("kind") == "voice":
             body_preview = "🎙 Voice message"
@@ -3179,11 +3646,12 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
             # (src/fcmBackground.ts). Older clients accepted "call" too — both
             # values are honored on the client.
             "type": "incoming_call" if is_call else "message",
-            "sender_name": msg.get("sender_name", ""),
+            "sender_name": "" if is_call else msg.get("sender_name", ""),
             # Caller-specific fields used by react-native-callkeep to render
             # the native OS-level incoming-call screen on the lockscreen.
             "caller_id": msg.get("caller_id", sender_id) if is_call else "",
-            "caller_name": msg.get("sender_name", "") if is_call else "",
+            "caller_name": "",
+            "encryptedDisplayName": msg.get("encryptedDisplayName", "") if is_call else "",
             # caller_avatar intentionally omitted — too big for FCM 4KB limit.
             "mode": msg.get("mode", "audio") if is_call else "",
         }
@@ -3194,6 +3662,7 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         for r in recipients:
             for target in user_push_targets(r):
                 push_targets.append({**target, "user_id": r.get("id")})
+        push_targets = compact_push_targets(push_targets)
         fcm_recipients = [
             r for r in push_targets if (r.get("token_type") or "fcm") in ("fcm", "apns")
         ]
@@ -3228,7 +3697,7 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                             voip_err += 1
                             reason = result.get("error", "unknown")
                             logger.warning(
-                                f"APNs VoIP send failed for token={token[:18]}... reason={reason}"
+                                f"APNs VoIP send failed reason={reason}"
                             )
                             if reason in (
                                 "BadDeviceToken",
@@ -3273,7 +3742,7 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                         fcm_err += 1
                         err_code = result.get("fcm_error_code") or result.get("error", "unknown")
                         logger.warning(
-                            f"FCM send failed for token={token[:30]}... err={err_code} msg={result.get('message', '')[:120]}"
+                            f"FCM send failed err={err_code} msg={result.get('message', '')[:120]}"
                         )
                         # Clean up unregistered tokens
                         if err_code in ("UNREGISTERED", "INVALID_ARGUMENT", "NOT_FOUND"):
@@ -3356,10 +3825,119 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         logger.warning(f"_send_push_to_members failed: {exc}")
 
 
+async def _send_call_control_push(
+    call: dict,
+    action: str,
+    actor_id: str,
+    actor_session_id: Optional[str] = None,
+) -> None:
+    """Wake background devices so native incoming-call UI stops ringing.
+
+    WebSocket remains the primary real-time path while the app is active, but
+    locked/background devices can be showing a native call UI without a live WS.
+    This data-only FCM message is intentionally silent and only carries enough
+    state to cancel ringing or clear active-call UI.
+    """
+    try:
+        from fcm import is_configured as fcm_is_configured, send_fcm
+
+        if not fcm_is_configured():
+            logger.warning("FCM not configured - skipped call control push")
+            return
+
+        member_ids = [member_id for member_id in call.get("member_ids", []) if member_id]
+        if not member_ids:
+            return
+
+        users = await db.users.find(
+            {
+                "id": {"$in": member_ids},
+                "$or": [
+                    {"push_tokens.0": {"$exists": True}},
+                    {"push_token": {"$exists": True, "$ne": None}},
+                    {"expo_push_token": {"$exists": True, "$ne": None}},
+                ],
+            },
+            {
+                "_id": 0,
+                "id": 1,
+                "push_tokens": 1,
+                "push_token": 1,
+                "push_token_type": 1,
+                "push_platform": 1,
+                "expo_push_token": 1,
+            },
+        ).to_list(1000)
+
+        targets: list[dict] = []
+        for user_doc in users:
+            for target in user_push_targets(user_doc):
+                token_type = (target.get("token_type") or "fcm").lower()
+                if token_type in {"fcm", "apns"}:
+                    targets.append({**target, "user_id": user_doc.get("id")})
+        targets = compact_push_targets(targets)
+        if action == "accepted" and actor_session_id:
+            targets = [
+                target
+                for target in targets
+                if not (
+                    target.get("user_id") == actor_id
+                    and (target.get("session_id") or "") == actor_session_id
+                )
+            ]
+        if not targets:
+            return
+
+        data = {
+            "type": "call_control",
+            "call_control_action": action,
+            "call_id": call.get("id", ""),
+            "conversation_id": call.get("conversation_id", ""),
+            "actor_id": actor_id,
+            "accepted_by": actor_id if action == "accepted" else "",
+            "ended_by": actor_id if action != "accepted" else "",
+            "status": action,
+        }
+
+        ok = err = 0
+        async with httpx.AsyncClient(timeout=10) as client:
+            for target in targets:
+                token = target["token"]
+                result = await send_fcm(
+                    client,
+                    token=token,
+                    title="ghostel.app call",
+                    body="",
+                    channel_id="calls",
+                    sound="default",
+                    priority="high",
+                    ttl_seconds=30,
+                    data=data,
+                    data_only=True,
+                )
+                if result.get("ok"):
+                    ok += 1
+                else:
+                    err += 1
+                    err_code = result.get("fcm_error_code") or result.get("error", "unknown")
+                    logger.warning(
+                        f"Call control push failed action={action} err={err_code}"
+                    )
+                    if err_code in ("UNREGISTERED", "INVALID_ARGUMENT", "NOT_FOUND"):
+                        await remove_push_token_from_users(token)
+        logger.info(
+            f"Call control push action={action} call={str(call.get('id', ''))[:8]} ok={ok} err={err}"
+        )
+    except Exception as exc:
+        logger.warning(f"_send_call_control_push failed: {exc}")
+
+
 # ----------------- Calls (signaling + record) -----------------
 # ICE servers cache (TTL 50min — Cloudflare creds valid 1h, refresh every 50min)
 _ice_cache = {"servers": None, "source": None, "expires_at": 0.0}
 import time as _time
+
+CALL_RING_TIMEOUT_SECONDS = 45
 
 
 def _configured_turn_servers():
@@ -3492,17 +4070,73 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
         }
         for m in members
     }
+    started_at = now_utc()
+    expires_at = started_at + timedelta(seconds=CALL_RING_TIMEOUT_SECONDS)
+    callee_ids = [member_id for member_id in conv["member_ids"] if member_id != user["id"]]
+    requested_call_id = (payload.call_id or "").strip()
+    if requested_call_id:
+        existing = await db.calls.find_one(
+            {"id": requested_call_id, "member_ids": user["id"]},
+            {"_id": 0},
+        )
+        if existing:
+            logger.info(
+                f"DUPLICATE_CALL_IGNORED call={requested_call_id[:8]} reason=idempotency_key"
+            )
+            return existing
+
+    existing_active = await db.calls.find_one(
+        {
+            "conversation_id": conv["id"],
+            "caller_id": user["id"],
+            "member_ids": {"$all": conv["member_ids"]},
+            "ended_at": None,
+            "$or": [
+                {"status": "ringing", "expires_at": {"$gt": started_at.isoformat()}},
+                {"status": {"$in": ["answered", "connecting", "active", "reconnecting"]}},
+            ],
+        },
+        {"_id": 0},
+        sort=[("started_at", -1)],
+    )
+    if existing_active:
+        logger.info(
+            f"DUPLICATE_CALL_IGNORED call={str(existing_active.get('id', ''))[:8]} reason=active_call_exists"
+        )
+        return existing_active
+
+    call_id = requested_call_id or str(uuid.uuid4())
     call = {
-        "id": str(uuid.uuid4()),
+        "id": call_id,
+        "callId": call_id,
         "conversation_id": conv["id"],
+        "conversationId": conv["id"],
         "caller_id": user["id"],
+        "callerId": user["id"],
         "caller_name": user.get("name", ""),
+        "callee_ids": callee_ids,
+        "calleeId": callee_ids[0] if callee_ids else "",
         "member_ids": conv["member_ids"],
+        "participants": conv["member_ids"],
         "mode": payload.mode,
+        "callType": payload.mode,
         "status": "ringing",
-        "started_at": now_utc().isoformat(),
+        "created_at": started_at.isoformat(),
+        "createdAt": started_at.isoformat(),
+        "started_at": started_at.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "expiresAt": expires_at.isoformat(),
         "answered_at": None,
+        "answeredAt": None,
         "ended_at": None,
+        "endedAt": None,
+        "last_updated_at": started_at.isoformat(),
+        "lastUpdatedAt": started_at.isoformat(),
+        "callerDeviceId": user.get("_auth_sid") or "",
+        "calleeDeviceId": "",
+        "platform": "unknown",
+        "pushSentAt": None,
+        "lastKnownClientState": {},
         "duration_sec": 0,
         "encrypted": True,
         "e2ee_required": True,
@@ -3526,6 +4160,14 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
         {"type": "call:incoming", "data": call},
         exclude=user["id"],
     )
+    push_sent_at = now_utc().isoformat()
+    await db.calls.update_one(
+        {"id": call["id"]},
+        {"$set": {"pushSentAt": push_sent_at, "push_sent_at": push_sent_at}},
+    )
+    call["pushSentAt"] = push_sent_at
+    call["push_sent_at"] = push_sent_at
+
     # push notification "Incoming call"
     asyncio.create_task(_send_push_to_members(
         conv["member_ids"], user["id"], conv,
@@ -3538,6 +4180,138 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
     return call
 
 
+def public_call_status(call: dict, user_id: str) -> dict:
+    callee_ids = call.get("callee_ids") or [
+        member_id for member_id in call.get("member_ids", []) if member_id != call.get("caller_id")
+    ]
+    return {
+        "id": call.get("id"),
+        "call_id": call.get("id"),
+        "callId": call.get("id"),
+        "caller_id": call.get("caller_id"),
+        "callerId": call.get("caller_id"),
+        "caller_name": call.get("caller_name") or "Unknown",
+        "callee_ids": callee_ids,
+        "calleeId": callee_ids[0] if callee_ids else "",
+        "participants": call.get("participants") or call.get("member_ids", []),
+        "member_ids": call.get("member_ids", []),
+        "conversation_id": call.get("conversation_id") or call.get("conv_id"),
+        "conversationId": call.get("conversation_id") or call.get("conv_id"),
+        "mode": call.get("mode") or "audio",
+        "callType": call.get("mode") or "audio",
+        "status": call.get("status") or "ringing",
+        "direction": "outgoing" if call.get("caller_id") == user_id else "incoming",
+        "created_at": call.get("created_at") or call.get("started_at"),
+        "createdAt": call.get("created_at") or call.get("started_at"),
+        "started_at": call.get("started_at") or call.get("created_at"),
+        "expires_at": call.get("expires_at"),
+        "expiresAt": call.get("expires_at"),
+        "answered_at": call.get("answered_at"),
+        "answeredAt": call.get("answered_at"),
+        "ended_at": call.get("ended_at"),
+        "endedAt": call.get("ended_at"),
+        "lastUpdatedAt": call.get("lastUpdatedAt") or call.get("last_updated_at"),
+        "lastKnownClientState": call.get("lastKnownClientState") or call.get("last_known_client_state") or {},
+        "encrypted": True,
+        "e2ee_media": call.get("e2ee_media") or "webrtc-dtls-srtp",
+    }
+
+
+async def expire_stale_ringing_calls_for_user(user_id: str) -> None:
+    now_iso = now_utc().isoformat()
+    cutoff = (now_utc() - timedelta(seconds=CALL_RING_TIMEOUT_SECONDS)).isoformat()
+    stale = await db.calls.find(
+        {
+            "member_ids": user_id,
+            "status": "ringing",
+            "answered_at": None,
+            "ended_at": None,
+            "$or": [
+                {"expires_at": {"$lt": now_iso}},
+                {"expires_at": {"$exists": False}, "started_at": {"$lt": cutoff}},
+            ],
+        },
+        {"_id": 0},
+    ).to_list(20)
+    for call in stale:
+        ended_iso = now_utc().isoformat()
+        await db.calls.update_one(
+            {"id": call.get("id"), "ended_at": None},
+            {
+                "$set": {
+                    "status": "missed",
+                    "ended_at": ended_iso,
+                    "endedAt": ended_iso,
+                    "ended_by": "timeout",
+                    "last_updated_at": ended_iso,
+                    "lastUpdatedAt": ended_iso,
+                }
+            },
+        )
+        event = {
+            "type": "call:ended",
+            "event": "call.timeout",
+            "call_id": call.get("id"),
+            "from": "timeout",
+            "data": {"call_id": call.get("id"), "status": "missed", "ended_by": "timeout"},
+        }
+        await broadcast_to_members(call.get("member_ids", []), event)
+        asyncio.create_task(_send_call_control_push(call, "missed", "timeout"))
+
+
+@api.get("/calls/active")
+async def get_active_call(user: dict = Depends(get_current_user)):
+    """Return the authoritative active call for resume/unlock state sync."""
+    await expire_stale_ringing_calls_for_user(user["id"])
+    ringing_cutoff = (now_utc() - timedelta(seconds=CALL_RING_TIMEOUT_SECONDS + 15)).isoformat()
+    call = await db.calls.find_one(
+        {
+            "member_ids": user["id"],
+            "ended_at": None,
+            "$or": [
+                {"status": "ringing", "started_at": {"$gte": ringing_cutoff}},
+                {"status": {"$in": ["answered", "active", "connecting", "reconnecting"]}},
+            ],
+        },
+        {"_id": 0},
+        sort=[("started_at", -1)],
+    )
+    if not call:
+        return None
+    return public_call_status(call, user["id"])
+
+
+@api.post("/calls/{call_id}/ring")
+async def ring_call(call_id: str, user: dict = Depends(get_current_user)):
+    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    if user["id"] not in call.get("member_ids", []):
+        raise HTTPException(status_code=403, detail="Not a participant")
+    if call.get("ended_at") or call.get("answered_at"):
+        return {"ringing": False, "status": call.get("status")}
+    now_iso = now_utc().isoformat()
+    await db.calls.update_one(
+        {"id": call_id, "ended_at": None, "answered_at": None},
+        {
+            "$set": {
+                "status": "ringing",
+                "last_ring_at": now_iso,
+                "last_updated_at": now_iso,
+                "lastUpdatedAt": now_iso,
+            }
+        },
+    )
+    event = {
+        "type": "call:ringing",
+        "event": "call.ringing",
+        "call_id": call_id,
+        "from": user["id"],
+    }
+    await broadcast_to_members(call.get("member_ids", []), event)
+    return {"ringing": True, "status": "ringing"}
+
+
 @api.post("/calls/{call_id}/accept")
 async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
     """Callee marks the call as accepted — sets answered_at so it doesn't
@@ -3547,11 +4321,58 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
         return {"accepted": True, "ephemeral": True}
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
-    if call.get("answered_at"):
-        return {"accepted": True}
-    await db.calls.update_one(
-        {"id": call_id},
-        {"$set": {"status": "answered", "answered_at": now_utc().isoformat()}},
+    if user["id"] == call.get("caller_id"):
+        raise HTTPException(status_code=403, detail="Caller cannot accept own call")
+    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "declined", "cancelled", "missed"}:
+        return {
+            "accepted": False,
+            "status": call.get("status", "ended"),
+            "idempotent": True,
+        }
+
+    answered_at = call.get("answered_at") or now_utc().isoformat()
+    if not call.get("answered_at"):
+        await db.calls.update_one(
+            {"id": call_id, "answered_at": None, "ended_at": None},
+            {
+                "$set": {
+                    "status": "answered",
+                    "answered_at": answered_at,
+                    "answeredAt": answered_at,
+                    "last_updated_at": answered_at,
+                    "lastUpdatedAt": answered_at,
+                    "lastKnownClientState.accepted_by": user["id"],
+                }
+            },
+        )
+
+    accepted_event = {
+        "type": "call:accepted",
+        "event": "call.accepted",
+        "call_id": call_id,
+        "from": user["id"],
+        "data": {
+            "call_id": call_id,
+            "accepted_by": user["id"],
+            "status": "answered",
+            "answered_at": answered_at,
+        },
+    }
+    for member_id in call.get("member_ids", []):
+        signal = {
+            **accepted_event,
+            "signal_id": f"{call_id}:accepted:{member_id}",
+            "to": member_id,
+            "created_at": answered_at,
+        }
+        await db.call_signals.update_one(
+            {"signal_id": signal["signal_id"]},
+            {"$setOnInsert": signal},
+            upsert=True,
+        )
+    await broadcast_to_members(call.get("member_ids", []), accepted_event)
+    asyncio.create_task(
+        _send_call_control_push(call, "accepted", user["id"], user.get("_auth_sid"))
     )
     return {"accepted": True}
 
@@ -3621,14 +4442,15 @@ async def call_diag(
     return {"received": True}
 
 
-@api.post("/calls/{call_id}/signals")
-async def persist_call_signal(
+async def _persist_call_signal_payload(
     call_id: str,
-    payload: dict = Body(...),
-    user: dict = Depends(get_current_user),
-):
+    payload: dict,
+    user: dict,
+    *,
+    forced_type: Optional[str] = None,
+) -> dict:
     """Persist encrypted WebRTC signaling briefly as a WebSocket fallback."""
-    signal_type = str(payload.get("type") or "")
+    signal_type = forced_type or str(payload.get("type") or "")
     allowed = {
         "call:offer", "call:answer", "call:ice", "call:ready",
         "call:accept", "call:reject", "call:end", "call:cancel",
@@ -3636,7 +4458,7 @@ async def persist_call_signal(
     target = str(payload.get("to") or "")
     if signal_type not in allowed or not target:
         raise HTTPException(status_code=400, detail="Invalid call signal")
-    signal = {**payload, "call_id": call_id}
+    signal = {**payload, "type": signal_type, "call_id": call_id}
     if signal_type in {"call:offer", "call:answer", "call:ice"}:
         if not signal.get("encrypted") or not isinstance(signal.get("e2ee_signal"), dict):
             raise HTTPException(status_code=400, detail="Call signal must be encrypted")
@@ -3669,6 +4491,42 @@ async def persist_call_signal(
     return {"stored": True, "signal_id": signal_id}
 
 
+@api.post("/calls/{call_id}/signals")
+async def persist_call_signal(
+    call_id: str,
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    return await _persist_call_signal_payload(call_id, payload, user)
+
+
+@api.post("/calls/{call_id}/offer")
+async def persist_call_offer(
+    call_id: str,
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:offer")
+
+
+@api.post("/calls/{call_id}/answer")
+async def persist_call_answer(
+    call_id: str,
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:answer")
+
+
+@api.post("/calls/{call_id}/ice-candidate")
+async def persist_call_ice_candidate(
+    call_id: str,
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:ice")
+
+
 @api.get("/calls/{call_id}/signals")
 async def list_call_signals(call_id: str, user: dict = Depends(get_current_user)):
     """Return recent signaling addressed to this participant."""
@@ -3695,8 +4553,16 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
         return {"ended": True, "ephemeral": True}
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
+    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "declined", "cancelled", "missed"}:
+        return {"ended": True, "status": call.get("status", "ended"), "idempotent": True}
     ended_iso = now_utc().isoformat()
-    update_doc: dict = {"ended_at": ended_iso, "ended_by": user["id"]}
+    update_doc: dict = {
+        "ended_at": ended_iso,
+        "endedAt": ended_iso,
+        "ended_by": user["id"],
+        "last_updated_at": ended_iso,
+        "lastUpdatedAt": ended_iso,
+    }
     answered = call.get("answered_at")
     if answered:
         try:
@@ -3709,11 +4575,12 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
             update_doc["status"] = "ended"
     else:
         # Never answered. If the caller ends it, it is a cancellation; if the
-        # callee ends it, it is an explicit rejection rather than a missed call.
-        update_doc["status"] = "cancelled" if user["id"] == call.get("caller_id") else "rejected"
+        # callee ends it, it is an explicit decline rather than a missed call.
+        update_doc["status"] = "cancelled" if user["id"] == call.get("caller_id") else "declined"
     await db.calls.update_one({"id": call_id}, {"$set": update_doc})
     ended_event = {
         "type": "call:ended",
+        "event": f"call.{update_doc.get('status', 'ended')}",
         "call_id": call_id,
         "from": user["id"],
         "data": {
@@ -3738,6 +4605,7 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
         call["member_ids"],
         ended_event,
     )
+    asyncio.create_task(_send_call_control_push(call, update_doc.get("status", "ended"), user["id"]))
     if call.get("ephemeral"):
         await db.calls.delete_one({"id": call_id})
     return {"ended": True, "status": update_doc.get("status", "ended")}
@@ -3774,7 +4642,7 @@ async def enrich_call_for_user(call: dict, user_id: str) -> dict:
 
 @api.get("/calls/active-incoming")
 async def get_active_incoming_call(user: dict = Depends(get_current_user)):
-    """Return a recent unanswered call so iOS can restore UI after unlock."""
+    """Return a recent unanswered call so mobile clients can restore UI after unlock."""
     cutoff = (now_utc() - timedelta(seconds=75)).isoformat()
     call = await db.calls.find_one(
         {
@@ -3798,6 +4666,107 @@ async def get_active_incoming_call(user: dict = Depends(get_current_user)):
         "mode": call.get("mode") or "audio",
         "received_at": int(_time.time() * 1000),
     }
+
+
+@api.get("/calls/{call_id}/status")
+async def get_call_status(call_id: str, user: dict = Depends(get_current_user)):
+    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    if user["id"] not in call.get("member_ids", []):
+        raise HTTPException(status_code=403, detail="Not a participant")
+    return public_call_status(call, user["id"])
+
+
+@api.post("/calls/{call_id}/decline")
+async def decline_call(call_id: str, user: dict = Depends(get_current_user)):
+    return await end_call(call_id, user)
+
+
+@api.post("/calls/{call_id}/cancel")
+async def cancel_call(call_id: str, user: dict = Depends(get_current_user)):
+    return await end_call(call_id, user)
+
+
+@api.post("/calls/{call_id}/timeout")
+async def timeout_call(call_id: str, user: dict = Depends(get_current_user)):
+    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
+    if not call:
+        return {"timed_out": True, "ephemeral": True}
+    if user["id"] not in call.get("member_ids", []):
+        raise HTTPException(status_code=403, detail="Not a participant")
+    if call.get("answered_at") or call.get("ended_at"):
+        return {"timed_out": False, "status": call.get("status"), "idempotent": True}
+    ended_iso = now_utc().isoformat()
+    await db.calls.update_one(
+        {"id": call_id, "answered_at": None, "ended_at": None},
+        {
+            "$set": {
+                "status": "missed",
+                "ended_at": ended_iso,
+                "endedAt": ended_iso,
+                "ended_by": "timeout",
+                "last_updated_at": ended_iso,
+                "lastUpdatedAt": ended_iso,
+            }
+        },
+    )
+    event = {
+        "type": "call:ended",
+        "event": "call.timeout",
+        "call_id": call_id,
+        "from": "timeout",
+        "data": {"call_id": call_id, "status": "missed", "ended_by": "timeout"},
+    }
+    await broadcast_to_members(call.get("member_ids", []), event)
+    asyncio.create_task(_send_call_control_push(call, "missed", "timeout"))
+    return {"timed_out": True, "status": "missed"}
+
+
+@api.post("/calls/{call_id}/state")
+async def update_call_client_state(
+    call_id: str,
+    payload: CallStateUpdateIn,
+    user: dict = Depends(get_current_user),
+):
+    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
+    if not call:
+        return {"updated": False, "ephemeral": True}
+    if user["id"] not in call.get("member_ids", []):
+        raise HTTPException(status_code=403, detail="Not a participant")
+    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "declined", "cancelled", "missed"}:
+        return {"updated": False, "status": call.get("status"), "idempotent": True}
+
+    now_iso = now_utc().isoformat()
+    client_state = {
+        "user_id": user["id"],
+        "peer_connection_state": payload.peer_connection_state or "",
+        "local_audio_enabled": payload.local_audio_enabled,
+        "remote_audio_connected": payload.remote_audio_connected,
+        "updated_at": now_iso,
+    }
+    update_doc: dict = {
+        "last_updated_at": now_iso,
+        "lastUpdatedAt": now_iso,
+        f"lastKnownClientState.{user['id']}": client_state,
+    }
+    if payload.status:
+        update_doc["status"] = payload.status
+    await db.calls.update_one({"id": call_id}, {"$set": update_doc})
+
+    event = {
+        "type": "call:state_sync",
+        "event": "call.state_sync",
+        "call_id": call_id,
+        "from": user["id"],
+        "data": {
+            "call_id": call_id,
+            "status": payload.status or call.get("status"),
+            "updated_at": now_iso,
+        },
+    }
+    await broadcast_to_members(call.get("member_ids", []), event)
+    return {"updated": True, "status": payload.status or call.get("status")}
 
 
 @api.get("/calls")
@@ -4042,7 +5011,7 @@ async def broadcast_to_members(member_ids, payload, exclude: Optional[str] = Non
 
 @api.post("/ws-ticket")
 async def issue_ws_ticket(user: dict = Depends(get_current_user)):
-    ticket, jti, expires_at = create_ws_ticket(user["id"])
+    ticket, jti, expires_at = create_ws_ticket(user["id"], user.get("_auth_sid"))
     await db.ws_tickets.insert_one(
         {"jti": jti, "user_id": user["id"], "expires_at": expires_at}
     )
@@ -4067,6 +5036,14 @@ async def websocket_endpoint(
         credential_type = payload.get("type")
         if not user_id or credential_type not in ("ws", "access"):
             raise ValueError("invalid ticket")
+        session_id = payload.get("sid")
+        if session_id:
+            session = await db.user_sessions.find_one(
+                {"id": session_id, "user_id": user_id},
+                {"_id": 0, "revoked_at": 1, "expires_at": 1},
+            )
+            if not session or session.get("revoked_at"):
+                raise ValueError("session revoked")
         if credential_type == "ws":
             jti = payload.get("jti")
             if not jti:
@@ -4246,6 +5223,9 @@ async def _ensure_indexes() -> None:
         ("rate_limits", "expires_at", {"expireAfterSeconds": 0}),
         ("revoked_tokens", "jti", {"unique": True}),
         ("revoked_tokens", "expires_at", {"expireAfterSeconds": 0}),
+        ("user_sessions", "id", {"unique": True}),
+        ("user_sessions", "user_id", {}),
+        ("user_sessions", "expires_at", {"expireAfterSeconds": 0}),
         ("ws_tickets", "jti", {"unique": True}),
         ("ws_tickets", "expires_at", {"expireAfterSeconds": 0}),
         ("contact_invitations", "id", {"unique": True}),

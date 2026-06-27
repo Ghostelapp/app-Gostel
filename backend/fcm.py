@@ -168,6 +168,7 @@ def build_message(
     ttl_seconds: int = 0,
     data: dict | None = None,
     is_call: bool = False,
+    data_only: bool = False,
 ) -> dict:
     """Builds an FCM HTTP v1 message payload.
 
@@ -212,7 +213,24 @@ def build_message(
     # ──────────────────────────────────────────────────────────────────────
     android_block: dict[str, Any]
     apns_block: dict[str, Any]
-    if is_call:
+    if data_only:
+        android_block = {
+            "priority": "high",
+            "collapse_key": str_data.get("call_id") or str_data.get("type") or "ghostel_control",
+            "direct_boot_ok": True,
+        }
+        apns_block = {
+            "headers": {
+                "apns-priority": "5",
+                "apns-push-type": "background",
+            },
+            "payload": {
+                "aps": {
+                    "content-available": 1,
+                },
+            },
+        }
+    elif is_call:
         # Mirror title/body into data so a Headless JS handler (when present)
         # can use them without parsing the notification block.
         str_data.setdefault("title", title)
@@ -328,6 +346,7 @@ async def send_fcm(
     ttl_seconds: int = 0,
     data: dict | None = None,
     is_call: bool = False,
+    data_only: bool = False,
 ) -> dict:
     """Sends a single FCM v1 push. Returns {ok, status_code, error?, message_name?}.
 
@@ -365,6 +384,7 @@ async def send_fcm(
         ttl_seconds=ttl_seconds,
         data=data,
         is_call=is_call,
+        data_only=data_only,
     )
 
     try:

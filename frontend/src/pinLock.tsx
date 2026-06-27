@@ -37,11 +37,21 @@ import { Delete } from 'lucide-react-native';
 import nacl from 'tweetnacl';
 import { useTranslation } from 'react-i18next';
 import { theme } from './theme';
+import {
+  getActiveCallState,
+  isTerminalCallStatus,
+  logCallEvent,
+} from './callState';
 
 const PIN_KEY = 'ghostel.pinHash.v1';
 const PIN_RETRY_KEY = 'ghostel.pinRetry.v1';
 const AUTO_LOCK_MS = 30_000; // re-lock when app has been backgrounded for >30s
 const canUseSecureStore = Platform.OS !== 'web';
+
+async function shouldBypassPinLockForCall(): Promise<boolean> {
+  const call = await getActiveCallState().catch(() => null);
+  return Boolean(call?.activeCallId && !isTerminalCallStatus(call.callStatus));
+}
 
 type PinLockState = {
   pinSet: boolean;
@@ -155,8 +165,14 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
       try {
         const stored = await getStoredPinHash();
         const has = !!stored;
+        const bypassForCall = has ? await shouldBypassPinLockForCall() : false;
         setPinSet(has);
-        setIsLocked(has); // cold launch with PIN → require unlock
+        setIsLocked(has && !bypassForCall); // cold launch with PIN -> require unlock unless a call UI must be restored
+        if (bypassForCall) {
+          logCallEvent('APP_LOCK_BYPASSED_FOR_ACTIVE_CALL', {
+            source: 'cold_start',
+          });
+        }
       } catch {
         setPinSet(false);
         setIsLocked(false);
@@ -178,7 +194,18 @@ export function PinLockProvider({ children }: { children: React.ReactNode }) {
         const since = backgroundedAtRef.current;
         backgroundedAtRef.current = null;
         if (since && Date.now() - since >= AUTO_LOCK_MS && pinSet) {
-          setIsLocked(true);
+          shouldBypassPinLockForCall()
+            .then((bypassForCall) => {
+              if (bypassForCall) {
+                logCallEvent('APP_LOCK_BYPASSED_FOR_ACTIVE_CALL', {
+                  source: 'foreground',
+                });
+                setIsLocked(false);
+                return;
+              }
+              setIsLocked(true);
+            })
+            .catch(() => setIsLocked(true));
         }
       }
     });

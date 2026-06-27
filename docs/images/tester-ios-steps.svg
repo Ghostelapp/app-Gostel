@@ -1,0 +1,71 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Jak dolaczyc do testow Ghostel na iOS</title>
+  <desc id="desc">Instrukcja krok po kroku: zainstaluj TestFlight, otworz zaproszenie, przejdz do Ghostel i zainstaluj build.</desc>
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1020"/>
+      <stop offset="100%" stop-color="#172554"/>
+    </linearGradient>
+    <linearGradient id="card2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#172554"/>
+      <stop offset="100%" stop-color="#1e3a8a"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="900" rx="28" fill="url(#bg2)"/>
+  <text x="90" y="105" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="46" font-weight="700">iPhone / iOS - testy Ghostel</text>
+  <text x="90" y="155" fill="#93c5fd" font-family="Arial, Helvetica, sans-serif" font-size="26">Build testowy: 1.4.27 (23)</text>
+
+  <g transform="translate(80,220)">
+    <rect width="320" height="520" rx="28" fill="url(#card2)" stroke="#93c5fd" stroke-width="2"/>
+    <circle cx="58" cy="62" r="28" fill="#60a5fa"/>
+    <text x="48" y="72" fill="#0f172a" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700">1</text>
+    <text x="40" y="135" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700">Pobierz</text>
+    <text x="40" y="170" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700">TestFlight</text>
+    <text x="40" y="214" fill="#dbeafe" font-family="Arial, Helvetica, sans-serif" font-size="23">Zainstaluj aplikacje</text>
+    <text x="40" y="246" fill="#dbeafe" font-family="Arial, Helvetica, sans-serif" font-size="23">z App Store.</text>
+    <rect x="90" y="294" width="140" height="140" rx="32" fill="#0f172a" stroke="#93c5fd" stroke-width="3"/>
+    <path d="M128 382 l58-62 18 18-58 62z" fill="#60a5fa"/>
+    <path d="M183 327 l18-18 38 38-18 18z" fill="#bfdbfe"/>
+  </g>
+
+  <g transform="translate(440,220)">
+    <rect width="320" height="520" rx="28" fill="url(#card2)" stroke="#93c5fd" stroke-width="2"/>
+    <circle cx="58" cy="62" r="28" fill="#60a5fa"/>
+    <text x="48" y="72" fill="#0f172a" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700">2</text>
+    <text x="40" y="135" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700">Otworz</text>
+    <text x="40" y="170" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700">zaproszenie</text>
+    <text x="40" y="214" fill="#dbeafe" font-family="Arial, Helvetica, sans-serif" font-size="23">Kliknij link z maila</text>
+    <text x="40" y="246" fill="#dbeafe" font-family="Arial, Helvetica, sans-serif" font-size="23">lub z TestFlight.</text>
+    <rect x="44" y="300" width="232" height="132" rx="20" fill="#0f172a" stroke="#60a5fa" stroke-width="2"/>
+    <text x="64" y="348" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700">Invite to test</text>
+    <text x="64" y="383" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="18">Ghostel in TestFlight</text>
+    <rect x="64" y="398" width="164" height="24" rx="12" fill="#60a5fa"/>
+    <text x="82" y="415" fill="#082f49" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700">OPEN IN TESTFLIGHT</text>
+  </g>
+
+  <g transform="translate(800,220)">
+    <rect width="320" height="520" rx="28" fill="url(#card2)" stroke="#93c5fd" stroke-width="2"/>
+    <circle cx="58" cy="62" r="28" fill="#60a5fa"/>
+    <text x="48" y="72" fill="#0f172a" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700">3</text>
+    <text x="40" y="135" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700">Wybierz Ghostel</text>
+    <text x="40" y="190" fill="#dbeafe" font-family="Arial, Helvetica, sans-serif" font-size="23">Po otwarciu TestFlight</text>
+    <text x="40" y="222" fill="#dbeafe" font-family="Arial, Helvetica, sans-serif" font-size="23">wejdz do Ghostel.</text>
+    <rect x="56" y="300" width="208" height="170" rx="24" fill="#0f172a" stroke="#93c5fd" stroke-width="3"/>
+    <text x="88" y="356" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="700">Ghostel</text>
+    <text x="88" y="395" fill="#bfdbfe" font-family="Arial, Helvetica, sans-serif" font-size="22">Version 1.4.27</text>
+    <rect x="88" y="416" width="120" height="28" rx="14" fill="#60a5fa"/>
+    <text x="123" y="436" fill="#082f49" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700">INSTALL</text>
+  </g>
+
+  <g transform="translate(1160,220)">
+    <rect width="320" height="520" rx="28" fill="url(#card2)" stroke="#93c5fd" stroke-width="2"/>
+    <circle cx="58" cy="62" r="28" fill="#60a5fa"/>
+    <text x="48" y="72" fill="#0f172a" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700">4</text>
+    <text x="40" y="135" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700">Zainstaluj</text>
+    <text x="40" y="170" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700">i testuj</text>
+    <text x="40" y="214" fill="#dbeafe" font-family="Arial, Helvetica, sans-serif" font-size="23">Po instalacji zaloguj</text>
+    <text x="40" y="246" fill="#dbeafe" font-family="Arial, Helvetica, sans-serif" font-size="23">sie do Ghostel.</text>
+    <circle cx="160" cy="390" r="88" fill="#0f172a" stroke="#60a5fa" stroke-width="3"/>
+    <path d="M118 395 l28 28 58-68" fill="none" stroke="#60a5fa" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

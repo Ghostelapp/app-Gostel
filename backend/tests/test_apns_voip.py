@@ -7,7 +7,6 @@ def test_build_voip_payload_contains_callkit_fields():
             "call_id": "38acdbd6-17fe-45f5-9a76-720d07fbf275",
             "conversation_id": "conversation-1",
             "caller_id": "caller-1",
-            "caller_name": "Patryk",
             "mode": "audio",
         }
     )
@@ -18,7 +17,8 @@ def test_build_voip_payload_contains_callkit_fields():
     assert payload["type"] == "incoming_call"
     assert payload["screen"] == "call"
     assert payload["caller_id"] == "caller-1"
-    assert payload["caller_name"] == "Patryk"
+    assert payload["caller_name"] == "ghostel.app call"
+    assert payload["encryptedDisplayName"] == ""
     assert payload["conversation_id"] == "conversation-1"
     assert payload["mode"] == "audio"
     assert isinstance(payload["sent_at"], int)

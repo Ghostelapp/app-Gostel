@@ -10,13 +10,19 @@ import {
   Vibration,
   View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { usePathname, useRouter } from 'expo-router';
 import { Phone, PhoneOff, ShieldCheck } from 'lucide-react-native';
 import Avatar from './Avatar';
 import { useWebSocket } from './ws';
 import { useAuth } from './auth';
 import { api } from './api';
 import { theme } from './theme';
+import {
+  clearActiveCallState,
+  logCallEvent,
+  saveActiveCallState,
+} from './callState';
+import { callManager } from './callManager';
 import {
   answerIncomingCallNative,
   bindCallKeepBridge,
@@ -28,15 +34,20 @@ import {
 import {
   clearPendingIncomingCall,
   getPendingIncomingCall,
+  markCallLocallyAccepted,
   normalizeIncomingCallPayload,
   savePendingIncomingCall,
+  subscribeToCallControlEvents,
   subscribeToIncomingCallEvents,
   type IncomingCallPayload,
 } from './incomingCallStore';
 import {
   cancelFullScreenIncomingCallNotification,
+  consumeAndroidResumeEvent,
   consumeInitialNativeIncomingCall,
   showFullScreenIncomingCallNotification,
+  startActiveCallService,
+  stopActiveCallService,
 } from './androidCallNotification';
 
 type IncomingCall = {
@@ -55,24 +66,36 @@ type ShowIncomingOptions = {
 // Vibration pattern: 0ms wait, vibrate 1s, pause 1s — looped
 const VIBRATION_PATTERN = [0, 1000, 1000];
 const PENDING_CALL_MAX_AGE_MS = 60_000;
-const TERMINAL_CALL_STATUSES = new Set(['ended', 'rejected', 'cancelled', 'missed']);
-const IOS_UNLOCK_ACTION_GUARD_MS = 1_800;
+const TERMINAL_CALL_STATUSES = new Set(['ended', 'rejected', 'declined', 'cancelled', 'missed']);
+const MOBILE_UNLOCK_ACTION_GUARD_MS = 1_800;
 
 export default function IncomingCallProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
   const [incoming, setIncoming] = useState<IncomingCall | null>(null);
   const [callActionsGuarded, setCallActionsGuarded] = useState(false);
   const vibratingRef = useRef(false);
+  const incomingRef = useRef<IncomingCall | null>(null);
   const incomingCallIdRef = useRef<string | null>(null);
   const dismissedCallIdsRef = useRef(new Set<string>());
+  const locallyAcceptedCallIdsRef = useRef(new Set<string>());
   const pulse = useRef(new Animated.Value(0)).current;
   const actionGuardUntilRef = useRef(0);
   const actionGuardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pathnameRef = useRef(pathname);
+
+  useEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
+
+  useEffect(() => {
+    incomingRef.current = incoming;
+  }, [incoming]);
 
   const guardCallActionsAfterUnlock = useCallback(() => {
-    if (Platform.OS !== 'ios') return;
-    const guardUntil = Date.now() + IOS_UNLOCK_ACTION_GUARD_MS;
+    if (Platform.OS === 'web') return;
+    const guardUntil = Date.now() + MOBILE_UNLOCK_ACTION_GUARD_MS;
     actionGuardUntilRef.current = guardUntil;
     setCallActionsGuarded(true);
     if (actionGuardTimerRef.current) clearTimeout(actionGuardTimerRef.current);
@@ -80,7 +103,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       if (Date.now() >= actionGuardUntilRef.current) {
         setCallActionsGuarded(false);
       }
-    }, IOS_UNLOCK_ACTION_GUARD_MS + 50);
+    }, MOBILE_UNLOCK_ACTION_GUARD_MS + 50);
   }, []);
 
   const startVibration = useCallback(() => {
@@ -109,8 +132,25 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       { persist = true, notifyNative = true }: ShowIncomingOptions = {},
     ) => {
       if (call.caller_id === user?.id || dismissedCallIdsRef.current.has(call.id)) return;
+      logCallEvent('CALL_INVITE_RECEIVED', {
+        callId: call.id,
+        callerId: call.caller_id,
+        appState: AppState.currentState,
+      });
       if (persist) savePendingIncomingCall(call).catch(() => {});
+      saveActiveCallState({
+        activeCallId: call.id,
+        callStatus: 'INCOMING_RINGING',
+        callerId: call.caller_id,
+        conversationId: call.conversation_id,
+        mode: call.mode,
+      }).catch(() => {});
       if (Platform.OS === 'ios' && AppState.currentState !== 'active') {
+        logCallEvent('CALLKIT_ACTIVE_CALL_CHECK', {
+          callId: call.id,
+          nativeDisplayed: isIncomingCallNativeDisplayed(call.id),
+          appState: AppState.currentState,
+        });
         if (notifyNative) {
           displayIncomingCallNative({
             callId: call.id,
@@ -121,13 +161,31 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         }
         return;
       }
-      if (incomingCallIdRef.current === call.id) return;
+      if (incomingCallIdRef.current === call.id) {
+        logCallEvent('CALL_UI_ALREADY_VISIBLE_SKIP_DUPLICATE', {
+          callId: call.id,
+          source: 'showIncoming',
+        });
+        return;
+      }
       guardCallActionsAfterUnlock();
       incomingCallIdRef.current = call.id;
       setIncoming((current) => (current?.id === call.id ? current : call));
       const nativeIosCall = isIncomingCallNativeDisplayed(call.id);
+      if (Platform.OS === 'ios') {
+        logCallEvent('CALLKIT_ACTIVE_CALL_CHECK', {
+          callId: call.id,
+          nativeDisplayed: nativeIosCall,
+          appState: AppState.currentState,
+        });
+      }
       if (!nativeIosCall) startVibration();
       if (Platform.OS === 'android') {
+        logCallEvent('ANDROID_FOREGROUND_SERVICE_CHECK', {
+          callId: call.id,
+          phase: 'incoming_ringing',
+        });
+        startActiveCallService(call.id, call.caller_name).catch(() => {});
         if (notifyNative) {
           // Keep one native full-screen call notification alive until the call
           // is answered, rejected or ended. It owns the looping system ringtone.
@@ -152,15 +210,25 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       dismissedCallIdsRef.current.add(call.id);
       if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
       await clearPendingIncomingCall(call.id).catch(() => {});
+      await clearActiveCallState(call.id).catch(() => {});
       await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
+      locallyAcceptedCallIdsRef.current.add(call.id);
+      await markCallLocallyAccepted(call.id).catch(() => {});
       setIncoming((current) => (current?.id === call.id ? null : current));
       stopVibration();
       import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
       if (call.action === 'decline') {
-        await api.post(`/calls/${call.id}/end`).catch(() => {});
+        await callManager.declineCall(call.id).catch(() => {});
         return true;
       }
-      await api.post(`/calls/${call.id}/accept`).catch(() => {});
+      await callManager.acceptCall(call.id).catch(() => {});
+      await saveActiveCallState({
+        activeCallId: call.id,
+        callStatus: 'CONNECTING',
+        callerId: call.caller_id,
+        conversationId: call.conversation_id,
+        mode: call.mode,
+      }).catch(() => {});
       router.push(
         `/call/${call.id}?role=callee&conversation_id=${call.conversation_id}&caller_id=${call.caller_id}`,
       );
@@ -169,16 +237,99 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     [router, stopVibration],
   );
 
+  useEffect(() => {
+    callManager.configure({
+      userId: user?.id,
+      router,
+      isIncomingUiVisible: (callId: string) =>
+        incomingCallIdRef.current === callId || incomingRef.current?.id === callId,
+      restoreIncomingUi: (call, options) => {
+        dismissedCallIdsRef.current.delete(call.id);
+        showIncoming(call, options);
+      },
+      restoreActiveCallUi: (call, status, reason) => {
+        dismissedCallIdsRef.current.add(call.id);
+        if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
+        setIncoming((current) => (current?.id === call.id ? null : current));
+        clearPendingIncomingCall(call.id).catch(() => {});
+        cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
+        stopVibration();
+        import('./sounds').then((sounds) => sounds.stopRingtone()).catch(() => {});
+        if (Platform.OS === 'android') {
+          logCallEvent('ANDROID_FOREGROUND_SERVICE_CHECK', {
+            callId: call.id,
+            phase: status,
+            reason,
+          });
+          startActiveCallService(call.id, call.caller_name).catch(() => {});
+        }
+        const role = call.caller_id === user?.id ? 'caller' : 'callee';
+        const href = `/call/${call.id}?role=${role}&conversation_id=${call.conversation_id}&caller_id=${call.caller_id}`;
+        if (!pathnameRef.current.includes(`/call/${call.id}`)) {
+          router.push(href);
+        }
+      },
+      clearCallUi: (callId, reason) => {
+        const cid = callId || incomingCallIdRef.current || incomingRef.current?.id || null;
+        if (cid) dismissedCallIdsRef.current.add(cid);
+        if (!cid || incomingCallIdRef.current === cid) incomingCallIdRef.current = null;
+        setIncoming((current) => (!cid || current?.id === cid ? null : current));
+        if (cid) {
+          clearPendingIncomingCall(cid).catch(() => {});
+          cancelFullScreenIncomingCallNotification(cid).catch(() => {});
+          try {
+            endIncomingCallNative(cid);
+          } catch {
+            /* ignore */
+          }
+        }
+        if (Platform.OS === 'android') stopActiveCallService().catch(() => {});
+        stopVibration();
+        import('./sounds').then((sounds) => sounds.stopRingtone()).catch(() => {});
+        logCallEvent('LOCAL_CALL_STATE_CLEARED', {
+          reason,
+          callId: cid,
+          source: 'ui_clear',
+        });
+      },
+    });
+  }, [user?.id, router, showIncoming, stopVibration]);
+
   const onMessage = useCallback(
     (msg: any) => {
       if (msg?.type === 'call:incoming' && msg.data && msg.data.caller_id !== user?.id) {
-        showIncoming(msg.data);
+        callManager.handleIncomingCallInvite(msg.data, 'ws_call_invite').catch(() => {
+          showIncoming(msg.data);
+        });
+      } else if (msg?.type === 'call:accepted') {
+        const cid = msg.call_id ?? msg.data?.call_id;
+        const acceptedBy = msg.from ?? msg.data?.accepted_by;
+        // Stop duplicate ringing on another device using the callee account.
+        if (cid && acceptedBy === user?.id) {
+          const locallyAccepted = locallyAcceptedCallIdsRef.current.has(cid);
+          dismissedCallIdsRef.current.add(cid);
+          if (incomingCallIdRef.current === cid) incomingCallIdRef.current = null;
+          setIncoming((cur) => (cur?.id === cid ? null : cur));
+          clearPendingIncomingCall(cid).catch(() => {});
+          if (!locallyAccepted) clearActiveCallState(cid).catch(() => {});
+          cancelFullScreenIncomingCallNotification(cid).catch(() => {});
+          stopVibration();
+          import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
+          if (!locallyAccepted) {
+            try {
+              endIncomingCallNative(cid);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
       } else if (msg?.type === 'call:ended') {
         const cid = msg.data?.call_id;
         if (cid) dismissedCallIdsRef.current.add(cid);
         if (incomingCallIdRef.current === cid) incomingCallIdRef.current = null;
         setIncoming((cur) => (cur && cur.id === cid ? null : cur));
         clearPendingIncomingCall(cid).catch(() => {});
+        clearActiveCallState(cid).catch(() => {});
         // Also clear any pending native CallKeep screen (e.g. caller hung up
         // while OS-level call screen was visible on lockscreen).
         if (cid) {
@@ -195,6 +346,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         if (incomingCallIdRef.current === msg.call_id) incomingCallIdRef.current = null;
         setIncoming((cur) => (cur && cur.id === msg.call_id ? null : cur));
         clearPendingIncomingCall(msg.call_id).catch(() => {});
+        clearActiveCallState(msg.call_id).catch(() => {});
         if (msg.call_id) {
           cancelFullScreenIncomingCallNotification(msg.call_id).catch(() => {});
           try {
@@ -205,7 +357,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         }
       }
     },
-    [user?.id, showIncoming]
+    [user?.id, showIncoming, stopVibration]
   );
 
   // Single WebSocket connection — capture the send() handle so reject() can
@@ -253,6 +405,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
         setIncoming((current) => (current?.id === call.id ? null : current));
         await clearPendingIncomingCall(call.id).catch(() => {});
+        await clearActiveCallState(call.id).catch(() => {});
         await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
         return;
       }
@@ -265,6 +418,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
           if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
           setIncoming((current) => (current?.id === call.id ? null : current));
           await clearPendingIncomingCall(call.id).catch(() => {});
+          await clearActiveCallState(call.id).catch(() => {});
           await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
           return;
         }
@@ -274,6 +428,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
           if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
           setIncoming((current) => (current?.id === call.id ? null : current));
           await clearPendingIncomingCall(call.id).catch(() => {});
+          await clearActiveCallState(call.id).catch(() => {});
           await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
           return;
         }
@@ -282,38 +437,60 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       if (mounted) showIncoming(call, { persist: false, notifyNative: false });
     };
 
-    const recoverActiveIncomingCall = async () => {
-      if (Platform.OS !== 'ios' || AppState.currentState !== 'active') return;
-      try {
-        const { data } = await api.get('/calls/active-incoming');
-        const call = normalizeIncomingCallPayload(data);
-        if (!mounted || !call || call.caller_id === user.id) return;
-
-        // The backend is authoritative here. A lifecycle-only CallKit event
-        // must not permanently suppress a call that is still ringing.
-        dismissedCallIdsRef.current.delete(call.id);
-        showIncoming(call, { persist: true, notifyNative: false });
-      } catch {
-        /* pending storage and WebSocket delivery remain available */
-      }
+    const recoverActiveIncomingCall = async (reason: string) => {
+      if (Platform.OS === 'web' || AppState.currentState !== 'active') return;
+      await callManager.handleAppForeground(reason);
     };
 
-    const restore = async () => {
+    const restore = async (reason = 'provider_restore') => {
       const handledNativeIntent = await consumeNativeIntent();
-      if (!handledNativeIntent) {
-        await restorePendingCall();
-        await recoverActiveIncomingCall();
-      }
+      if (!handledNativeIntent) await restorePendingCall();
+      await recoverActiveIncomingCall(reason);
     };
 
-    restore().catch(() => {});
-    const unsubIncoming = subscribeToIncomingCallEvents((call) => showIncoming(call));
+    restore('provider_mount').catch(() => {});
+    const unsubIncoming = subscribeToIncomingCallEvents((call) => {
+      callManager.handlePushReceived(call).catch(() => showIncoming(call));
+    });
+    const unsubControl = subscribeToCallControlEvents(({ call_id, action }) => {
+      if (!call_id) return;
+      dismissedCallIdsRef.current.add(call_id);
+      if (incomingCallIdRef.current === call_id) incomingCallIdRef.current = null;
+      setIncoming((current) => (current?.id === call_id ? null : current));
+      clearPendingIncomingCall(call_id).catch(() => {});
+      if (action !== 'accepted' || !locallyAcceptedCallIdsRef.current.has(call_id)) {
+        clearActiveCallState(call_id).catch(() => {});
+      }
+      cancelFullScreenIncomingCallNotification(call_id).catch(() => {});
+      stopVibration();
+      import('./sounds').then((sounds) => sounds.stopRingtone()).catch(() => {});
+      if (action !== 'accepted' || !locallyAcceptedCallIdsRef.current.has(call_id)) {
+        try {
+          endIncomingCallNative(call_id);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
     const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'background' || state === 'inactive') {
+        callManager.handleAppBackground();
+      }
       if (state === 'active') {
+        logCallEvent('APP_STATE_CHANGED_ACTIVE', {
+          source: 'app_state',
+          appState: state,
+        });
         // The final passcode/keypad touch can otherwise land on a newly
-        // rendered Answer/Decline button as iOS dismisses its lock screen.
+        // rendered Answer/Decline button as the OS dismisses its lock screen.
         guardCallActionsAfterUnlock();
-        restore().catch(() => {});
+        restore('app_state_active')
+          .catch(() => {})
+          .finally(() => {
+            logCallEvent('WEBSOCKET_RECONNECT_AFTER_RESUME', {
+              source: 'app_state',
+            });
+          });
       }
     });
     // Android delivers notification action taps through MainActivity.onNewIntent.
@@ -321,10 +498,29 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     // Poll the one-shot native intent slot so Answer/Decline is never missed.
     const nativeActionTimer = setInterval(() => {
       consumeNativeIntent().catch(() => {});
+      consumeAndroidResumeEvent()
+        .then((event) => {
+          if (!event) return;
+          logCallEvent('APP_STATE_CHANGED_ACTIVE', {
+            source: 'activity_resume',
+            incomingWindowActive: Boolean(event.incoming_call_window_active),
+          });
+          guardCallActionsAfterUnlock();
+          callManager
+            .handleAppForeground('activity_resume')
+            .catch(() => {})
+            .finally(() => {
+              logCallEvent('WEBSOCKET_RECONNECT_AFTER_RESUME', {
+                source: 'activity_resume',
+              });
+            });
+        })
+        .catch(() => {});
     }, 500);
     return () => {
       mounted = false;
       unsubIncoming();
+      unsubControl();
       sub.remove();
       clearInterval(nativeActionTimer);
     };
@@ -383,6 +579,15 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     dismissedCallIdsRef.current.add(call.id);
     incomingCallIdRef.current = null;
     setIncoming(null);
+    locallyAcceptedCallIdsRef.current.add(call.id);
+    await markCallLocallyAccepted(call.id).catch(() => {});
+    await saveActiveCallState({
+      activeCallId: call.id,
+      callStatus: 'CONNECTING',
+      callerId: call.caller_id,
+      conversationId: call.conversation_id,
+      mode: call.mode,
+    }).catch(() => {});
     clearPendingIncomingCall(call.id).catch(() => {});
     cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
     stopVibration();
@@ -397,7 +602,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       }
     }
     try {
-      await api.post(`/calls/${call.id}/accept`);
+      await callManager.acceptCall(call.id);
     } catch {
       /* ignore */
     }
@@ -408,7 +613,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     if (!incoming) return;
     const call = incoming;
     const guardRemainingMs = actionGuardUntilRef.current - Date.now();
-    if (Platform.OS === 'ios' && source === 'button' && guardRemainingMs > 0) {
+    if (Platform.OS !== 'web' && source === 'button' && guardRemainingMs > 0) {
       api.post(`/calls/${call.id}/diag`, {
         reason: 'incoming_call_action_ignored_after_unlock',
         status: 'ringing',
@@ -428,6 +633,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     incomingCallIdRef.current = null;
     setIncoming(null);
     clearPendingIncomingCall(call.id).catch(() => {});
+    clearActiveCallState(call.id).catch(() => {});
     cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
     stopVibration();
     // Clear any native CallKeep call that's still showing for this id.
@@ -451,7 +657,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     // 2) Server records the rejection + also broadcasts call:ended as a backup
     //    so any other devices (e.g. the caller using a second phone) clean up.
     try {
-      await api.post(`/calls/${call.id}/end`);
+      await callManager.declineCall(call.id);
     } catch {
       /* ignore */
     }

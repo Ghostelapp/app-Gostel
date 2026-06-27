@@ -18,6 +18,7 @@ import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
   private var privacyOverlay: View? = null
+  private var incomingCallWindowUntilMs: Long = 0L
 
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
@@ -38,13 +39,16 @@ class MainActivity : ReactActivity() {
   }
 
   override fun onPause() {
-    addPrivacyOverlay()
+    if (!isIncomingCallWindowActive()) {
+      addPrivacyOverlay()
+    }
     super.onPause()
   }
 
   override fun onResume() {
     super.onResume()
     removePrivacyOverlay()
+    markActivityResumed(isIncomingCallWindowActive())
   }
 
   /**
@@ -75,12 +79,14 @@ class MainActivity : ReactActivity() {
       intent.getStringExtra("caller_id").isNullOrBlank() ||
       !IncomingCallIntentSecurity.isValid(this, intent)
     ) {
+      incomingCallWindowUntilMs = 0L
       return
     }
 
     synchronized(MainActivity::class.java) {
       pendingIncomingCallIntent = Intent(intent)
     }
+    incomingCallWindowUntilMs = System.currentTimeMillis() + INCOMING_CALL_WINDOW_MS
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
       setShowWhenLocked(true)
@@ -88,12 +94,17 @@ class MainActivity : ReactActivity() {
     } else {
       @Suppress("DEPRECATION")
       window.addFlags(
-        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+          WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
           WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-          WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+          WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+          WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
       )
     }
+    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
   }
+
+  private fun isIncomingCallWindowActive(): Boolean =
+    incomingCallWindowUntilMs > System.currentTimeMillis()
 
   private fun addPrivacyOverlay() {
     if (privacyOverlay != null) return
@@ -137,7 +148,10 @@ class MainActivity : ReactActivity() {
   }
 
   companion object {
+    private const val INCOMING_CALL_WINDOW_MS = 2 * 60 * 1000L
     private var pendingIncomingCallIntent: Intent? = null
+    private var pendingResumeAtMs: Long = 0L
+    private var pendingResumeIncomingWindowActive: Boolean = false
 
     fun consumePendingIncomingCallIntent(): Intent? =
       synchronized(MainActivity::class.java) {
@@ -145,5 +159,26 @@ class MainActivity : ReactActivity() {
         pendingIncomingCallIntent = null
         intent
       }
+
+    fun markActivityResumed(incomingWindowActive: Boolean) {
+      synchronized(MainActivity::class.java) {
+        pendingResumeAtMs = System.currentTimeMillis()
+        pendingResumeIncomingWindowActive = incomingWindowActive
+      }
+    }
+
+    fun consumePendingResumeEvent(): ResumeEvent? =
+      synchronized(MainActivity::class.java) {
+        if (pendingResumeAtMs <= 0L) return@synchronized null
+        val event = ResumeEvent(pendingResumeAtMs, pendingResumeIncomingWindowActive)
+        pendingResumeAtMs = 0L
+        pendingResumeIncomingWindowActive = false
+        event
+      }
   }
 }
+
+data class ResumeEvent(
+  val resumedAtMs: Long,
+  val incomingWindowActive: Boolean,
+)

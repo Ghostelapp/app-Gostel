@@ -117,7 +117,7 @@ class GhostelCallNotificationModule(
       }
 
       nm.notify(notificationId(callId), notification)
-      Log.i(TAG, "Posted full-screen call notification channel=$CHANNEL_ID callId=$callId")
+      Log.i(TAG, "ANDROID_FULLSCREEN_CALL_NOTIFICATION_SHOWN channel=$CHANNEL_ID callId=$callId")
       openActivityIfLockedOrScreenOff(intent)
       promise.resolve(true)
     } catch (e: Exception) {
@@ -162,6 +162,25 @@ class GhostelCallNotificationModule(
       promise.resolve(map)
     } catch (e: Exception) {
       promise.reject("ghostel_call_notification_initial_failed", e)
+    }
+  }
+
+  @ReactMethod
+  fun consumeResumeEvent(promise: Promise) {
+    try {
+      val event = MainActivity.consumePendingResumeEvent()
+      if (event == null) {
+        promise.resolve(null)
+        return
+      }
+      val map = Arguments.createMap().apply {
+        putString("reason", "activity_resume")
+        putDouble("resumed_at_ms", event.resumedAtMs.toDouble())
+        putBoolean("incoming_call_window_active", event.incomingWindowActive)
+      }
+      promise.resolve(map)
+    } catch (e: Exception) {
+      promise.reject("ghostel_call_resume_event_failed", e)
     }
   }
 

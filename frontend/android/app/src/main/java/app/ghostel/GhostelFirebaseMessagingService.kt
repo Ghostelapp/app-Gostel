@@ -13,12 +13,18 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
 class GhostelFirebaseMessagingService : FirebaseMessagingService() {
   override fun onMessageReceived(message: RemoteMessage) {
     val data = message.data ?: return
+    if (isCallControl(data)) {
+      handleCallControl(data)
+      return
+    }
+
     val isCall =
       data["type"] == "incoming_call" ||
         data["type"] == "call" ||
@@ -48,10 +54,35 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
 
       wakeScreenBriefly()
       showFullScreenCallNotification(callId, callerName, intent)
+      startRingingCallService(callId, callerName)
       openActivityIfLockedOrScreenOff(intent)
-      Log.i(TAG, "Incoming call handled natively callId=$callId caller=$callerName")
+      Log.i(TAG, "ANDROID_FCM_INCOMING_CALL_RECEIVED callId=$callId")
     } catch (e: Exception) {
       Log.w(TAG, "Incoming call native handling failed", e)
+    }
+  }
+
+  private fun isCallControl(data: Map<String, String>): Boolean =
+    data["type"] == "call_control" ||
+      data["type"] == "call:accepted" ||
+      data["type"] == "call:ended" ||
+      data["call_control_action"].orEmpty().isNotBlank()
+
+  private fun handleCallControl(data: Map<String, String>) {
+    val callId = data["call_id"].orEmpty()
+    if (callId.isBlank()) return
+    val action = data["call_control_action"].orEmpty()
+      .ifBlank { data["status"].orEmpty() }
+      .ifBlank { data["type"].orEmpty() }
+    try {
+      val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      nm.cancel(notificationId(callId))
+      if (action != "accepted" || data["locally_accepted"].orEmpty() != "true") {
+        stopService(Intent(this, GhostelActiveCallService::class.java))
+      }
+      Log.i(TAG, "Call control handled action=$action callId=$callId")
+    } catch (e: Exception) {
+      Log.w(TAG, "Call control handling failed callId=$callId", e)
     }
   }
 
@@ -128,7 +159,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
     nm.notify(notificationId(callId), notification)
     Log.i(
       TAG,
-      "Posted full-screen call notification channel=${GhostelCallNotificationModule.CHANNEL_ID} callId=$callId"
+      "ANDROID_FULLSCREEN_CALL_NOTIFICATION_SHOWN channel=${GhostelCallNotificationModule.CHANNEL_ID} callId=$callId"
     )
   }
 
@@ -198,5 +229,18 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
 
   companion object {
     private const val TAG = "GhostelFCM"
+  }
+
+  private fun startRingingCallService(callId: String, callerName: String) {
+    try {
+      val serviceIntent = Intent(this, GhostelActiveCallService::class.java).apply {
+        putExtra(GhostelActiveCallService.EXTRA_CALL_ID, callId)
+        putExtra(GhostelActiveCallService.EXTRA_PEER_NAME, callerName)
+      }
+      ContextCompat.startForegroundService(this, serviceIntent)
+      Log.i(TAG, "ANDROID_FOREGROUND_SERVICE_STARTED callId=$callId")
+    } catch (e: Exception) {
+      Log.w(TAG, "start foreground call service failed callId=$callId", e)
+    }
   }
 }

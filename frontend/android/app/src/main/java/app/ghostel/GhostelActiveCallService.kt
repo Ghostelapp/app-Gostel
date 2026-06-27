@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.content.pm.ServiceInfo
 
 class GhostelActiveCallService : Service() {
   override fun onCreate() {
@@ -44,8 +45,20 @@ class GhostelActiveCallService : Service() {
       .setContentIntent(pendingIntent)
       .build()
 
-    startForeground(NOTIFICATION_ID, notification)
-    return START_NOT_STICKY
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        startForeground(
+          NOTIFICATION_ID,
+          notification,
+          ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+        )
+      } else {
+        startForeground(NOTIFICATION_ID, notification)
+      }
+    } catch (e: SecurityException) {
+      startForeground(NOTIFICATION_ID, notification)
+    }
+    return START_STICKY
   }
 
   override fun onBind(intent: Intent?): IBinder? = null

@@ -46,3 +46,27 @@ def test_regular_message_push_keeps_android_notification_block():
     message = payload["message"]
     assert message["android"]["notification"]["channel_id"] == "messages"
     assert message["android"]["notification"]["sound"] == "message"
+
+
+def test_call_control_push_is_silent_data_only():
+    payload = build_message(
+        token="TEST_TOKEN",
+        title="ghostel.app call",
+        body="",
+        channel_id="calls",
+        data={
+            "type": "call_control",
+            "call_control_action": "accepted",
+            "call_id": "call-123",
+            "accepted_by": "user-123",
+        },
+        data_only=True,
+    )
+
+    message = payload["message"]
+    assert message["data"]["type"] == "call_control"
+    assert message["data"]["call_control_action"] == "accepted"
+    assert message["android"]["priority"] == "high"
+    assert "notification" not in message["android"]
+    assert message["apns"]["headers"]["apns-push-type"] == "background"
+    assert message["apns"]["payload"]["aps"] == {"content-available": 1}
