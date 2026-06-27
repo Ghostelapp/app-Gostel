@@ -180,6 +180,8 @@ class TestCalls:
         assert s.status_code == 200, s.text
         call = s.json()
         assert call["status"] == "ringing"
+        assert call["callId"] == call["id"]
+        assert call["callType"] == "audio"
         assert call["caller_id"]
         assert call["caller_name"]
         assert call["conversation_id"] == conv_id
@@ -204,6 +206,27 @@ class TestCalls:
         assert accepted.status_code == 200, accepted.text
         assert accepted.json()["accepted"] is True
 
+        state = api_client.post(
+            f"{BASE_URL}/api/calls/{call['id']}/state",
+            json={
+                "status": "active",
+                "peer_connection_state": "connected",
+                "local_audio_enabled": True,
+                "remote_audio_connected": True,
+            },
+            headers=auth_headers(demo_token),
+        )
+        assert state.status_code == 200, state.text
+        assert state.json()["updated"] is True
+        assert state.json()["status"] == "active"
+
+        status = api_client.get(
+            f"{BASE_URL}/api/calls/{call['id']}/status",
+            headers=auth_headers(admin_token),
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["status"] == "active"
+
         accepted_signals = api_client.get(
             f"{BASE_URL}/api/calls/{call['id']}/signals",
             headers=auth_headers(admin_token),
@@ -216,6 +239,40 @@ class TestCalls:
         ]
         assert len(matching) == 1
         assert matching[0]["data"]["accepted_by"] != call["caller_id"]
+
+        admin = requests.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(admin_token)).json()
+        demo = requests.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(demo_token)).json()
+        offer = api_client.post(
+            f"{BASE_URL}/api/calls/{call['id']}/offer",
+            json={
+                "to": demo["id"],
+                "encrypted": True,
+                "e2ee_signal": {
+                    "version": 1,
+                    "algorithm": "nacl-box-v1",
+                    "sender_public_key": admin["e2ee_public_key"],
+                    "nonce": "n" * 24,
+                    "ciphertext": "c" * 32,
+                },
+                "sdp": "plaintext-must-not-be-stored",
+            },
+            headers=auth_headers(admin_token),
+        )
+        assert offer.status_code == 200, offer.text
+        stored_offer = api_client.get(
+            f"{BASE_URL}/api/calls/{call['id']}/signals",
+            headers=auth_headers(demo_token),
+        )
+        assert stored_offer.status_code == 200, stored_offer.text
+        offers = [
+            signal
+            for signal in stored_offer.json()
+            if signal.get("signal_id") == offer.json()["signal_id"]
+        ]
+        assert len(offers) == 1
+        assert offers[0]["type"] == "call:offer"
+        assert "e2ee_signal" in offers[0]
+        assert "sdp" not in offers[0]
 
         e = api_client.post(
             f"{BASE_URL}/api/calls/{call['id']}/end",

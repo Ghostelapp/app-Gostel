@@ -321,7 +321,6 @@ async function handleEndCall(
   const activeTransitionAge = Date.now() - lastBecameActiveAt;
   const isTransientUnlockEnd =
     !!info &&
-    !wasAnswered &&
     !fromInitialEvent &&
     AppState.currentState === 'active' &&
     activeTransitionAge >= 0 &&
@@ -329,9 +328,15 @@ async function handleEndCall(
 
   if (info && isTransientUnlockEnd) {
     reportCallKeepDiag(info, 'callkeep_end_ignored_after_unlock', {
+      answered: wasAnswered,
       active_transition_age_ms: activeTransitionAge,
       native_displayed: displayedCalls.has(key),
     });
+    if (wasAnswered) {
+      await routeOrDeferAnsweredCall(info);
+      activateWebRtcAudioSession();
+      return;
+    }
     await restoreAfterTransientNativeEnd(info);
     return;
   }

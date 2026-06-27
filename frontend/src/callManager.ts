@@ -10,6 +10,7 @@ import {
   saveActiveCallState,
 } from './callState';
 import {
+  savePendingIncomingCall,
   normalizeIncomingCallPayload,
   type IncomingCallPayload,
 } from './incomingCallStore';
@@ -25,9 +26,15 @@ type ManagedCallState = {
   mode: string;
   createdAt?: string;
   expiresAt?: string;
+  answeredAt?: string;
+  endedAt?: string;
   isIncoming: boolean;
   isCallUiVisible: boolean;
+  isNativeCallUiActive: boolean;
   lastSyncAt: number;
+  peerConnectionState: string;
+  localAudioEnabled: boolean;
+  remoteAudioConnected: boolean;
 };
 
 type RestoreOptions = {
@@ -80,6 +87,139 @@ class GhostelCallManager {
 
   getState(): ManagedCallState | null {
     return this.state;
+  }
+
+  async startOutgoingCall(conversationId: string, mode: 'audio' | 'video' = 'audio'): Promise<ManagedCallState | null> {
+    const callId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const { data } = await api.post('/calls/start', {
+      conversation_id: conversationId,
+      mode,
+      call_id: callId,
+    });
+    const call = callPayloadFromBackend(data);
+    if (!call) return null;
+    const nextState: ManagedCallState = {
+      activeCallId: call.id,
+      callStatus: 'OUTGOING_RINGING',
+      callerId: call.caller_id,
+      calleeId: firstString(data?.callee_ids),
+      conversationId: call.conversation_id,
+      mode: call.mode,
+      createdAt: data?.created_at || data?.createdAt || '',
+      expiresAt: data?.expires_at || data?.expiresAt || '',
+      answeredAt: '',
+      endedAt: '',
+      isIncoming: false,
+      isCallUiVisible: false,
+      isNativeCallUiActive: false,
+      lastSyncAt: Date.now(),
+      peerConnectionState: 'new',
+      localAudioEnabled: true,
+      remoteAudioConnected: false,
+    };
+    this.state = nextState;
+    await saveActiveCallState({
+      activeCallId: call.id,
+      callStatus: 'OUTGOING_RINGING',
+      callerId: call.caller_id,
+      calleeId: nextState.calleeId,
+      conversationId: call.conversation_id,
+      mode: call.mode,
+      createdAt: nextState.createdAt,
+      expiresAt: nextState.expiresAt,
+    }).catch(() => {});
+    logCallEvent('CALL_MANAGER_STATE_CHANGED', {
+      callId: call.id,
+      status: 'OUTGOING_RINGING',
+      reason: 'start_outgoing_call',
+    });
+    return nextState;
+  }
+
+  async handleIncomingCallInvite(payload: unknown, reason = 'incoming_invite'): Promise<ManagedCallState | null> {
+    const call = normalizeIncomingCallPayload(payload);
+    if (!call) return this.state;
+    if (this.state?.activeCallId === call.id && !isTerminalCallStatus(this.state.callStatus)) {
+      logCallEvent('DUPLICATE_CALL_IGNORED', {
+        callId: call.id,
+        reason,
+        currentStatus: this.state.callStatus,
+      });
+      return this.state;
+    }
+    await savePendingIncomingCall(call).catch(() => {});
+    await saveActiveCallState({
+      activeCallId: call.id,
+      callStatus: 'INCOMING_RINGING',
+      callerId: call.caller_id,
+      conversationId: call.conversation_id,
+      mode: call.mode,
+      createdAt: call.received_at ? new Date(call.received_at).toISOString() : undefined,
+    }).catch(() => {});
+    this.state = {
+      activeCallId: call.id,
+      callStatus: 'INCOMING_RINGING',
+      callerId: call.caller_id,
+      conversationId: call.conversation_id,
+      mode: call.mode,
+      createdAt: call.received_at ? new Date(call.received_at).toISOString() : undefined,
+      isIncoming: true,
+      isCallUiVisible: this.context.isIncomingUiVisible?.(call.id) || false,
+      isNativeCallUiActive: Platform.OS === 'ios' && AppState.currentState !== 'active',
+      lastSyncAt: Date.now(),
+      peerConnectionState: 'new',
+      localAudioEnabled: true,
+      remoteAudioConnected: false,
+    };
+    logCallEvent('CALL_MANAGER_STATE_CHANGED', {
+      callId: call.id,
+      status: 'INCOMING_RINGING',
+      reason,
+    });
+    await this.restoreCallUi(call, 'INCOMING_RINGING', reason);
+    return this.state;
+  }
+
+  async handlePushReceived(payload: unknown): Promise<ManagedCallState | null> {
+    logCallEvent(Platform.OS === 'ios' ? 'VOIP_PUSH_RECEIVED' : 'CALL_PUSH_RECEIVED', {
+      type: (payload as any)?.type || '',
+      callId: (payload as any)?.call_id || (payload as any)?.id || '',
+    });
+    return this.handleIncomingCallInvite(payload, 'push_received');
+  }
+
+  async handleAppForeground(reason = 'app_foreground'): Promise<ManagedCallState | null> {
+    return this.syncActiveCallFromBackend(reason);
+  }
+
+  handleAppBackground(): void {
+    logCallEvent('CALL_MANAGER_STATE_CHANGED', {
+      callId: this.state?.activeCallId || '',
+      status: this.state?.callStatus || 'IDLE',
+      reason: 'app_background',
+    });
+  }
+
+  reconnectSignaling(): void {
+    logCallEvent('WEBSOCKET_RECONNECT_AFTER_RESUME', {
+      callId: this.state?.activeCallId || '',
+    });
+  }
+
+  reconnectWebRTCIfNeeded(): void {
+    logCallEvent('CALL_MANAGER_STATE_CHANGED', {
+      callId: this.state?.activeCallId || '',
+      status: this.state?.callStatus || 'IDLE',
+      reason: 'webrtc_reconnect_requested',
+    });
+  }
+
+  handleNetworkChange(): void {
+    logCallEvent('CALL_MANAGER_STATE_CHANGED', {
+      callId: this.state?.activeCallId || '',
+      status: 'RECONNECTING',
+      reason: 'network_change',
+    });
   }
 
   async syncActiveCallFromBackend(reason: string): Promise<ManagedCallState | null> {
@@ -150,13 +290,18 @@ class GhostelCallManager {
     await api.post(`/calls/${callId}/decline`).catch(() => api.post(`/calls/${callId}/end`));
   }
 
+  async cancelOutgoingCall(callId: string): Promise<void> {
+    if (!callId) return;
+    await api.post(`/calls/${callId}/cancel`).catch(() => api.post(`/calls/${callId}/end`));
+  }
+
   async endCall(callId: string): Promise<void> {
     if (!callId) return;
     await api.post(`/calls/${callId}/end`);
   }
 
   private async syncActiveCallFromBackendInternal(reason: string): Promise<ManagedCallState | null> {
-    logCallEvent('APP_RESUMED_CALL_SYNC_START', {
+    logCallEvent('CALL_STATE_SYNC_START', {
       reason,
       appState: AppState.currentState,
     });
@@ -181,7 +326,7 @@ class GhostelCallManager {
         }
       }
     } catch (error: any) {
-      logCallEvent('APP_RESUMED_CALL_SYNC_RESULT', {
+      logCallEvent('CALL_STATE_SYNC_RESULT', {
         reason,
         ok: false,
         statusCode: error?.response?.status || '',
@@ -192,7 +337,7 @@ class GhostelCallManager {
     const status = mapBackendCallStatus(data?.status);
     const callId = String(data?.call_id || data?.id || local?.activeCallId || '');
     const hasActiveCall = Boolean(data?.call_id || data?.id);
-    logCallEvent('APP_RESUMED_CALL_SYNC_RESULT', {
+    logCallEvent('CALL_STATE_SYNC_RESULT', {
       reason,
       ok: true,
       hasActiveCall,
@@ -219,11 +364,15 @@ class GhostelCallManager {
     const userId = this.context.userId || '';
     const isIncoming = String(data?.direction || '') === 'incoming' || call.caller_id !== userId;
     const normalizedStatus =
-      status === 'IDLE'
+      String(data?.status || '').toLowerCase() === 'ringing'
         ? isIncoming
           ? 'INCOMING_RINGING'
           : 'OUTGOING_RINGING'
-        : status;
+        : status === 'IDLE'
+          ? isIncoming
+            ? 'INCOMING_RINGING'
+            : 'OUTGOING_RINGING'
+          : status;
 
     const nextState: ManagedCallState = {
       activeCallId: call.id,
@@ -234,9 +383,15 @@ class GhostelCallManager {
       mode: call.mode,
       createdAt: data?.created_at || data?.started_at || local?.createdAt || '',
       expiresAt: data?.expires_at || local?.expiresAt || '',
+      answeredAt: data?.answered_at || data?.answeredAt || '',
+      endedAt: data?.ended_at || data?.endedAt || '',
       isIncoming,
       isCallUiVisible: this.context.isIncomingUiVisible?.(call.id) || false,
+      isNativeCallUiActive: false,
       lastSyncAt: Date.now(),
+      peerConnectionState: String(data?.lastKnownClientState?.[userId]?.peer_connection_state || 'unknown'),
+      localAudioEnabled: data?.lastKnownClientState?.[userId]?.local_audio_enabled !== false,
+      remoteAudioConnected: data?.lastKnownClientState?.[userId]?.remote_audio_connected === true,
     };
     this.state = nextState;
 

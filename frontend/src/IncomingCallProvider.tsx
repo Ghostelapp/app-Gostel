@@ -66,7 +66,7 @@ type ShowIncomingOptions = {
 // Vibration pattern: 0ms wait, vibrate 1s, pause 1s — looped
 const VIBRATION_PATTERN = [0, 1000, 1000];
 const PENDING_CALL_MAX_AGE_MS = 60_000;
-const TERMINAL_CALL_STATUSES = new Set(['ended', 'rejected', 'cancelled', 'missed']);
+const TERMINAL_CALL_STATUSES = new Set(['ended', 'rejected', 'declined', 'cancelled', 'missed']);
 const MOBILE_UNLOCK_ACTION_GUARD_MS = 1_800;
 
 export default function IncomingCallProvider({ children }: { children: React.ReactNode }) {
@@ -298,7 +298,9 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const onMessage = useCallback(
     (msg: any) => {
       if (msg?.type === 'call:incoming' && msg.data && msg.data.caller_id !== user?.id) {
-        showIncoming(msg.data);
+        callManager.handleIncomingCallInvite(msg.data, 'ws_call_invite').catch(() => {
+          showIncoming(msg.data);
+        });
       } else if (msg?.type === 'call:accepted') {
         const cid = msg.call_id ?? msg.data?.call_id;
         const acceptedBy = msg.from ?? msg.data?.accepted_by;
@@ -437,7 +439,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
 
     const recoverActiveIncomingCall = async (reason: string) => {
       if (Platform.OS === 'web' || AppState.currentState !== 'active') return;
-      await callManager.syncActiveCallFromBackend(reason);
+      await callManager.handleAppForeground(reason);
     };
 
     const restore = async (reason = 'provider_restore') => {
@@ -447,7 +449,9 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     };
 
     restore('provider_mount').catch(() => {});
-    const unsubIncoming = subscribeToIncomingCallEvents((call) => showIncoming(call));
+    const unsubIncoming = subscribeToIncomingCallEvents((call) => {
+      callManager.handlePushReceived(call).catch(() => showIncoming(call));
+    });
     const unsubControl = subscribeToCallControlEvents(({ call_id, action }) => {
       if (!call_id) return;
       dismissedCallIdsRef.current.add(call_id);
@@ -469,6 +473,9 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       }
     });
     const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'background' || state === 'inactive') {
+        callManager.handleAppBackground();
+      }
       if (state === 'active') {
         logCallEvent('APP_STATE_CHANGED_ACTIVE', {
           source: 'app_state',
@@ -500,7 +507,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
           });
           guardCallActionsAfterUnlock();
           callManager
-            .syncActiveCallFromBackend('activity_resume')
+            .handleAppForeground('activity_resume')
             .catch(() => {})
             .finally(() => {
               logCallEvent('WEBSOCKET_RECONNECT_AFTER_RESUME', {

@@ -117,7 +117,7 @@ class GhostelCallNotificationModule(
       }
 
       nm.notify(notificationId(callId), notification)
-      Log.i(TAG, "Posted full-screen call notification channel=$CHANNEL_ID callId=$callId")
+      Log.i(TAG, "ANDROID_FULLSCREEN_CALL_NOTIFICATION_SHOWN channel=$CHANNEL_ID callId=$callId")
       openActivityIfLockedOrScreenOff(intent)
       promise.resolve(true)
     } catch (e: Exception) {

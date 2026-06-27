@@ -46,6 +46,7 @@ import {
   syncConversationKeyTrust,
   type E2EECallSignalPayload,
 } from '../../src/e2ee';
+import { logCallEvent } from '../../src/callState';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -543,7 +544,11 @@ export default function CallScreen() {
       Vibration.cancel();
     } catch {}
     stopActiveCallService().catch(() => {});
-  }, [clearTimers, stopRingback, InCall]);
+    logCallEvent('CALL_ENDED_CLEANUP', {
+      callId: id,
+      status: statusRef.current,
+    });
+  }, [clearTimers, stopRingback, InCall, id]);
 
   const returnToChat = useCallback(() => {
     if (conversationIdParam) {
@@ -720,6 +725,12 @@ export default function CallScreen() {
       // and causes short dropouts, so configure it once per connection.
       startNativeCallAudio(speakerOn);
       startTimer();
+      logCallEvent('WEBRTC_CONNECTED', {
+        callId: id,
+        iceState: lastIceStateRef.current,
+        connectionState: lastConnectionStateRef.current,
+        remoteTracks: remoteTrackCountRef.current,
+      });
     }
     setStatus('connected');
     if (firstConnection) {
@@ -728,6 +739,12 @@ export default function CallScreen() {
       } catch {
         /* ignore */
       }
+      api.post(`/calls/${id}/state`, {
+        status: 'active',
+        peer_connection_state: lastConnectionStateRef.current,
+        local_audio_enabled: true,
+        remote_audio_connected: remoteTrackCountRef.current > 0,
+      }).catch(() => {});
       startActiveCallService(id, callerName).catch(() => {});
     }
     if (timeoutTimerRef.current) {
@@ -753,6 +770,12 @@ export default function CallScreen() {
     remoteSetRef.current = false;
     pendingIceRef.current = [];
     setStatus('connecting');
+    api.post(`/calls/${id}/state`, {
+      status: 'reconnecting',
+      peer_connection_state: lastConnectionStateRef.current,
+      local_audio_enabled: true,
+      remote_audio_connected: remoteTrackCountRef.current > 0,
+    }).catch(() => {});
     setErrMsg('Reconnecting…');
     try {
       pc.restartIce?.();
@@ -829,6 +852,12 @@ export default function CallScreen() {
         if (!WebRTC) return null;
         pc = new WebRTC.RTCPeerConnection(config);
       }
+      logCallEvent('WEBRTC_PEER_CONNECTION_CREATED', {
+        callId: id,
+        platform: Platform.OS,
+        icePolicy: config.iceTransportPolicy,
+        iceSource: iceSourceRef.current,
+      });
 
       // remote track → attach
       const handleRemoteStream = (remoteStream: any) => {
@@ -874,10 +903,22 @@ export default function CallScreen() {
       pc.oniceconnectionstatechange = () => {
         const st = pc.iceConnectionState;
         lastIceStateRef.current = String(st || 'unknown');
+        logCallEvent('WEBRTC_ICE_STATE_CHANGED', {
+          callId: id,
+          iceState: lastIceStateRef.current,
+          connectionState: String(pc.connectionState || ''),
+        });
         reportCallDiag('ice_state_change', { ice_state_event: String(st || '') }).catch(() => {});
         if (st === 'connected' || st === 'completed') {
           markConnected();
         } else if (st === 'checking' || st === 'failed' || st === 'disconnected') {
+          if (st === 'failed') {
+            logCallEvent('WEBRTC_FAILED', {
+              callId: id,
+              iceState: String(st || ''),
+              connectionState: String(pc.connectionState || ''),
+            });
+          }
           scheduleConnectionRecovery(pc);
         }
       };
@@ -892,6 +933,13 @@ export default function CallScreen() {
           pc.connectionState === 'failed' ||
           pc.connectionState === 'disconnected'
         ) {
+          if (pc.connectionState === 'failed') {
+            logCallEvent('WEBRTC_FAILED', {
+              callId: id,
+              iceState: String(pc.iceConnectionState || ''),
+              connectionState: String(pc.connectionState || ''),
+            });
+          }
           scheduleConnectionRecovery(pc);
         }
       };
@@ -912,6 +960,7 @@ export default function CallScreen() {
     },
     [
       attachRemoteStream,
+      id,
       makeRemoteStreamFromTrack,
       markConnected,
       reportCallDiag,
@@ -1098,7 +1147,7 @@ export default function CallScreen() {
         if (evCallId && evCallId !== id) return;
         const status = msg.data?.status;
         closeCallFromPeer(
-          msg.type === 'call:reject' || status === 'rejected'
+          msg.type === 'call:reject' || status === 'rejected' || status === 'declined'
             ? 'Call rejected'
             : msg.type === 'call:cancel' || status === 'cancelled'
               ? 'Call cancelled'

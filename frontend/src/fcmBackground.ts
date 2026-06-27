@@ -167,7 +167,7 @@ async function _handleCallControlPayload(data: Record<string, string>): Promise<
   try {
     const { cancelFullScreenIncomingCallNotification, stopActiveCallService } = require('./androidCallNotification');
     await cancelFullScreenIncomingCallNotification(callId);
-    if (action !== 'accepted') {
+    if (action !== 'accepted' || !locallyAccepted) {
       await stopActiveCallService();
     }
   } catch {

@@ -814,6 +814,14 @@ class SupportReportIn(BaseModel):
 class CallStartIn(BaseModel):
     conversation_id: str
     mode: Literal["audio", "video"] = "audio"
+    call_id: Optional[str] = Field(default=None, min_length=8, max_length=80)
+
+
+class CallStateUpdateIn(BaseModel):
+    status: Optional[Literal["connecting", "active", "reconnecting", "failed"]] = None
+    peer_connection_state: Optional[str] = Field(default=None, max_length=40)
+    local_audio_enabled: Optional[bool] = None
+    remote_audio_connected: Optional[bool] = None
 
 
 class DisappearingIn(BaseModel):
@@ -3171,7 +3179,7 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
     )
     await sync_user_push_legacy_fields(user["id"])
     logger.info(
-        f"Push token registered for {user.get('email')} type={token_type} (raw={raw_type}) platform={platform} device_id={device_id or '-'} token={token[:25]}..."
+        f"Push token registered for {user.get('email')} type={token_type} (raw={raw_type}) platform={platform} device_id={device_id or '-'}"
     )
     return {"registered": True, "platform": platform, "token_type": token_type, "device_id": device_id}
 
@@ -3605,7 +3613,10 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         if is_call:
             title = f"📞 {msg.get('sender_name', 'Someone')} is calling"
         body_preview = msg.get("content", "")
-        if msg.get("e2ee"):
+        if is_call:
+            title = "ghostel.app call"
+            body_preview = "Incoming encrypted call"
+        elif msg.get("e2ee"):
             body_preview = "Encrypted message"
         elif msg.get("kind") == "voice":
             body_preview = "🎙 Voice message"
@@ -3635,11 +3646,12 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
             # (src/fcmBackground.ts). Older clients accepted "call" too — both
             # values are honored on the client.
             "type": "incoming_call" if is_call else "message",
-            "sender_name": msg.get("sender_name", ""),
+            "sender_name": "" if is_call else msg.get("sender_name", ""),
             # Caller-specific fields used by react-native-callkeep to render
             # the native OS-level incoming-call screen on the lockscreen.
             "caller_id": msg.get("caller_id", sender_id) if is_call else "",
-            "caller_name": msg.get("sender_name", "") if is_call else "",
+            "caller_name": "",
+            "encryptedDisplayName": msg.get("encryptedDisplayName", "") if is_call else "",
             # caller_avatar intentionally omitted — too big for FCM 4KB limit.
             "mode": msg.get("mode", "audio") if is_call else "",
         }
@@ -3685,7 +3697,7 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                             voip_err += 1
                             reason = result.get("error", "unknown")
                             logger.warning(
-                                f"APNs VoIP send failed for token={token[:18]}... reason={reason}"
+                                f"APNs VoIP send failed reason={reason}"
                             )
                             if reason in (
                                 "BadDeviceToken",
@@ -3730,7 +3742,7 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                         fcm_err += 1
                         err_code = result.get("fcm_error_code") or result.get("error", "unknown")
                         logger.warning(
-                            f"FCM send failed for token={token[:30]}... err={err_code} msg={result.get('message', '')[:120]}"
+                            f"FCM send failed err={err_code} msg={result.get('message', '')[:120]}"
                         )
                         # Clean up unregistered tokens
                         if err_code in ("UNREGISTERED", "INVALID_ARGUMENT", "NOT_FOUND"):
@@ -3909,7 +3921,7 @@ async def _send_call_control_push(
                     err += 1
                     err_code = result.get("fcm_error_code") or result.get("error", "unknown")
                     logger.warning(
-                        f"Call control push failed token={token[:30]}... action={action} err={err_code}"
+                        f"Call control push failed action={action} err={err_code}"
                     )
                     if err_code in ("UNREGISTERED", "INVALID_ARGUMENT", "NOT_FOUND"):
                         await remove_push_token_from_users(token)
@@ -4060,21 +4072,71 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
     }
     started_at = now_utc()
     expires_at = started_at + timedelta(seconds=CALL_RING_TIMEOUT_SECONDS)
+    callee_ids = [member_id for member_id in conv["member_ids"] if member_id != user["id"]]
+    requested_call_id = (payload.call_id or "").strip()
+    if requested_call_id:
+        existing = await db.calls.find_one(
+            {"id": requested_call_id, "member_ids": user["id"]},
+            {"_id": 0},
+        )
+        if existing:
+            logger.info(
+                f"DUPLICATE_CALL_IGNORED call={requested_call_id[:8]} reason=idempotency_key"
+            )
+            return existing
+
+    existing_active = await db.calls.find_one(
+        {
+            "conversation_id": conv["id"],
+            "caller_id": user["id"],
+            "member_ids": {"$all": conv["member_ids"]},
+            "ended_at": None,
+            "$or": [
+                {"status": "ringing", "expires_at": {"$gt": started_at.isoformat()}},
+                {"status": {"$in": ["answered", "connecting", "active", "reconnecting"]}},
+            ],
+        },
+        {"_id": 0},
+        sort=[("started_at", -1)],
+    )
+    if existing_active:
+        logger.info(
+            f"DUPLICATE_CALL_IGNORED call={str(existing_active.get('id', ''))[:8]} reason=active_call_exists"
+        )
+        return existing_active
+
+    call_id = requested_call_id or str(uuid.uuid4())
     call = {
-        "id": str(uuid.uuid4()),
+        "id": call_id,
+        "callId": call_id,
         "conversation_id": conv["id"],
+        "conversationId": conv["id"],
         "caller_id": user["id"],
+        "callerId": user["id"],
         "caller_name": user.get("name", ""),
-        "callee_ids": [member_id for member_id in conv["member_ids"] if member_id != user["id"]],
+        "callee_ids": callee_ids,
+        "calleeId": callee_ids[0] if callee_ids else "",
         "member_ids": conv["member_ids"],
         "participants": conv["member_ids"],
         "mode": payload.mode,
+        "callType": payload.mode,
         "status": "ringing",
         "created_at": started_at.isoformat(),
+        "createdAt": started_at.isoformat(),
         "started_at": started_at.isoformat(),
         "expires_at": expires_at.isoformat(),
+        "expiresAt": expires_at.isoformat(),
         "answered_at": None,
+        "answeredAt": None,
         "ended_at": None,
+        "endedAt": None,
+        "last_updated_at": started_at.isoformat(),
+        "lastUpdatedAt": started_at.isoformat(),
+        "callerDeviceId": user.get("_auth_sid") or "",
+        "calleeDeviceId": "",
+        "platform": "unknown",
+        "pushSentAt": None,
+        "lastKnownClientState": {},
         "duration_sec": 0,
         "encrypted": True,
         "e2ee_required": True,
@@ -4098,6 +4160,14 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
         {"type": "call:incoming", "data": call},
         exclude=user["id"],
     )
+    push_sent_at = now_utc().isoformat()
+    await db.calls.update_one(
+        {"id": call["id"]},
+        {"$set": {"pushSentAt": push_sent_at, "push_sent_at": push_sent_at}},
+    )
+    call["pushSentAt"] = push_sent_at
+    call["push_sent_at"] = push_sent_at
+
     # push notification "Incoming call"
     asyncio.create_task(_send_push_to_members(
         conv["member_ids"], user["id"], conv,
@@ -4117,20 +4187,31 @@ def public_call_status(call: dict, user_id: str) -> dict:
     return {
         "id": call.get("id"),
         "call_id": call.get("id"),
+        "callId": call.get("id"),
         "caller_id": call.get("caller_id"),
+        "callerId": call.get("caller_id"),
         "caller_name": call.get("caller_name") or "Unknown",
         "callee_ids": callee_ids,
+        "calleeId": callee_ids[0] if callee_ids else "",
         "participants": call.get("participants") or call.get("member_ids", []),
         "member_ids": call.get("member_ids", []),
         "conversation_id": call.get("conversation_id") or call.get("conv_id"),
+        "conversationId": call.get("conversation_id") or call.get("conv_id"),
         "mode": call.get("mode") or "audio",
+        "callType": call.get("mode") or "audio",
         "status": call.get("status") or "ringing",
         "direction": "outgoing" if call.get("caller_id") == user_id else "incoming",
         "created_at": call.get("created_at") or call.get("started_at"),
+        "createdAt": call.get("created_at") or call.get("started_at"),
         "started_at": call.get("started_at") or call.get("created_at"),
         "expires_at": call.get("expires_at"),
+        "expiresAt": call.get("expires_at"),
         "answered_at": call.get("answered_at"),
+        "answeredAt": call.get("answered_at"),
         "ended_at": call.get("ended_at"),
+        "endedAt": call.get("ended_at"),
+        "lastUpdatedAt": call.get("lastUpdatedAt") or call.get("last_updated_at"),
+        "lastKnownClientState": call.get("lastKnownClientState") or call.get("last_known_client_state") or {},
         "encrypted": True,
         "e2ee_media": call.get("e2ee_media") or "webrtc-dtls-srtp",
     }
@@ -4156,7 +4237,16 @@ async def expire_stale_ringing_calls_for_user(user_id: str) -> None:
         ended_iso = now_utc().isoformat()
         await db.calls.update_one(
             {"id": call.get("id"), "ended_at": None},
-            {"$set": {"status": "missed", "ended_at": ended_iso, "ended_by": "timeout"}},
+            {
+                "$set": {
+                    "status": "missed",
+                    "ended_at": ended_iso,
+                    "endedAt": ended_iso,
+                    "ended_by": "timeout",
+                    "last_updated_at": ended_iso,
+                    "lastUpdatedAt": ended_iso,
+                }
+            },
         )
         event = {
             "type": "call:ended",
@@ -4173,13 +4263,15 @@ async def expire_stale_ringing_calls_for_user(user_id: str) -> None:
 async def get_active_call(user: dict = Depends(get_current_user)):
     """Return the authoritative active call for resume/unlock state sync."""
     await expire_stale_ringing_calls_for_user(user["id"])
-    cutoff = (now_utc() - timedelta(minutes=5)).isoformat()
+    ringing_cutoff = (now_utc() - timedelta(seconds=CALL_RING_TIMEOUT_SECONDS + 15)).isoformat()
     call = await db.calls.find_one(
         {
             "member_ids": user["id"],
-            "status": {"$in": ["ringing", "answered", "active", "connecting", "reconnecting"]},
             "ended_at": None,
-            "started_at": {"$gte": cutoff},
+            "$or": [
+                {"status": "ringing", "started_at": {"$gte": ringing_cutoff}},
+                {"status": {"$in": ["answered", "active", "connecting", "reconnecting"]}},
+            ],
         },
         {"_id": 0},
         sort=[("started_at", -1)],
@@ -4201,7 +4293,14 @@ async def ring_call(call_id: str, user: dict = Depends(get_current_user)):
     now_iso = now_utc().isoformat()
     await db.calls.update_one(
         {"id": call_id, "ended_at": None, "answered_at": None},
-        {"$set": {"status": "ringing", "last_ring_at": now_iso}},
+        {
+            "$set": {
+                "status": "ringing",
+                "last_ring_at": now_iso,
+                "last_updated_at": now_iso,
+                "lastUpdatedAt": now_iso,
+            }
+        },
     )
     event = {
         "type": "call:ringing",
@@ -4224,14 +4323,27 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Not a participant")
     if user["id"] == call.get("caller_id"):
         raise HTTPException(status_code=403, detail="Caller cannot accept own call")
-    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "cancelled", "missed"}:
-        raise HTTPException(status_code=409, detail="Call is no longer ringing")
+    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "declined", "cancelled", "missed"}:
+        return {
+            "accepted": False,
+            "status": call.get("status", "ended"),
+            "idempotent": True,
+        }
 
     answered_at = call.get("answered_at") or now_utc().isoformat()
     if not call.get("answered_at"):
         await db.calls.update_one(
             {"id": call_id, "answered_at": None, "ended_at": None},
-            {"$set": {"status": "answered", "answered_at": answered_at}},
+            {
+                "$set": {
+                    "status": "answered",
+                    "answered_at": answered_at,
+                    "answeredAt": answered_at,
+                    "last_updated_at": answered_at,
+                    "lastUpdatedAt": answered_at,
+                    "lastKnownClientState.accepted_by": user["id"],
+                }
+            },
         )
 
     accepted_event = {
@@ -4330,14 +4442,15 @@ async def call_diag(
     return {"received": True}
 
 
-@api.post("/calls/{call_id}/signals")
-async def persist_call_signal(
+async def _persist_call_signal_payload(
     call_id: str,
-    payload: dict = Body(...),
-    user: dict = Depends(get_current_user),
-):
+    payload: dict,
+    user: dict,
+    *,
+    forced_type: Optional[str] = None,
+) -> dict:
     """Persist encrypted WebRTC signaling briefly as a WebSocket fallback."""
-    signal_type = str(payload.get("type") or "")
+    signal_type = forced_type or str(payload.get("type") or "")
     allowed = {
         "call:offer", "call:answer", "call:ice", "call:ready",
         "call:accept", "call:reject", "call:end", "call:cancel",
@@ -4345,7 +4458,7 @@ async def persist_call_signal(
     target = str(payload.get("to") or "")
     if signal_type not in allowed or not target:
         raise HTTPException(status_code=400, detail="Invalid call signal")
-    signal = {**payload, "call_id": call_id}
+    signal = {**payload, "type": signal_type, "call_id": call_id}
     if signal_type in {"call:offer", "call:answer", "call:ice"}:
         if not signal.get("encrypted") or not isinstance(signal.get("e2ee_signal"), dict):
             raise HTTPException(status_code=400, detail="Call signal must be encrypted")
@@ -4378,6 +4491,42 @@ async def persist_call_signal(
     return {"stored": True, "signal_id": signal_id}
 
 
+@api.post("/calls/{call_id}/signals")
+async def persist_call_signal(
+    call_id: str,
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    return await _persist_call_signal_payload(call_id, payload, user)
+
+
+@api.post("/calls/{call_id}/offer")
+async def persist_call_offer(
+    call_id: str,
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:offer")
+
+
+@api.post("/calls/{call_id}/answer")
+async def persist_call_answer(
+    call_id: str,
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:answer")
+
+
+@api.post("/calls/{call_id}/ice-candidate")
+async def persist_call_ice_candidate(
+    call_id: str,
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:ice")
+
+
 @api.get("/calls/{call_id}/signals")
 async def list_call_signals(call_id: str, user: dict = Depends(get_current_user)):
     """Return recent signaling addressed to this participant."""
@@ -4404,10 +4553,16 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
         return {"ended": True, "ephemeral": True}
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
-    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "cancelled", "missed"}:
+    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "declined", "cancelled", "missed"}:
         return {"ended": True, "status": call.get("status", "ended"), "idempotent": True}
     ended_iso = now_utc().isoformat()
-    update_doc: dict = {"ended_at": ended_iso, "ended_by": user["id"]}
+    update_doc: dict = {
+        "ended_at": ended_iso,
+        "endedAt": ended_iso,
+        "ended_by": user["id"],
+        "last_updated_at": ended_iso,
+        "lastUpdatedAt": ended_iso,
+    }
     answered = call.get("answered_at")
     if answered:
         try:
@@ -4420,8 +4575,8 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
             update_doc["status"] = "ended"
     else:
         # Never answered. If the caller ends it, it is a cancellation; if the
-        # callee ends it, it is an explicit rejection rather than a missed call.
-        update_doc["status"] = "cancelled" if user["id"] == call.get("caller_id") else "rejected"
+        # callee ends it, it is an explicit decline rather than a missed call.
+        update_doc["status"] = "cancelled" if user["id"] == call.get("caller_id") else "declined"
     await db.calls.update_one({"id": call_id}, {"$set": update_doc})
     ended_event = {
         "type": "call:ended",
@@ -4545,7 +4700,16 @@ async def timeout_call(call_id: str, user: dict = Depends(get_current_user)):
     ended_iso = now_utc().isoformat()
     await db.calls.update_one(
         {"id": call_id, "answered_at": None, "ended_at": None},
-        {"$set": {"status": "missed", "ended_at": ended_iso, "ended_by": "timeout"}},
+        {
+            "$set": {
+                "status": "missed",
+                "ended_at": ended_iso,
+                "endedAt": ended_iso,
+                "ended_by": "timeout",
+                "last_updated_at": ended_iso,
+                "lastUpdatedAt": ended_iso,
+            }
+        },
     )
     event = {
         "type": "call:ended",
@@ -4557,6 +4721,52 @@ async def timeout_call(call_id: str, user: dict = Depends(get_current_user)):
     await broadcast_to_members(call.get("member_ids", []), event)
     asyncio.create_task(_send_call_control_push(call, "missed", "timeout"))
     return {"timed_out": True, "status": "missed"}
+
+
+@api.post("/calls/{call_id}/state")
+async def update_call_client_state(
+    call_id: str,
+    payload: CallStateUpdateIn,
+    user: dict = Depends(get_current_user),
+):
+    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
+    if not call:
+        return {"updated": False, "ephemeral": True}
+    if user["id"] not in call.get("member_ids", []):
+        raise HTTPException(status_code=403, detail="Not a participant")
+    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "declined", "cancelled", "missed"}:
+        return {"updated": False, "status": call.get("status"), "idempotent": True}
+
+    now_iso = now_utc().isoformat()
+    client_state = {
+        "user_id": user["id"],
+        "peer_connection_state": payload.peer_connection_state or "",
+        "local_audio_enabled": payload.local_audio_enabled,
+        "remote_audio_connected": payload.remote_audio_connected,
+        "updated_at": now_iso,
+    }
+    update_doc: dict = {
+        "last_updated_at": now_iso,
+        "lastUpdatedAt": now_iso,
+        f"lastKnownClientState.{user['id']}": client_state,
+    }
+    if payload.status:
+        update_doc["status"] = payload.status
+    await db.calls.update_one({"id": call_id}, {"$set": update_doc})
+
+    event = {
+        "type": "call:state_sync",
+        "event": "call.state_sync",
+        "call_id": call_id,
+        "from": user["id"],
+        "data": {
+            "call_id": call_id,
+            "status": payload.status or call.get("status"),
+            "updated_at": now_iso,
+        },
+    }
+    await broadcast_to_members(call.get("member_ids", []), event)
+    return {"updated": True, "status": payload.status or call.get("status")}
 
 
 @api.get("/calls")

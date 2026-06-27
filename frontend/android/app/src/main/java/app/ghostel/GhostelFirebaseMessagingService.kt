@@ -56,7 +56,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
       showFullScreenCallNotification(callId, callerName, intent)
       startRingingCallService(callId, callerName)
       openActivityIfLockedOrScreenOff(intent)
-      Log.i(TAG, "Incoming call handled natively callId=$callId caller=$callerName")
+      Log.i(TAG, "ANDROID_FCM_INCOMING_CALL_RECEIVED callId=$callId")
     } catch (e: Exception) {
       Log.w(TAG, "Incoming call native handling failed", e)
     }
@@ -77,7 +77,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
     try {
       val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
       nm.cancel(notificationId(callId))
-      if (action != "accepted") {
+      if (action != "accepted" || data["locally_accepted"].orEmpty() != "true") {
         stopService(Intent(this, GhostelActiveCallService::class.java))
       }
       Log.i(TAG, "Call control handled action=$action callId=$callId")
@@ -159,7 +159,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
     nm.notify(notificationId(callId), notification)
     Log.i(
       TAG,
-      "Posted full-screen call notification channel=${GhostelCallNotificationModule.CHANNEL_ID} callId=$callId"
+      "ANDROID_FULLSCREEN_CALL_NOTIFICATION_SHOWN channel=${GhostelCallNotificationModule.CHANNEL_ID} callId=$callId"
     )
   }
 
@@ -238,6 +238,7 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
         putExtra(GhostelActiveCallService.EXTRA_PEER_NAME, callerName)
       }
       ContextCompat.startForegroundService(this, serviceIntent)
+      Log.i(TAG, "ANDROID_FOREGROUND_SERVICE_STARTED callId=$callId")
     } catch (e: Exception) {
       Log.w(TAG, "start foreground call service failed callId=$callId", e)
     }

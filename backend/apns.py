@@ -80,7 +80,8 @@ def build_voip_payload(data: dict[str, Any]) -> dict[str, Any]:
         "kind": "call",
         "conversation_id": str(data.get("conversation_id") or ""),
         "caller_id": str(data.get("caller_id") or ""),
-        "caller_name": str(data.get("caller_name") or data.get("sender_name") or "Caller"),
+        "caller_name": str(data.get("caller_name") or "ghostel.app call"),
+        "encryptedDisplayName": str(data.get("encryptedDisplayName") or ""),
         "mode": str(data.get("mode") or "audio"),
         "sent_at": int(time.time()),
     }

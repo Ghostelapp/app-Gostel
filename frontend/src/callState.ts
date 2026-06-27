@@ -27,7 +27,8 @@ export type LocalCallState = {
 };
 
 const ACTIVE_CALL_STATE_KEY = 'ghostel_active_call_state_v1';
-const STALE_STATE_MS = 2 * 60 * 1000;
+const RINGING_STALE_STATE_MS = 2 * 60 * 1000;
+const ACTIVE_STALE_STATE_MS = 12 * 60 * 60 * 1000;
 
 export function mapBackendCallStatus(status?: string): LocalCallStatus {
   switch (String(status || '').toLowerCase()) {
@@ -38,6 +39,8 @@ export function mapBackendCallStatus(status?: string): LocalCallStatus {
       return 'CONNECTING';
     case 'active':
       return 'ACTIVE';
+    case 'reconnecting':
+      return 'RECONNECTING';
     case 'ended':
       return 'ENDED';
     case 'rejected':
@@ -85,7 +88,14 @@ export async function getActiveCallState(): Promise<LocalCallState | null> {
   try {
     const state = JSON.parse(raw) as LocalCallState;
     if (!state?.activeCallId || !state?.lastSyncedAt) return null;
-    if (Date.now() - Number(state.lastSyncedAt) > STALE_STATE_MS) {
+    if (isTerminalCallStatus(state.callStatus)) {
+      await clearActiveCallState(state.activeCallId);
+      return null;
+    }
+    const staleStateMs = ['INCOMING_RINGING', 'OUTGOING_RINGING'].includes(state.callStatus)
+      ? RINGING_STALE_STATE_MS
+      : ACTIVE_STALE_STATE_MS;
+    if (Date.now() - Number(state.lastSyncedAt) > staleStateMs) {
       await clearActiveCallState(state.activeCallId);
       return null;
     }
