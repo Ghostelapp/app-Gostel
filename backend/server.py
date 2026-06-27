@@ -323,6 +323,16 @@ def compact_push_targets(targets: list[dict]) -> list[dict]:
     return list(compacted.values())
 
 
+def push_target_install_key(target: dict) -> str:
+    """Stable key for one app install across multiple push transports."""
+    user_id = (target.get("user_id") or "").strip()
+    device_id = normalize_push_device_id(target.get("device_id"))
+    if device_id:
+        return f"{user_id}:device:{device_id}"
+    token = (target.get("token") or "").strip()
+    return f"{user_id}:token:{token}"
+
+
 async def sync_user_push_legacy_fields(user_id: str) -> None:
     user = await db.users.find_one(
         {"id": user_id},
@@ -435,6 +445,39 @@ async def remove_push_device_from_users(device_id: str, user_id: Optional[str] =
     await db.users.update_many(
         {
             **({"id": user_id} if user_id else {}),
+            "push_tokens.device_id": device_id,
+        },
+        {"$pull": {"push_tokens": {"device_id": device_id}}},
+    )
+    for affected_id in affected_ids:
+        await sync_user_push_legacy_fields(affected_id)
+    return len(affected_ids)
+
+
+async def remove_push_device_from_other_users(device_id: str, user_id: str) -> int:
+    """Move one physical phone to the current account without deleting its
+    other transports from the same account.
+
+    iOS registers multiple transports for the same install (PushKit VoIP, FCM
+    and Expo fallback). Removing the whole device on every /push/register call
+    made the last transport delete the previous ones, which broke VoIP/CallKit.
+    """
+    device_id = normalize_push_device_id(device_id)
+    if not device_id:
+        return 0
+    affected_ids: set[str] = set()
+    async for entry in db.users.find(
+        {
+            "id": {"$ne": user_id},
+            "push_tokens.device_id": device_id,
+        },
+        {"_id": 0, "id": 1},
+    ):
+        if entry.get("id"):
+            affected_ids.add(entry["id"])
+    await db.users.update_many(
+        {
+            "id": {"$ne": user_id},
             "push_tokens.device_id": device_id,
         },
         {"$pull": {"push_tokens": {"device_id": device_id}}},
@@ -3206,7 +3249,7 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
     # signs into another account on the same phone, move that phone to the new
     # account instead of ringing both accounts.
     if device_id:
-        await remove_push_device_from_users(device_id)
+        await remove_push_device_from_other_users(device_id, user["id"])
     await remove_push_token_from_users(token)
     await db.users.update_one(
         {"id": user["id"]},
@@ -3729,6 +3772,8 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         # for a locked or terminated iOS app.
         voip_ok = voip_err = 0
         voip_success_users: set[str] = set()
+        voip_success_install_keys: set[str] = set()
+        voip_success_users_without_device: set[str] = set()
         if voip_recipients:
             from apns import is_configured as apns_is_configured, send_voip_push
 
@@ -3745,6 +3790,9 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                             voip_ok += 1
                             if r.get("user_id"):
                                 voip_success_users.add(r["user_id"])
+                            voip_success_install_keys.add(push_target_install_key(r))
+                            if not normalize_push_device_id(r.get("device_id")) and r.get("user_id"):
+                                voip_success_users_without_device.add(r["user_id"])
                         else:
                             voip_err += 1
                             reason = result.get("error", "unknown")
@@ -3768,10 +3816,19 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         # ---- Direct FCM path ----
         fcm_ok = fcm_err = 0
         fcm_success_users: set[str] = set()
+        fcm_success_install_keys: set[str] = set()
+        fcm_success_users_without_device: set[str] = set()
         if fcm_recipients and fcm_is_configured():
             async with httpx.AsyncClient(timeout=10) as client:
                 for r in fcm_recipients:
-                    if r.get("user_id") in voip_success_users:
+                    if is_call and (
+                        push_target_install_key(r) in voip_success_install_keys
+                        or (
+                            not normalize_push_device_id(r.get("device_id"))
+                            and str(r.get("platform") or "").lower() == "ios"
+                            and r.get("user_id") in voip_success_users_without_device
+                        )
+                    ):
                         continue
                     token = r["token"]
                     result = await send_fcm(
@@ -3790,6 +3847,9 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                         fcm_ok += 1
                         if r.get("user_id"):
                             fcm_success_users.add(r["user_id"])
+                        fcm_success_install_keys.add(push_target_install_key(r))
+                        if not normalize_push_device_id(r.get("device_id")) and r.get("user_id"):
+                            fcm_success_users_without_device.add(r["user_id"])
                     else:
                         fcm_err += 1
                         err_code = result.get("fcm_error_code") or result.get("error", "unknown")
@@ -3823,8 +3883,17 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         # whose direct FCM delivery did not succeed, avoiding duplicate alerts
         # while retaining EAS-managed APNs as an independent fallback.
         delivered_users = fcm_success_users | voip_success_users
+        delivered_install_keys = fcm_success_install_keys | voip_success_install_keys
+        delivered_users_without_device = (
+            fcm_success_users_without_device | voip_success_users_without_device
+        )
         expo_fallback_recipients = [
-            r for r in expo_recipients if r.get("user_id") not in delivered_users
+            r for r in expo_recipients
+            if push_target_install_key(r) not in delivered_install_keys
+            and not (
+                not normalize_push_device_id(r.get("device_id"))
+                and r.get("user_id") in delivered_users_without_device
+            )
         ]
         if expo_fallback_recipients:
             messages_payload = [

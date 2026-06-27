@@ -370,7 +370,21 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   useEffect(() => {
     if (!user) return;
     bindCallKeepBridge({ router, wsSend });
-    return subscribeToCallKeepActions(({ callId }) => {
+    return subscribeToCallKeepActions(({ callId, action }) => {
+      if (action === 'answer') {
+        locallyAcceptedCallIdsRef.current.add(callId);
+        markCallLocallyAccepted(callId).catch(() => {});
+        const current = incomingRef.current;
+        if (current?.id === callId) {
+          saveActiveCallState({
+            activeCallId: current.id,
+            callStatus: 'CONNECTING',
+            callerId: current.caller_id,
+            conversationId: current.conversation_id,
+            mode: current.mode,
+          }).catch(() => {});
+        }
+      }
       dismissedCallIdsRef.current.add(callId);
       if (incomingCallIdRef.current === callId) incomingCallIdRef.current = null;
       setIncoming((current) => (current?.id === callId ? null : current));

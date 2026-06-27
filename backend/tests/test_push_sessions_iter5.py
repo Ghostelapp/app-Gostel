@@ -137,3 +137,22 @@ class TestPushSessionDeviceBinding:
         second_ids = {device["id"] for device in second_devices.json()["devices"]}
         assert "device-shared" not in first_ids
         assert "device-shared" in second_ids
+
+    def test_register_keeps_multiple_transports_for_same_account_device(self):
+        user = _register_user("push-multi-transport")
+        device_id = "device-ios-multi-transport"
+
+        _register_push(user["token"], f"voip-{uuid.uuid4().hex[:12]}", device_id, "voip")
+        _register_push(user["token"], f"fcm-{uuid.uuid4().hex[:12]}", device_id, "fcm")
+        _register_push(user["token"], f"expo-{uuid.uuid4().hex[:12]}", device_id, "expo")
+
+        listed = requests.get(
+            f"{BASE_URL}/api/push/devices",
+            headers=_h(user["token"]),
+            timeout=20,
+        )
+        assert listed.status_code == 200, listed.text
+        devices = listed.json()["devices"]
+        device = next((item for item in devices if item["id"] == device_id), None)
+        assert device is not None
+        assert device["token_types"] == ["expo", "fcm", "voip"]

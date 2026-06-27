@@ -158,6 +158,15 @@ async function clearPendingIncomingCall(callId: string): Promise<void> {
   }
 }
 
+async function markLocallyAcceptedCall(callId: string): Promise<void> {
+  try {
+    const store = require('./incomingCallStore');
+    await store.markCallLocallyAccepted(callId);
+  } catch {
+    /* best-effort local accepted marker */
+  }
+}
+
 async function routeOrDeferAnsweredCall(info: IncomingCallInfo): Promise<void> {
   const href = callHref(info);
   if (router && AppState.currentState === 'active') {
@@ -182,6 +191,7 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   if (!info) return;
 
   answeredCalls.add(key);
+  await markLocallyAcceptedCall(info.callId);
   await clearPendingIncomingCall(info.callId);
   emitCallKeepAction({ callId: info.callId, action: 'answer' });
 
@@ -481,6 +491,7 @@ export async function answerIncomingCallNative(callId: string): Promise<boolean>
     const RNCallKeep = require('react-native-callkeep').default;
     answeredCalls.add(key);
     appHandledAnswers.add(key);
+    await markLocallyAcceptedCall(callId);
     await clearPendingIncomingCall(callId);
     await RNCallKeep.answerIncomingCall(callId);
     setTimeout(() => appHandledAnswers.delete(key), 5_000);
