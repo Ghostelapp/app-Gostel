@@ -324,11 +324,22 @@ export default function CallScreen() {
           peerPublicKeyRef.current,
           user.id,
         );
+        const createdAt = new Date().toISOString();
         const payload = {
           type,
           to,
           call_id: id,
+          callId: id,
           conversation_id: conversationIdParam,
+          senderId: user.id,
+          receiverId: to,
+          platform: Platform.OS,
+          createdAt,
+          payload: {
+            encrypted: true,
+            algorithm: e2eeSignal.algorithm,
+            hasPayload: true,
+          },
           encrypted: true,
           e2ee_signal: e2eeSignal,
           signal_id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -336,6 +347,17 @@ export default function CallScreen() {
         // Persist first so signaling still works while the WebSocket is
         // reconnecting after the app is opened from a native call alert.
         await api.post(`/calls/${id}/signals`, payload);
+        logCallEvent(
+          type === 'call:offer'
+            ? 'WEBRTC_OFFER_SENT'
+            : type === 'call:answer'
+              ? 'WEBRTC_ANSWER_SENT'
+              : 'WEBRTC_ICE_SENT',
+          {
+            callId: id,
+            platform: Platform.OS,
+          },
+        );
         return true;
       } catch (e: any) {
         setErrMsg(`Call signaling failed: ${e?.message || e}`);
@@ -784,6 +806,11 @@ export default function CallScreen() {
         iceRestart: true,
       });
       await pc.setLocalDescription(offer);
+      logCallEvent('WEBRTC_LOCAL_DESCRIPTION_SET', {
+        callId: id,
+        descriptionType: 'offer',
+        signalingState: String(pc.signalingState || ''),
+      });
       return await sendEncryptedSignal('call:offer', peerId, {
         sdp: offer.sdp,
         sdp_type: offer.type || 'offer',
@@ -793,7 +820,7 @@ export default function CallScreen() {
       setErrMsg(`Reconnect failed: ${e?.message || e}`);
       return false;
     }
-  }, [isCaller, sendEncryptedSignal]);
+  }, [id, isCaller, sendEncryptedSignal]);
 
   const scheduleConnectionRecovery = useCallback(
     (pc: any) => {
@@ -881,7 +908,17 @@ export default function CallScreen() {
           const type = bumpCandidateCount(localCandidateTypeCountsRef, e.candidate);
           if (type === 'relay' || candidateText.includes(' typ relay ')) {
             relayCandidateRef.current = true;
+            logCallEvent('WEBRTC_TURN_RELAY_USED', {
+              callId: id,
+              direction: 'local',
+              platform: Platform.OS,
+            });
           }
+          logCallEvent('WEBRTC_ICE_CANDIDATE_SENT', {
+            callId: id,
+            iceType: type,
+            platform: Platform.OS,
+          });
           sendEncryptedSignal('call:ice', peerIdRef.current, {
             candidate: e.candidate.toJSON
               ? e.candidate.toJSON()
@@ -890,6 +927,10 @@ export default function CallScreen() {
         }
       };
       pc.onicegatheringstatechange = () => {
+        logCallEvent('WEBRTC_ICE_GATHERING_STATE', {
+          callId: id,
+          state: String(pc.iceGatheringState || ''),
+        });
         if (
           pc.iceGatheringState === 'complete' &&
           iceSourceRef.current === 'public-fallback' &&
@@ -903,6 +944,11 @@ export default function CallScreen() {
       pc.oniceconnectionstatechange = () => {
         const st = pc.iceConnectionState;
         lastIceStateRef.current = String(st || 'unknown');
+        logCallEvent('WEBRTC_ICE_CONNECTION_STATE', {
+          callId: id,
+          state: lastIceStateRef.current,
+          connectionState: String(pc.connectionState || ''),
+        });
         logCallEvent('WEBRTC_ICE_STATE_CHANGED', {
           callId: id,
           iceState: lastIceStateRef.current,
@@ -924,6 +970,11 @@ export default function CallScreen() {
       };
       pc.onconnectionstatechange = () => {
         lastConnectionStateRef.current = String(pc.connectionState || 'unknown');
+        logCallEvent('WEBRTC_CONNECTION_STATE', {
+          callId: id,
+          state: lastConnectionStateRef.current,
+          iceState: String(pc.iceConnectionState || ''),
+        });
         reportCallDiag('connection_state_change', {
           connection_state_event: String(pc.connectionState || ''),
         }).catch(() => {});
@@ -942,6 +993,12 @@ export default function CallScreen() {
           }
           scheduleConnectionRecovery(pc);
         }
+      };
+      pc.onsignalingstatechange = () => {
+        logCallEvent('WEBRTC_SIGNALING_STATE', {
+          callId: id,
+          state: String(pc.signalingState || ''),
+        });
       };
 
       // react-native-webrtc uses Unified Plan on iOS and Android. addTrack
@@ -976,13 +1033,25 @@ export default function CallScreen() {
     for (const c of queue) {
       try {
         const type = bumpCandidateCount(remoteCandidateTypeCountsRef, c);
-        if (type === 'relay') relayCandidateRef.current = true;
+        if (type === 'relay') {
+          relayCandidateRef.current = true;
+          logCallEvent('WEBRTC_TURN_RELAY_USED', {
+            callId: id,
+            direction: 'remote',
+            platform: Platform.OS,
+          });
+        }
+        logCallEvent('WEBRTC_ICE_CANDIDATE_RECEIVED', {
+          callId: id,
+          iceType: type,
+          platform: Platform.OS,
+        });
         await pcRef.current.addIceCandidate(c);
       } catch {
         /* ignore individual errors */
       }
     }
-  }, []);
+  }, [id]);
 
   // ---------------------------------------------------------------------------
   // WS message handler
@@ -1049,6 +1118,11 @@ export default function CallScreen() {
           setStatus('connecting');
           const offer = await pc.createOffer({ offerToReceiveAudio: true });
           await pc.setLocalDescription(offer);
+          logCallEvent('WEBRTC_LOCAL_DESCRIPTION_SET', {
+            callId: id,
+            descriptionType: 'offer',
+            signalingState: String(pc.signalingState || ''),
+          });
           const sent = await sendEncryptedSignal('call:offer', from, {
             sdp: offer.sdp,
             sdp_type: offer.type || 'offer',
@@ -1079,10 +1153,24 @@ export default function CallScreen() {
           }
           setStatus('connecting');
           await pc.setRemoteDescription({ type: 'offer', sdp: String(signal.sdp) });
+          logCallEvent('WEBRTC_REMOTE_DESCRIPTION_SET', {
+            callId: id,
+            descriptionType: 'offer',
+            signalingState: String(pc.signalingState || ''),
+          });
+          logCallEvent('WEBRTC_OFFER_RECEIVED', {
+            callId: id,
+            platform: Platform.OS,
+          });
           remoteSetRef.current = true;
           await drainPendingIce();
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
+          logCallEvent('WEBRTC_LOCAL_DESCRIPTION_SET', {
+            callId: id,
+            descriptionType: 'answer',
+            signalingState: String(pc.signalingState || ''),
+          });
           if (peerIdRef.current) {
             const sent = await sendEncryptedSignal('call:answer', peerIdRef.current, {
               sdp: answer.sdp,
@@ -1107,6 +1195,15 @@ export default function CallScreen() {
           const signal = await decryptPeerSignal(msg);
           if (!signal?.sdp) throw new Error('Encrypted answer unavailable');
           await pc.setRemoteDescription({ type: 'answer', sdp: String(signal.sdp) });
+          logCallEvent('WEBRTC_REMOTE_DESCRIPTION_SET', {
+            callId: id,
+            descriptionType: 'answer',
+            signalingState: String(pc.signalingState || ''),
+          });
+          logCallEvent('WEBRTC_ANSWER_RECEIVED', {
+            callId: id,
+            platform: Platform.OS,
+          });
           remoteSetRef.current = true;
           await drainPendingIce();
         } catch (e: any) {
@@ -1121,7 +1218,19 @@ export default function CallScreen() {
         const signal = await decryptPeerSignal(msg);
         if (!signal?.candidate) return;
         const type = bumpCandidateCount(remoteCandidateTypeCountsRef, signal.candidate);
-        if (type === 'relay') relayCandidateRef.current = true;
+        if (type === 'relay') {
+          relayCandidateRef.current = true;
+          logCallEvent('WEBRTC_TURN_RELAY_USED', {
+            callId: id,
+            direction: 'remote',
+            platform: Platform.OS,
+          });
+        }
+        logCallEvent('WEBRTC_ICE_CANDIDATE_RECEIVED', {
+          callId: id,
+          iceType: type,
+          platform: Platform.OS,
+        });
         if (!remoteSetRef.current) {
           pendingIceRef.current.push(signal.candidate);
         } else {
@@ -1267,11 +1376,21 @@ export default function CallScreen() {
       if (endedRef.current || cancelled) return;
       const target = peerIdRef.current; // for callee = caller_id from URL
       if (target) {
+        const createdAt = new Date().toISOString();
         const payload = {
           type: 'call:ready',
           to: target,
           call_id: id,
+          callId: id,
           conversation_id: conversationIdParam,
+          senderId: user?.id || '',
+          receiverId: target,
+          platform: Platform.OS,
+          createdAt,
+          payload: {
+            encrypted: false,
+            hasPayload: false,
+          },
           signal_id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         };
         try {
@@ -1369,6 +1488,11 @@ export default function CallScreen() {
             offerToReceiveAudio: true,
           });
           await pcRef.current.setLocalDescription(offer);
+          logCallEvent('WEBRTC_LOCAL_DESCRIPTION_SET', {
+            callId: id,
+            descriptionType: 'offer',
+            signalingState: String(pcRef.current.signalingState || ''),
+          });
           const sent = await sendEncryptedSignal('call:offer', peerIdRef.current, {
             sdp: offer.sdp,
             sdp_type: offer.type || 'offer',

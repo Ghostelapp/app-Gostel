@@ -56,6 +56,7 @@ import {
   takePhotoForUpload,
   uploadCandidate,
   UploadCandidate,
+  UploadOptions,
 } from '../../src/upload';
 import { createVoiceRecorder, formatDuration, VoiceRecorder } from '../../src/voice';
 import { useWebSocket } from '../../src/ws';
@@ -566,6 +567,7 @@ export default function ChatScreen() {
 
   const uploadForCurrentConversation = async (
     candidate: UploadCandidate,
+    options: UploadOptions = {},
   ): Promise<{ upload: any; e2eeAttachment?: E2EEAttachmentPayload | null }> => {
     if (!conv || !user?.id || !isConversationE2EEReady(conv, user.id)) {
       Alert.alert(t('common.error'), t('chat.e2e_required'));
@@ -590,6 +592,9 @@ export default function ChatScreen() {
       mime: 'application/octet-stream',
       data: encrypted.data,
       size: Math.ceil((encrypted.data.length * 3) / 4),
+    }, {
+      ...options,
+      originalMime: candidate.mime,
     });
     return { upload: encryptedUpload, e2eeAttachment: encrypted.e2ee_attachment };
   };
@@ -761,7 +766,10 @@ export default function ChatScreen() {
     try {
       const result = await rec.stop();
       if (result) {
-        const { upload, e2eeAttachment } = await uploadForCurrentConversation(result);
+        const { upload, e2eeAttachment } = await uploadForCurrentConversation(result, {
+          kind: 'voice',
+          durationMs: result.durationMs,
+        });
         await sendMessage(
           `Voice (${formatDuration(result.durationMs)})`,
           'voice',

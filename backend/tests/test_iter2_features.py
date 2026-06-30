@@ -61,15 +61,40 @@ class TestUploads:
         assert r.status_code == 401
 
     def test_upload_too_large_returns_413(self, api_client, admin_token):
-        # 9MB > 8MB cap → Pydantic rejects with 422 (size constraint) OR app 413.
-        # Pydantic validation happens first (size <= 8MB). Expect 422 from Pydantic
+        # 11MB > 10MB cap. Pydantic rejects JSON size first, multipart reaches app 413.
+        # Expect 422 from Pydantic
         # OR 413 if validation passes. Both indicate proper rejection.
-        size = 9 * 1024 * 1024
+        size = 11 * 1024 * 1024
         r = api_client.post(f"{BASE_URL}/api/uploads", json={
             "filename": "big.ghostel", "mime": "application/octet-stream",
             "data": "QQ==", "size": size
         }, headers=auth_headers(admin_token))
         assert r.status_code in (413, 422), f"got {r.status_code}: {r.text}"
+
+    def test_upload_multipart_encrypted_blob(self, api_client, admin_token):
+        data_b = b"encrypted-multipart-voice"
+        r = api_client.post(
+            f"{BASE_URL}/api/uploads",
+            data={
+                "filename": "TEST_voice.ghostel",
+                "mime": "application/octet-stream",
+                "kind": "voice",
+                "size": str(len(data_b)),
+            },
+            files={
+                "encryptedAudioFile": (
+                    "TEST_voice.ghostel",
+                    data_b,
+                    "application/octet-stream",
+                )
+            },
+            headers=auth_headers(admin_token),
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["filename"] == "TEST_voice.ghostel"
+        assert body["mime"] == "application/octet-stream"
+        assert body["size"] == len(data_b)
 
 
 # ---------------- Messages with attachments ----------------
@@ -137,6 +162,35 @@ class TestMessageKinds:
         assert msg["attachment_id"] == att_id
         if kind == "voice":
             assert msg["duration_ms"] == 2500
+
+    def test_voice_message_rejects_unsupported_audio_mime(self, api_client, admin_token, demo_token, conv_id):
+        admin = api_client.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(admin_token)).json()
+        demo = api_client.get(f"{BASE_URL}/api/auth/me", headers=auth_headers(demo_token)).json()
+        att_id = self._upload(admin_token, name="TEST_voice_bad.ghostel")
+        attachment_e2ee = {
+            "version": 1,
+            "algorithm": "nacl-secretbox-v1",
+            "nonce": "bm9uY2Vfbm9uY2Vfbm9uY2Vfbm9uY2U=",
+            "mime": "audio/wav",
+            "size": 128,
+            "key_recipients": e2ee_payload("admin", [admin["id"], demo["id"]])["recipients"],
+        }
+        r = api_client.post(
+            f"{BASE_URL}/api/messages",
+            json={
+                "conversation_id": conv_id,
+                "content": "[encrypted message]",
+                "kind": "voice",
+                "attachment_id": att_id,
+                "duration_ms": 2500,
+                "encrypted": True,
+                "e2ee": e2ee_payload("admin", [admin["id"], demo["id"]]),
+                "e2ee_attachment": attachment_e2ee,
+            },
+            headers=auth_headers(admin_token),
+        )
+        assert r.status_code == 415, r.text
+        assert r.json()["detail"]["code"] == "UNSUPPORTED_AUDIO_FORMAT"
 
 
 # ---------------- Push token ----------------

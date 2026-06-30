@@ -10,6 +10,7 @@ import { api } from './api';
  */
 const CHAT_IMAGE_MAX_DIM = 1280;
 const CHAT_IMAGE_QUALITY = 0.65;
+export const ENCRYPTED_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 
 export type UploadResult = {
   id: string;
@@ -24,6 +25,42 @@ export type UploadCandidate = {
   data: string;
   size: number;
 };
+
+export type UploadOptions = {
+  kind?: 'voice' | 'image' | 'file';
+  durationMs?: number;
+  originalMime?: string;
+};
+
+function cleanBase64(value: string): string {
+  const idx = value.indexOf(',');
+  return idx >= 0 ? value.slice(idx + 1) : value;
+}
+
+function base64ToBlob(base64Data: string, mime: string): Blob {
+  const b64 = cleanBase64(base64Data);
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mime });
+}
+
+async function writeEncryptedUploadTempFile(candidate: UploadCandidate): Promise<string> {
+  let FileSystem: any;
+  try {
+    FileSystem = require('expo-file-system/legacy');
+  } catch {
+    FileSystem = require('expo-file-system');
+  }
+  const dir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+  if (!dir) throw new Error('Upload cache is not available');
+  const safeName = candidate.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const uri = `${dir}${Date.now()}-${safeName}`;
+  await FileSystem.writeAsStringAsync(uri, cleanBase64(candidate.data), { encoding: 'base64' });
+  return uri;
+}
 
 async function uriToBase64(uri: string): Promise<string> {
   // Web (data URI or blob URL): use fetch + FileReader
@@ -189,11 +226,76 @@ export async function pickAndUploadDocument(): Promise<UploadResult | null> {
   throw new Error('Direct uploads are disabled. Encrypt the attachment before upload.');
 }
 
-export async function uploadCandidate(candidate: UploadCandidate): Promise<UploadResult> {
+export async function uploadCandidate(
+  candidate: UploadCandidate,
+  options: UploadOptions = {},
+): Promise<UploadResult> {
+  return uploadCandidateMultipart(candidate, options);
+}
+
+export async function uploadCandidateMultipart(
+  candidate: UploadCandidate,
+  options: UploadOptions = {},
+): Promise<UploadResult> {
   if (candidate.mime !== 'application/octet-stream' || !candidate.filename.endsWith('.ghostel')) {
     throw new Error('Uploads must be encrypted before being sent.');
   }
-  const { data } = await api.post('/uploads', candidate);
+  if (candidate.size > ENCRYPTED_ATTACHMENT_MAX_BYTES) {
+    throw new Error(
+      options.kind === 'voice'
+        ? 'Voice message is too large. Record a shorter message.'
+        : 'File exceeds 10 MB limit',
+    );
+  }
+
+  const form = new FormData();
+  form.append('filename', candidate.filename);
+  form.append('mime', candidate.mime);
+  form.append('size', String(candidate.size));
+  if (options.kind) form.append('kind', options.kind);
+  if (options.durationMs != null) form.append('durationMs', String(options.durationMs));
+  if (options.originalMime) form.append('originalMime', options.originalMime);
+
+  let cleanupUri: string | null = null;
+  if (Platform.OS === 'web') {
+    form.append('encryptedAudioFile', base64ToBlob(candidate.data, candidate.mime), candidate.filename);
+  } else {
+    cleanupUri = await writeEncryptedUploadTempFile(candidate);
+    form.append('encryptedAudioFile', {
+      uri: cleanupUri,
+      name: candidate.filename,
+      type: candidate.mime,
+    } as any);
+  }
+
+  try {
+    const { data } = await api.post('/uploads', form, { timeout: 60000 });
+    return data as UploadResult;
+  } finally {
+    if (cleanupUri) {
+      try {
+        const FileSystem = require('expo-file-system/legacy');
+        await FileSystem.deleteAsync?.(cleanupUri, { idempotent: true });
+      } catch {
+        try {
+          const FileSystem = require('expo-file-system');
+          await FileSystem.deleteAsync?.(cleanupUri, { idempotent: true });
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+    }
+  }
+}
+
+export async function uploadCandidateJson(candidate: UploadCandidate): Promise<UploadResult> {
+  if (candidate.mime !== 'application/octet-stream' || !candidate.filename.endsWith('.ghostel')) {
+    throw new Error('Uploads must be encrypted before being sent.');
+  }
+  if (candidate.size > ENCRYPTED_ATTACHMENT_MAX_BYTES) {
+    throw new Error('File exceeds 10 MB limit');
+  }
+  const { data } = await api.post('/uploads', candidate, { timeout: 60000 });
   return data as UploadResult;
 }
 
@@ -202,8 +304,7 @@ export async function uploadBase64(filename: string, mime: string, base64Data: s
     throw new Error('Uploads must be encrypted before being sent.');
   }
   const size = Math.ceil((base64Data.length * 3) / 4);
-  const { data } = await api.post('/uploads', { filename, mime, data: base64Data, size });
-  return data as UploadResult;
+  return uploadCandidateMultipart({ filename, mime, data: base64Data, size });
 }
 
 export function attachmentUrlFor(id: string, mime: string, data: string): string {

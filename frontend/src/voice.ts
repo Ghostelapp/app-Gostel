@@ -1,5 +1,8 @@
 import { Platform } from 'react-native';
 
+export const VOICE_MAX_DURATION_MS = 60_000;
+export const VOICE_MAX_BYTES = 10 * 1024 * 1024;
+
 export interface VoiceRecorder {
   start(): Promise<void>;
   stop(): Promise<VoiceCaptureResult | null>;
@@ -68,6 +71,12 @@ class WebVoiceRecorder implements VoiceRecorder {
             const filename = `voice-${Date.now()}.${ext}`;
             try {
               const size = Math.ceil((b64.length * 3) / 4);
+              if (durationMs > VOICE_MAX_DURATION_MS) {
+                throw new Error('Voice message is too long. Maximum length is 60 seconds.');
+              }
+              if (size > VOICE_MAX_BYTES) {
+                throw new Error('Voice message is too large. Record a shorter message.');
+              }
               this.cleanup();
               resolve({ filename, mime: this.mime, data: b64, size, durationMs });
             } catch (e) {
@@ -166,6 +175,12 @@ class NativeVoiceRecorder implements VoiceRecorder {
       const b64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
       const filename = `voice-${Date.now()}.m4a`;
       const size = Math.ceil((b64.length * 3) / 4);
+      if (durationMs > VOICE_MAX_DURATION_MS) {
+        throw new Error('Voice message is too long. Maximum length is 60 seconds.');
+      }
+      if (size > VOICE_MAX_BYTES) {
+        throw new Error('Voice message is too large. Record a shorter message.');
+      }
       return { filename, mime: 'audio/m4a', data: b64, size, durationMs };
     } finally {
       await FileSystem.deleteAsync?.(uri, { idempotent: true }).catch?.(() => {});

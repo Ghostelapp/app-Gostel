@@ -25,7 +25,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, ValidationError
 
 # ----------------- Setup -----------------
 mongo_url = os.environ["MONGO_URL"]
@@ -40,11 +40,28 @@ JWT_ALG = "HS256"
 APP_NAME = os.environ.get("APP_NAME", "ghostel.app")
 ALLOW_LEGACY_WS_TOKEN = os.environ.get("ALLOW_LEGACY_WS_TOKEN", "false").lower() == "true"
 REMOVED_ASSISTANT_USER_ID = "ghost-ai-bot"
+MAX_ENCRYPTED_ATTACHMENT_SIZE = int(
+    os.environ.get("MAX_ENCRYPTED_ATTACHMENT_SIZE", str(10 * 1024 * 1024))
+)
+VOICE_MESSAGE_MAX_DURATION_MS = int(os.environ.get("VOICE_MESSAGE_MAX_DURATION_MS", "60000"))
+SUPPORTED_VOICE_ATTACHMENT_MIME_TYPES = {
+    "audio/aac",
+    "audio/m4a",
+    "audio/mp4",
+    "audio/ogg",
+    "audio/opus",
+    "audio/webm",
+    "audio/x-m4a",
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ghostel")
 
 # ----------------- Helpers -----------------
+def api_error(code: str, message: str) -> dict:
+    return {"code": code, "message": message, "msg": message}
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -795,7 +812,7 @@ class E2EEAttachmentPayload(BaseModel):
     algorithm: Literal["nacl-secretbox-v1"] = "nacl-secretbox-v1"
     nonce: str = Field(min_length=16, max_length=128)
     mime: str = Field(min_length=1, max_length=120)
-    size: Optional[int] = Field(default=None, ge=0, le=8 * 1024 * 1024)
+    size: Optional[int] = Field(default=None, ge=0, le=MAX_ENCRYPTED_ATTACHMENT_SIZE)
     key_recipients: Dict[str, E2EERecipientPayload] = Field(default_factory=dict)
 
 
@@ -825,7 +842,7 @@ class UploadIn(BaseModel):
     filename: str = Field(min_length=1, max_length=200)
     mime: str = Field(min_length=1, max_length=120)
     data: str = Field(min_length=1)  # base64 string (no data: prefix)
-    size: int = Field(ge=0, le=8 * 1024 * 1024)  # 8MB cap
+    size: int = Field(ge=0, le=MAX_ENCRYPTED_ATTACHMENT_SIZE)
 
 
 class PushTokenIn(BaseModel):
@@ -2541,6 +2558,43 @@ async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_
         if key_recipient_ids != member_ids:
             raise HTTPException(status_code=400, detail="Encrypted attachment key payload must include every conversation member")
         e2ee_attachment_doc = payload.e2ee_attachment.dict()
+    if payload.kind == "voice":
+        if not payload.attachment_id or not payload.e2ee_attachment:
+            raise HTTPException(
+                status_code=400,
+                detail=api_error("INVALID_AUDIO_UPLOAD", "Voice messages require encrypted audio metadata"),
+            )
+        if not payload.duration_ms or payload.duration_ms <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=api_error("INVALID_AUDIO_UPLOAD", "Voice message duration is required"),
+            )
+        if payload.duration_ms > VOICE_MESSAGE_MAX_DURATION_MS:
+            logger.info(
+                f"VOICE_UPLOAD_FAILED_413 reason=duration duration_ms={payload.duration_ms}"
+            )
+            raise HTTPException(
+                status_code=413,
+                detail=api_error("VOICE_MESSAGE_TOO_LARGE", "Voice message is too long"),
+            )
+        original_mime = (payload.e2ee_attachment.mime or "").split(";", 1)[0].strip().lower()
+        logger.info(
+            f"VOICE_UPLOAD_FORMAT_CHECK mime={original_mime} duration_ms={payload.duration_ms}"
+        )
+        if original_mime not in SUPPORTED_VOICE_ATTACHMENT_MIME_TYPES:
+            logger.info(f"VOICE_UPLOAD_FAILED_UNSUPPORTED_FORMAT mime={original_mime}")
+            raise HTTPException(
+                status_code=415,
+                detail=api_error("UNSUPPORTED_AUDIO_FORMAT", "Unsupported voice message audio format"),
+            )
+        if payload.e2ee_attachment.size and payload.e2ee_attachment.size > MAX_ENCRYPTED_ATTACHMENT_SIZE:
+            logger.info(
+                f"VOICE_UPLOAD_FAILED_413 reason=size size={payload.e2ee_attachment.size}"
+            )
+            raise HTTPException(
+                status_code=413,
+                detail=api_error("VOICE_MESSAGE_TOO_LARGE", "Voice message is too large"),
+            )
     if payload.one_time_seconds and payload.kind != "image":
         raise HTTPException(status_code=400, detail="One-time viewing is supported only for images")
 
@@ -3082,38 +3136,101 @@ async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)):
     return {"deleted": True}
 
 
-# ----------------- Uploads (base64 attachments) -----------------
+# ----------------- Uploads (encrypted attachments) -----------------
 @api.post("/uploads")
-async def upload_attachment(payload: UploadIn, user: dict = Depends(get_current_user)):
+async def upload_attachment(request: Request, user: dict = Depends(get_current_user)):
     await enforce_rate_limit(
         "upload-user-minute", user["id"], limit=12, window_seconds=60
     )
     await enforce_rate_limit(
         "upload-user-hour", user["id"], limit=80, window_seconds=60 * 60
     )
-    try:
-        decoded = base64.b64decode(payload.data, validate=True)
-    except (binascii.Error, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid base64 payload")
+    content_type = (request.headers.get("content-type") or "").lower()
+    upload_kind = ""
+    if content_type.startswith("multipart/form-data"):
+        try:
+            form = await request.form()
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail=api_error("INVALID_AUDIO_UPLOAD", "Invalid multipart upload"),
+            )
+        upload_file = (
+            form.get("encryptedAudioFile")
+            or form.get("file")
+            or form.get("encrypted_file")
+        )
+        if upload_file is None or not hasattr(upload_file, "read"):
+            raise HTTPException(
+                status_code=400,
+                detail=api_error("INVALID_AUDIO_UPLOAD", "Encrypted upload file is required"),
+        )
+        upload_kind = str(form.get("kind") or form.get("uploadKind") or "").strip().lower()
+        if upload_kind == "voice":
+            logger.info("VOICE_UPLOAD_STARTED transport=multipart")
+        filename = Path(
+            str(form.get("filename") or getattr(upload_file, "filename", "") or "attachment.ghostel")
+        ).name.strip()[:200] or "attachment.ghostel"
+        mime = str(
+            form.get("mime")
+            or getattr(upload_file, "content_type", "")
+            or "application/octet-stream"
+        ).strip()
+        decoded = await upload_file.read(MAX_ENCRYPTED_ATTACHMENT_SIZE + 1)
+        real_size = len(decoded)
+        if upload_kind == "voice":
+            logger.info(
+                f"VOICE_UPLOAD_SIZE_CHECK size={real_size} limit={MAX_ENCRYPTED_ATTACHMENT_SIZE}"
+            )
+        if real_size > MAX_ENCRYPTED_ATTACHMENT_SIZE:
+            if upload_kind == "voice":
+                logger.info(f"VOICE_UPLOAD_FAILED_413 reason=encrypted_blob_size size={real_size}")
+            raise HTTPException(
+                status_code=413,
+                detail=api_error(
+                    "VOICE_MESSAGE_TOO_LARGE" if upload_kind == "voice" else "ATTACHMENT_TOO_LARGE",
+                    "Voice message is too large" if upload_kind == "voice" else "Attachment is too large",
+                ),
+            )
+        payload_data = base64.b64encode(decoded).decode()
+    else:
+        try:
+            body = await request.json()
+            payload = UploadIn.model_validate(body)
+            decoded = base64.b64decode(payload.data, validate=True)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.errors())
+        except (binascii.Error, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid base64 payload")
 
-    real_size = len(decoded)
-    max_size = 8 * 1024 * 1024
-    if real_size > max_size:
-        raise HTTPException(status_code=413, detail="File too large (max 8MB)")
+        real_size = len(decoded)
+        filename = Path(payload.filename).name.strip()[:200] or "attachment.ghostel"
+        mime = payload.mime
+        payload_data = payload.data
 
-    filename = Path(payload.filename).name.strip()[:200] or "attachment"
-    if payload.mime != "application/octet-stream" or not filename.endswith(".ghostel"):
-        raise HTTPException(status_code=400, detail="Attachments must be encrypted before upload")
+    if real_size > MAX_ENCRYPTED_ATTACHMENT_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=api_error("ATTACHMENT_TOO_LARGE", "Attachment is too large"),
+        )
+
+    if mime != "application/octet-stream" or not filename.endswith(".ghostel"):
+        raise HTTPException(
+            status_code=400,
+            detail=api_error("INVALID_AUDIO_UPLOAD", "Attachments must be encrypted before upload"),
+        )
     att = {
         "id": str(uuid.uuid4()),
         "owner_id": user["id"],
         "filename": filename,
-        "mime": payload.mime,
-        "data": payload.data,  # base64
+        "mime": mime,
+        "data": payload_data,  # encrypted blob stored as base64
         "size": real_size,
         "created_at": now_utc().isoformat(),
     }
     await db.attachments.insert_one(att)
+    if upload_kind == "voice":
+        logger.info(f"VOICE_UPLOAD_SUCCESS size={real_size}")
     return {"id": att["id"], "filename": att["filename"], "mime": att["mime"], "size": att["size"]}
 
 
@@ -4060,6 +4177,53 @@ import time as _time
 
 CALL_RING_TIMEOUT_SECONDS = 45
 
+CALL_SIGNAL_EVENT_NAMES = {
+    "call:offer": "call.offer",
+    "call:answer": "call.answer",
+    "call:ice": "call.ice_candidate",
+    "call:ready": "call.ready",
+    "call:accept": "call.accepted",
+    "call:reject": "call.declined",
+    "call:end": "call.ended",
+    "call:cancel": "call.cancelled",
+}
+
+
+def normalize_call_signal_envelope(
+    signal: dict,
+    *,
+    call_id: str,
+    sender_id: str,
+    receiver_id: str,
+) -> dict:
+    signal_type = str(signal.get("type") or "")
+    created_at = str(signal.get("createdAt") or signal.get("created_at") or now_utc().isoformat())
+    platform = str(signal.get("platform") or "unknown")[:40]
+    e2ee_signal = signal.get("e2ee_signal")
+    encrypted_payload = isinstance(e2ee_signal, dict)
+    payload_meta = {
+        "encrypted": bool(signal.get("encrypted")) and encrypted_payload,
+        "algorithm": e2ee_signal.get("algorithm") if encrypted_payload else None,
+        "hasPayload": encrypted_payload,
+    }
+    normalized = {
+        **signal,
+        "type": signal_type,
+        "event": signal.get("event") or CALL_SIGNAL_EVENT_NAMES.get(signal_type, signal_type.replace(":", ".")),
+        "call_id": call_id,
+        "callId": call_id,
+        "senderId": sender_id,
+        "receiverId": receiver_id,
+        "platform": platform,
+        "payload": payload_meta,
+        "created_at": created_at,
+        "createdAt": created_at,
+    }
+    normalized.pop("sdp", None)
+    normalized.pop("candidate", None)
+    normalized.pop("iceCandidate", None)
+    return normalized
+
 
 def _configured_turn_servers():
     """Return operator-provided TURN servers from environment variables."""
@@ -4603,12 +4767,15 @@ async def _persist_call_signal_payload(
     target = str(payload.get("to") or "")
     if signal_type not in allowed or not target:
         raise HTTPException(status_code=400, detail="Invalid call signal")
-    signal = {**payload, "type": signal_type, "call_id": call_id}
+    signal = normalize_call_signal_envelope(
+        {**payload, "type": signal_type, "call_id": call_id},
+        call_id=call_id,
+        sender_id=user["id"],
+        receiver_id=target,
+    )
     if signal_type in {"call:offer", "call:answer", "call:ice"}:
         if not signal.get("encrypted") or not isinstance(signal.get("e2ee_signal"), dict):
             raise HTTPException(status_code=400, detail="Call signal must be encrypted")
-        signal.pop("sdp", None)
-        signal.pop("candidate", None)
     if not await user_can_signal_target(user["id"], target, signal):
         raise HTTPException(status_code=403, detail="Unauthorized call signal")
 
@@ -4627,7 +4794,7 @@ async def _persist_call_signal_payload(
             "$setOnInsert": {
                 **forwarded,
                 "to": target,
-                "created_at": now_utc().isoformat(),
+                "created_at": forwarded.get("created_at") or now_utc().isoformat(),
             }
         },
         upsert=True,
@@ -5263,6 +5430,13 @@ async def websocket_endpoint(
                         for k, v in data.items()
                         if k not in {"sdp", "candidate"}
                     }
+                if target:
+                    data = normalize_call_signal_envelope(
+                        {**data, "type": mtype},
+                        call_id=str(data.get("call_id") or data.get("callId") or ""),
+                        sender_id=user_id,
+                        receiver_id=str(target),
+                    )
                 if target and await user_can_signal_target(user_id, target, data):
                     await ws_manager.send_to(target, {**data, "from": user_id})
                 elif target:

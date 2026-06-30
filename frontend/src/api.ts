@@ -29,5 +29,7 @@ export function formatApiErrorDetail(err: any): string {
       .join(' ');
   }
   if (detail && typeof detail.msg === 'string') return detail.msg;
+  if (detail && typeof detail.message === 'string') return detail.message;
+  if (detail && typeof detail.code === 'string') return detail.code;
   return String(detail);
 }
