@@ -69,11 +69,42 @@ type ContactInfo = { id: string; name?: string; username?: string };
 type CallInfo = {
   caller_id?: string;
   caller_name?: string;
+  callee_ids?: string[];
+  calleeId?: string;
   member_ids?: string[];
-  participants?: ContactInfo[];
+  participants?: (ContactInfo | string)[];
   e2ee_required?: boolean;
   e2ee_member_keys?: Record<string, { public_key?: string; name?: string }>;
   status?: string;
+};
+
+const normalizeParticipantMap = (participants: unknown): Record<string, ContactInfo> => {
+  if (!Array.isArray(participants)) return {};
+  const byId: Record<string, ContactInfo> = {};
+  for (const participant of participants) {
+    if (typeof participant === 'string' && participant) {
+      byId[participant] = { id: participant };
+      continue;
+    }
+    if (participant && typeof participant === 'object') {
+      const contact = participant as ContactInfo;
+      if (contact.id) byId[contact.id] = contact;
+    }
+  }
+  return byId;
+};
+
+const contactDisplayName = (contact?: ContactInfo | null, fallback = '') =>
+  contact?.name || (contact?.username ? `@${contact.username}` : fallback);
+
+const resolvePeerId = (call: CallInfo, currentUserId?: string | null) => {
+  const fromMembers = (call.member_ids || []).find((memberId) => memberId !== currentUserId);
+  if (fromMembers) return fromMembers;
+  const fromCallees = (call.callee_ids || []).find((memberId) => memberId !== currentUserId);
+  if (fromCallees) return fromCallees;
+  if (call.calleeId && call.calleeId !== currentUserId) return call.calleeId;
+  if (call.caller_id && call.caller_id !== currentUserId) return call.caller_id;
+  return null;
 };
 
 // ---------------------------------------------------------------------------
@@ -231,6 +262,7 @@ export default function CallScreen() {
   const onTrackCountRef = useRef(0);
   const onAddStreamCountRef = useRef(0);
   const remoteTrackCountRef = useRef(0);
+  const callerNameRef = useRef(callerName);
   const localCandidateTypeCountsRef = useRef<Record<string, number>>({});
   const remoteCandidateTypeCountsRef = useRef<Record<string, number>>({});
   const lastIceStateRef = useRef<string>('new');
@@ -247,6 +279,10 @@ export default function CallScreen() {
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+
+  useEffect(() => {
+    callerNameRef.current = callerName;
+  }, [callerName]);
 
   useEffect(() => {
     if (Platform.OS === 'web') return;
@@ -1303,6 +1339,31 @@ export default function CallScreen() {
   const { send } = useWebSocket(onWs, !!user);
   wsSendRef.current = send;
 
+  const applyCallDisplayName = useCallback(
+    (call: CallInfo | null | undefined) => {
+      if (!call) return;
+      const participantById = normalizeParticipantMap(call.participants);
+      let nextName = '';
+
+      if (!isCaller) {
+        const caller = call.caller_id ? participantById[call.caller_id] : null;
+        nextName =
+          contactDisplayName(caller) ||
+          call.caller_name ||
+          'Incoming call';
+      } else {
+        const peerId = resolvePeerId(call, user?.id);
+        const peer = peerId ? participantById[peerId] : null;
+        nextName = contactDisplayName(peer);
+      }
+
+      if (nextName && nextName !== callerNameRef.current) {
+        setCallerName(nextName);
+      }
+    },
+    [isCaller, user?.id],
+  );
+
   useEffect(() => {
     if (isCaller || !id) return;
     api.post(`/calls/${id}/accept`).catch(() => {});
@@ -1338,6 +1399,57 @@ export default function CallScreen() {
       clearInterval(timer);
     };
   }, [closeCallFromPeer, id, onWs, user]);
+
+  useEffect(() => {
+    if (!id || !user) return;
+    let cancelled = false;
+    const activeStatuses = new Set(['answered', 'connecting', 'active', 'reconnecting']);
+    const terminalStatuses = new Set(['ended', 'rejected', 'declined', 'cancelled', 'missed']);
+
+    const syncCallStatus = async () => {
+      if (endedRef.current || connectedRef.current) return;
+      try {
+        const { data: call } = await api.get<CallInfo>(`/calls/${id}/status`);
+        if (cancelled || endedRef.current || !call) return;
+        applyCallDisplayName(call);
+
+        const serverStatus = String(call.status || '').toLowerCase();
+        if (activeStatuses.has(serverStatus)) {
+          stopRingback();
+          if (!connectedRef.current && statusRef.current !== 'connecting') {
+            setStatus('connecting');
+            logCallEvent('CALL_STATUS_SYNC_CONNECTED_PENDING', {
+              callId: id,
+              serverStatus,
+              platform: Platform.OS,
+            });
+          }
+          return;
+        }
+
+        if (terminalStatuses.has(serverStatus)) {
+          closeCallFromPeer(
+            serverStatus === 'cancelled'
+              ? 'Call cancelled'
+              : serverStatus === 'declined' || serverStatus === 'rejected'
+                ? 'Call rejected'
+                : 'Call ended by peer',
+          );
+        }
+      } catch (error: any) {
+        if (error?.response?.status === 404 && !cancelled) {
+          closeCallFromPeer('Call ended by peer');
+        }
+      }
+    };
+
+    syncCallStatus().catch(() => {});
+    const timer = setInterval(() => syncCallStatus().catch(() => {}), 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [applyCallDisplayName, closeCallFromPeer, id, stopRingback, user]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -1591,25 +1703,22 @@ export default function CallScreen() {
       try {
         const { data: call } = await api.get<CallInfo>(`/calls/${id}`);
         if (!call) return;
-        const participants = Array.isArray(call.participants) ? call.participants : [];
-        const participantById = Object.fromEntries(
-          participants.map((p) => [p.id, p] as const)
-        );
+        const participantById = normalizeParticipantMap(call.participants);
         if (!isCaller) {
           const caller = call.caller_id ? participantById[call.caller_id] : null;
           setCallerName(
-            caller?.name ||
-              (caller?.username ? `@${caller.username}` : null) ||
+            contactDisplayName(caller) ||
               call.caller_name ||
               'Incoming call'
           );
           return;
         }
-        const peerId = (call.member_ids || []).find((m: string) => m !== user?.id);
+        const peerId = resolvePeerId(call, user?.id);
         if (peerId) {
           const participant = participantById[peerId];
-          if (participant?.name || participant?.username) {
-            setCallerName(participant.name || `@${participant.username}`);
+          const participantName = contactDisplayName(participant);
+          if (participantName) {
+            setCallerName(participantName);
             return;
           }
           try {
@@ -1617,7 +1726,7 @@ export default function CallScreen() {
             const peer = Array.isArray(contacts)
               ? (contacts as ContactInfo[]).find((c) => c.id === peerId)
               : null;
-            setCallerName(peer?.name || (peer?.username ? `@${peer.username}` : 'Calling…'));
+            setCallerName(contactDisplayName(peer, 'Calling…'));
           } catch {
             setCallerName('Calling…');
           }

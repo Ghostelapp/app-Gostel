@@ -3820,6 +3820,12 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         sound = "ringtone" if is_call else "message"
         channel_id = "calls" if is_call else "messages"
         ttl_sec = 30 if is_call else 0
+        call_display_name = (
+            msg.get("sender_name")
+            or msg.get("caller_name")
+            or "Someone"
+        )
+        call_display_name = str(call_display_name)[:80]
         # NOTE: FCM has a STRICT 4KB limit on the entire `data` dict for a
         # single message. Avatars are stored as base64 PNGs (often 50-100KB)
         # and MUST NOT be inlined here — that would exceed the limit and
@@ -3837,11 +3843,11 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
             # (src/fcmBackground.ts). Older clients accepted "call" too — both
             # values are honored on the client.
             "type": "incoming_call" if is_call else "message",
-            "sender_name": "" if is_call else msg.get("sender_name", ""),
+            "sender_name": call_display_name if is_call else msg.get("sender_name", ""),
             # Caller-specific fields used by react-native-callkeep to render
             # the native OS-level incoming-call screen on the lockscreen.
             "caller_id": msg.get("caller_id", sender_id) if is_call else "",
-            "caller_name": "",
+            "caller_name": call_display_name if is_call else "",
             "encryptedDisplayName": msg.get("encryptedDisplayName", "") if is_call else "",
             # caller_avatar intentionally omitted — too big for FCM 4KB limit.
             "mode": msg.get("mode", "audio") if is_call else "",
@@ -4457,6 +4463,9 @@ def public_call_status(call: dict, user_id: str) -> dict:
     callee_ids = call.get("callee_ids") or [
         member_id for member_id in call.get("member_ids", []) if member_id != call.get("caller_id")
     ]
+    participants = call.get("participants") or []
+    if not all(isinstance(participant, dict) for participant in participants):
+        participants = []
     return {
         "id": call.get("id"),
         "call_id": call.get("id"),
@@ -4466,7 +4475,7 @@ def public_call_status(call: dict, user_id: str) -> dict:
         "caller_name": call.get("caller_name") or "Unknown",
         "callee_ids": callee_ids,
         "calleeId": callee_ids[0] if callee_ids else "",
-        "participants": call.get("participants") or call.get("member_ids", []),
+        "participants": participants,
         "member_ids": call.get("member_ids", []),
         "conversation_id": call.get("conversation_id") or call.get("conv_id"),
         "conversationId": call.get("conversation_id") or call.get("conv_id"),
@@ -4551,6 +4560,7 @@ async def get_active_call(user: dict = Depends(get_current_user)):
     )
     if not call:
         return None
+    call = await enrich_call_for_user(call, user["id"])
     return public_call_status(call, user["id"])
 
 
@@ -4969,6 +4979,7 @@ async def get_call_status(call_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Call not found")
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
+    call = await enrich_call_for_user(call, user["id"])
     return public_call_status(call, user["id"])
 
 
@@ -5447,7 +5458,7 @@ async def root():
     return {"app": APP_NAME, "version": "1.0.0", "status": "ok"}
 
 
-ANDROID_APK_VERSION = "1.4.37"
+ANDROID_APK_VERSION = "1.4.38"
 
 
 @app.get("/app-release.apk")
