@@ -228,7 +228,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         conversationId: call.conversation_id,
         mode: call.mode,
       }).catch(() => {});
-      router.push(
+      router.replace(
         `/call/${call.id}?role=callee&conversation_id=${call.conversation_id}&caller_id=${call.caller_id}`,
       );
       return true;
@@ -265,7 +265,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         const role = call.caller_id === user?.id ? 'caller' : 'callee';
         const href = `/call/${call.id}?role=${role}&conversation_id=${call.conversation_id}&caller_id=${call.caller_id}`;
         if (!pathnameRef.current.includes(`/call/${call.id}`)) {
-          router.push(href);
+          router.replace(href);
         }
       },
       clearCallUi: (callId, reason) => {
@@ -619,7 +619,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     } catch {
       /* ignore */
     }
-    router.push(`/call/${call.id}?role=callee&conversation_id=${call.conversation_id}&caller_id=${call.caller_id}`);
+    router.replace(`/call/${call.id}?role=callee&conversation_id=${call.conversation_id}&caller_id=${call.caller_id}`);
   };
 
   const reject = async (source: 'button' | 'modal_request_close' = 'button') => {

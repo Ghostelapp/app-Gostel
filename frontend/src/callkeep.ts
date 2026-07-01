@@ -16,6 +16,7 @@ const displayedCalls = new Set<string>();
 const answeredCalls = new Set<string>();
 const appHandledAnswers = new Set<string>();
 const suppressedEndEvents = new Set<string>();
+const routedAnsweredCalls = new Map<string, number>();
 const actionListeners = new Set<(action: CallKeepAction) => void>();
 
 const ACTIVE_CALL_PREFIX = 'ghostel_active_call_v1:';
@@ -28,6 +29,8 @@ let lastBecameActiveAt = AppState.currentState === 'active' ? Date.now() : 0;
 
 const ACTIVE_TRANSITION_END_GUARD_MS = 12_000;
 const INACTIVE_END_DEFER_MS = 2_500;
+const ANSWER_ROUTE_RETRY_MS = [250, 750, 1500, 3000];
+const ANSWER_ROUTE_DEDUPE_MS = 4000;
 
 export type IncomingCallInfo = {
   callId: string;
@@ -167,21 +170,90 @@ async function markLocallyAcceptedCall(callId: string): Promise<void> {
   }
 }
 
+async function saveAcceptedCallState(info: IncomingCallInfo): Promise<void> {
+  try {
+    const { saveActiveCallState } = require('./callState');
+    await saveActiveCallState({
+      activeCallId: info.callId,
+      callStatus: 'CONNECTING',
+      callerId: info.callerId,
+      conversationId: info.conversationId,
+      mode: 'audio',
+    });
+  } catch {
+    /* best-effort resume state */
+  }
+}
+
+function requestAppForegroundFromCallKeep(): void {
+  if (Platform.OS !== 'ios') return;
+  try {
+    const RNCallKeep = require('react-native-callkeep').default;
+    RNCallKeep.backToForeground?.();
+  } catch {
+    /* CallKeep may not expose this on every iOS build */
+  }
+}
+
+function navigateToAnsweredCall(href: string, callId: string): void {
+  if (!router) return;
+  const key = normalizeCallId(callId) || href;
+  const now = Date.now();
+  const lastRoutedAt = routedAnsweredCalls.get(key) || 0;
+  if (lastRoutedAt && now - lastRoutedAt < ANSWER_ROUTE_DEDUPE_MS) return;
+  routedAnsweredCalls.set(key, now);
+  if (router.replace) {
+    router.replace(href);
+  } else {
+    router.push(href);
+  }
+}
+
+async function storePendingAnsweredCall(info: IncomingCallInfo): Promise<void> {
+  const href = callHref(info);
+  await AsyncStorage.setItem(
+    PENDING_ANSWERED_CALL_KEY,
+    JSON.stringify({
+      href,
+      callId: info.callId,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
 async function routeOrDeferAnsweredCall(info: IncomingCallInfo): Promise<void> {
   const href = callHref(info);
+  await saveAcceptedCallState(info);
+  requestAppForegroundFromCallKeep();
   if (router && AppState.currentState === 'active') {
-    router.push(href);
+    navigateToAnsweredCall(href, info.callId);
     return;
   }
-  await AsyncStorage.setItem(PENDING_ANSWERED_CALL_KEY, href);
+  await storePendingAnsweredCall(info);
+  ANSWER_ROUTE_RETRY_MS.forEach((delay) => {
+    setTimeout(() => {
+      flushPendingAnsweredCall().catch(() => {});
+    }, delay);
+  });
 }
 
 async function flushPendingAnsweredCall(): Promise<void> {
   if (!router || AppState.currentState !== 'active') return;
-  const href = await AsyncStorage.getItem(PENDING_ANSWERED_CALL_KEY);
+  const raw = await AsyncStorage.getItem(PENDING_ANSWERED_CALL_KEY);
+  if (!raw) return;
+  let href = raw;
+  let callId = '';
+  try {
+    const parsed = JSON.parse(raw);
+    href = String(parsed?.href || raw);
+    callId = String(parsed?.callId || '');
+  } catch {
+    const match = raw.match(/\/call\/([^?]+)/);
+    callId = match?.[1] || '';
+  }
   if (!href) return;
   await AsyncStorage.removeItem(PENDING_ANSWERED_CALL_KEY);
-  router.push(href);
+  navigateToAnsweredCall(href, callId);
 }
 
 async function handleAnswerCall(callUUID: string): Promise<void> {
@@ -193,6 +265,8 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   answeredCalls.add(key);
   await markLocallyAcceptedCall(info.callId);
   await clearPendingIncomingCall(info.callId);
+  await saveAcceptedCallState(info);
+  activateWebRtcAudioSession();
   emitCallKeepAction({ callId: info.callId, action: 'answer' });
 
   // answerIncomingCall() also emits answerCall. The in-app answer button owns
@@ -203,6 +277,9 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   // JavaScript runtime while the user is entering the device passcode; the
   // AppState listener can then finish routing as soon as the app is active.
   await routeOrDeferAnsweredCall(info);
+  reportCallKeepDiag(info, 'callkit_answer_route_requested', {
+    native_displayed: displayedCalls.has(key),
+  });
 
   try {
     wsSend?.({
@@ -272,6 +349,7 @@ async function restoreAfterTransientNativeEnd(info: IncomingCallInfo): Promise<v
   displayedCalls.delete(key);
   answeredCalls.delete(key);
   appHandledAnswers.delete(key);
+  routedAnsweredCalls.delete(key);
 
   try {
     const { showIncomingCallFromPush } = require('./incomingCallStore');
@@ -353,6 +431,7 @@ async function handleEndCall(
 
   answeredCalls.delete(key);
   appHandledAnswers.delete(key);
+  routedAnsweredCalls.delete(key);
   await forgetIncomingCall(callUUID);
   await clearPendingIncomingCall(callUUID);
   if (!info) return;
@@ -515,6 +594,7 @@ export function endIncomingCallNative(callId: string): void {
     forgetIncomingCall(callId).catch(() => {});
     answeredCalls.delete(key);
     appHandledAnswers.delete(key);
+    routedAnsweredCalls.delete(key);
     setTimeout(() => suppressedEndEvents.delete(key), 5_000);
   } catch {
     suppressedEndEvents.delete(key);

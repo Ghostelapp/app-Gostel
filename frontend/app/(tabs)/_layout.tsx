@@ -95,7 +95,7 @@ export default function TabsLayout() {
           title: t('tabs.admin'),
           tabBarIcon: ({ color }) => <Shield color={color} size={22} strokeWidth={1.8} />,
           tabBarButtonTestID: 'tab-admin',
-          href: isAdmin ? '/admin' : null,
+          href: isAdmin ? '/(tabs)/admin' : null,
         }}
       />
       <Tabs.Screen
