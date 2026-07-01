@@ -12,6 +12,7 @@ import {
 } from './callState';
 import {
   clearPendingIncomingCall,
+  emitCallControlEvent,
   normalizeIncomingCallPayload,
   showIncomingCallFromPush,
 } from './incomingCallStore';
@@ -26,6 +27,30 @@ async function rememberVoipToken(token: unknown): Promise<void> {
 }
 
 async function handleVoipNotification(notification: any): Promise<void> {
+  const controlCallId = String(notification?.call_id || notification?.uuid || '');
+  const controlAction = String(
+    notification?.call_control_action || notification?.status || '',
+  );
+  if (notification?.type === 'call_control' || controlAction) {
+    if (!controlCallId) return;
+    logCallEvent('IOS_VOIP_PUSH_RECEIVED', {
+      callId: controlCallId,
+      pushType: 'call_control',
+    });
+    if (controlAction !== 'accepted') {
+      await cacheTerminatedCallId(controlCallId, controlAction || 'ENDED').catch(() => {});
+    }
+    endIncomingCallNative(controlCallId);
+    await clearPendingIncomingCall(controlCallId).catch(() => {});
+    await clearActiveCallState(controlCallId).catch(() => {});
+    emitCallControlEvent({
+      call_id: controlCallId,
+      action: controlAction,
+      actor_id: String(notification?.actor_id || notification?.accepted_by || notification?.ended_by || ''),
+    });
+    return;
+  }
+
   const call = normalizeIncomingCallPayload(notification);
   if (!call) return;
   logCallEvent('IOS_VOIP_PUSH_RECEIVED', {

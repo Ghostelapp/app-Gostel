@@ -22,3 +22,29 @@ def test_build_voip_payload_contains_callkit_fields():
     assert payload["conversation_id"] == "conversation-1"
     assert payload["mode"] == "audio"
     assert isinstance(payload["sent_at"], int)
+
+
+def test_build_voip_payload_supports_call_control():
+    payload = build_voip_payload(
+        {
+            "type": "call_control",
+            "call_control_action": "declined",
+            "call_id": "38acdbd6-17fe-45f5-9a76-720d07fbf275",
+            "conversation_id": "conversation-1",
+            "actor_id": "callee-1",
+            "ended_by": "callee-1",
+            "status": "declined",
+        }
+    )
+
+    assert payload["aps"] == {"content-available": 1}
+    assert payload["uuid"] == "38acdbd6-17fe-45f5-9a76-720d07fbf275"
+    assert payload["call_id"] == payload["uuid"]
+    assert payload["type"] == "call_control"
+    assert payload["call_control_action"] == "declined"
+    assert payload["conversation_id"] == "conversation-1"
+    assert payload["actor_id"] == "callee-1"
+    assert payload["ended_by"] == "callee-1"
+    assert payload["status"] == "declined"
+    assert "caller_id" not in payload
+    assert isinstance(payload["sent_at"], int)

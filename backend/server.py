@@ -4087,15 +4087,16 @@ async def _send_call_control_push(
 
     WebSocket remains the primary real-time path while the app is active, but
     locked/background devices can be showing a native call UI without a live WS.
-    This data-only FCM message is intentionally silent and only carries enough
-    state to cancel ringing or clear active-call UI.
+    This silent control payload only carries enough state to cancel ringing or
+    clear active-call UI. iOS receives it directly over APNs VoIP when possible;
+    FCM remains the Android path and a fallback for registered FCM/APNs tokens.
     """
     try:
         from fcm import is_configured as fcm_is_configured, send_fcm
 
-        if not fcm_is_configured():
-            logger.warning("FCM not configured - skipped call control push")
-            return
+        fcm_configured = fcm_is_configured()
+        if not fcm_configured:
+            logger.warning("FCM not configured - FCM call control fallback unavailable")
 
         member_ids = [member_id for member_id in call.get("member_ids", []) if member_id]
         if not member_ids:
@@ -4122,12 +4123,16 @@ async def _send_call_control_push(
         ).to_list(1000)
 
         targets: list[dict] = []
+        voip_targets: list[dict] = []
         for user_doc in users:
             for target in user_push_targets(user_doc):
                 token_type = (target.get("token_type") or "fcm").lower()
                 if token_type in {"fcm", "apns"}:
                     targets.append({**target, "user_id": user_doc.get("id")})
+                elif token_type == "voip":
+                    voip_targets.append({**target, "user_id": user_doc.get("id")})
         targets = compact_push_targets(targets)
+        voip_targets = compact_push_targets(voip_targets)
         if action == "accepted" and actor_session_id:
             targets = [
                 target
@@ -4137,7 +4142,15 @@ async def _send_call_control_push(
                     and (target.get("session_id") or "") == actor_session_id
                 )
             ]
-        if not targets:
+            voip_targets = [
+                target
+                for target in voip_targets
+                if not (
+                    target.get("user_id") == actor_id
+                    and (target.get("session_id") or "") == actor_session_id
+                )
+            ]
+        if not targets and not voip_targets:
             return
 
         data = {
@@ -4151,34 +4164,76 @@ async def _send_call_control_push(
             "status": action,
         }
 
-        ok = err = 0
-        async with httpx.AsyncClient(timeout=10) as client:
-            for target in targets:
-                token = target["token"]
-                result = await send_fcm(
-                    client,
-                    token=token,
-                    title="ghostel.app call",
-                    body="",
-                    channel_id="calls",
-                    sound="default",
-                    priority="high",
-                    ttl_seconds=30,
-                    data=data,
-                    data_only=True,
+        voip_ok = voip_err = 0
+        if voip_targets:
+            from apns import is_configured as apns_is_configured, send_voip_push
+
+            if apns_is_configured():
+                async with httpx.AsyncClient(http2=True, timeout=10) as apns_client:
+                    for target in voip_targets:
+                        token = target["token"]
+                        result = await send_voip_push(
+                            apns_client,
+                            token=token,
+                            data=data,
+                        )
+                        if result.get("ok"):
+                            voip_ok += 1
+                        else:
+                            voip_err += 1
+                            reason = result.get("error", "unknown")
+                            logger.warning(
+                                f"APNs VoIP call control failed action={action} reason={reason}"
+                            )
+                            if reason in (
+                                "BadDeviceToken",
+                                "DeviceTokenNotForTopic",
+                                "Unregistered",
+                            ):
+                                await remove_push_token_from_users(token)
+                logger.info(
+                    "APNs VoIP call control "
+                    f"action={action} call={str(call.get('id', ''))[:8]} "
+                    f"ok={voip_ok} err={voip_err}"
                 )
-                if result.get("ok"):
-                    ok += 1
-                else:
-                    err += 1
-                    err_code = result.get("fcm_error_code") or result.get("error", "unknown")
-                    logger.warning(
-                        f"Call control push failed action={action} err={err_code}"
+            else:
+                logger.warning(
+                    f"APNs VoIP not configured - skipped {len(voip_targets)} call control recipients"
+                )
+
+        ok = err = 0
+        if targets and fcm_configured:
+            async with httpx.AsyncClient(timeout=10) as client:
+                for target in targets:
+                    token = target["token"]
+                    result = await send_fcm(
+                        client,
+                        token=token,
+                        title="ghostel.app call",
+                        body="",
+                        channel_id="calls",
+                        sound="default",
+                        priority="high",
+                        ttl_seconds=30,
+                        data=data,
+                        data_only=True,
                     )
-                    if err_code in ("UNREGISTERED", "INVALID_ARGUMENT", "NOT_FOUND"):
-                        await remove_push_token_from_users(token)
+                    if result.get("ok"):
+                        ok += 1
+                    else:
+                        err += 1
+                        err_code = result.get("fcm_error_code") or result.get("error", "unknown")
+                        logger.warning(
+                            f"Call control push failed action={action} err={err_code}"
+                        )
+                        if err_code in ("UNREGISTERED", "INVALID_ARGUMENT", "NOT_FOUND"):
+                            await remove_push_token_from_users(token)
+        elif targets and not fcm_configured:
+            logger.warning(f"FCM not configured - skipped {len(targets)} call control recipients")
         logger.info(
-            f"Call control push action={action} call={str(call.get('id', ''))[:8]} ok={ok} err={err}"
+            "Call control push "
+            f"action={action} call={str(call.get('id', ''))[:8]} "
+            f"fcm_ok={ok} fcm_err={err} voip_ok={voip_ok} voip_err={voip_err}"
         )
     except Exception as exc:
         logger.warning(f"_send_call_control_push failed: {exc}")

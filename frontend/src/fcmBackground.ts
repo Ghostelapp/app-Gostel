@@ -149,6 +149,10 @@ async function _handleCallControlPayload(data: Record<string, string>): Promise<
   const action = data.call_control_action || data.status || data.type;
   let locallyAccepted = false;
   try {
+    if (action !== 'accepted') {
+      const { cacheTerminatedCallId } = require('./callState');
+      await cacheTerminatedCallId(callId, action || 'ENDED');
+    }
     const {
       clearPendingIncomingCall,
       emitCallControlEvent,

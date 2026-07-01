@@ -71,6 +71,21 @@ def _authorization_header() -> str:
 
 def build_voip_payload(data: dict[str, Any]) -> dict[str, Any]:
     call_id = str(data.get("call_id") or data.get("message_id") or "")
+    payload_type = str(data.get("type") or "incoming_call")
+    if payload_type == "call_control":
+        return {
+            "aps": {"content-available": 1},
+            "uuid": call_id,
+            "call_id": call_id,
+            "type": "call_control",
+            "call_control_action": str(data.get("call_control_action") or data.get("status") or ""),
+            "conversation_id": str(data.get("conversation_id") or ""),
+            "actor_id": str(data.get("actor_id") or ""),
+            "accepted_by": str(data.get("accepted_by") or ""),
+            "ended_by": str(data.get("ended_by") or ""),
+            "status": str(data.get("status") or ""),
+            "sent_at": int(time.time()),
+        }
     return {
         "aps": {"content-available": 1},
         "uuid": call_id,
