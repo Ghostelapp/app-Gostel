@@ -1306,6 +1306,15 @@ export default function CallScreen() {
         msg.type === 'call:end' ||
         msg.type === 'call:reject' ||
         msg.type === 'call:cancel' ||
+        msg.type === 'call:declined' ||
+        msg.type === 'call:cancelled' ||
+        msg.type === 'call:timeout' ||
+        msg.type === 'call:failed' ||
+        msg.event === 'call.declined' ||
+        msg.event === 'call.cancelled' ||
+        msg.event === 'call.ended' ||
+        msg.event === 'call.timeout' ||
+        msg.event === 'call.failed' ||
         // Server-side broadcast when /api/calls/{id}/end is called by either side.
         msg.type === 'call:ended'
       ) {
@@ -1316,8 +1325,12 @@ export default function CallScreen() {
         closeCallFromPeer(
           msg.type === 'call:reject' || status === 'rejected' || status === 'declined'
             ? 'Call rejected'
-            : msg.type === 'call:cancel' || status === 'cancelled'
+            : msg.type === 'call:cancel' || msg.type === 'call:cancelled' || status === 'cancelled'
               ? 'Call cancelled'
+              : msg.type === 'call:timeout' || status === 'timeout' || status === 'missed'
+                ? 'No answer'
+                : msg.type === 'call:failed' || status === 'failed'
+                  ? 'Connection failed'
               : 'Call ended by peer'
         );
         return;
@@ -1404,7 +1417,15 @@ export default function CallScreen() {
     if (!id || !user) return;
     let cancelled = false;
     const activeStatuses = new Set(['answered', 'connecting', 'active', 'reconnecting']);
-    const terminalStatuses = new Set(['ended', 'rejected', 'declined', 'cancelled', 'missed']);
+    const terminalStatuses = new Set([
+      'ended',
+      'rejected',
+      'declined',
+      'cancelled',
+      'missed',
+      'timeout',
+      'failed',
+    ]);
 
     const syncCallStatus = async () => {
       if (endedRef.current || connectedRef.current) return;

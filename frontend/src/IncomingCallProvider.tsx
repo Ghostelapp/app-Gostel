@@ -18,7 +18,9 @@ import { useAuth } from './auth';
 import { api } from './api';
 import { theme } from './theme';
 import {
+  cacheTerminatedCallId,
   clearActiveCallState,
+  getCachedTerminatedCallStatus,
   logCallEvent,
   saveActiveCallState,
 } from './callState';
@@ -66,7 +68,15 @@ type ShowIncomingOptions = {
 // Vibration pattern: 0ms wait, vibrate 1s, pause 1s — looped
 const VIBRATION_PATTERN = [0, 1000, 1000];
 const PENDING_CALL_MAX_AGE_MS = 60_000;
-const TERMINAL_CALL_STATUSES = new Set(['ended', 'rejected', 'declined', 'cancelled', 'missed']);
+const TERMINAL_CALL_STATUSES = new Set([
+  'ended',
+  'rejected',
+  'declined',
+  'cancelled',
+  'missed',
+  'timeout',
+  'failed',
+]);
 const MOBILE_UNLOCK_ACTION_GUARD_MS = 1_800;
 
 export default function IncomingCallProvider({ children }: { children: React.ReactNode }) {
@@ -127,11 +137,28 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   }, []);
 
   const showIncoming = useCallback(
-    (
+    async (
       call: IncomingCallPayload,
       { persist = true, notifyNative = true }: ShowIncomingOptions = {},
     ) => {
       if (call.caller_id === user?.id || dismissedCallIdsRef.current.has(call.id)) return;
+      const cachedTerminalStatus = await getCachedTerminatedCallStatus(call.id);
+      if (cachedTerminalStatus) {
+        logCallEvent('STALE_PUSH_IGNORED', {
+          callId: call.id,
+          terminalStatus: cachedTerminalStatus,
+          source: 'show_incoming',
+        });
+        dismissedCallIdsRef.current.add(call.id);
+        await clearPendingIncomingCall(call.id).catch(() => {});
+        await clearActiveCallState(call.id).catch(() => {});
+        try {
+          endIncomingCallNative(call.id);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
       logCallEvent('CALL_INVITE_RECEIVED', {
         callId: call.id,
         callerId: call.caller_id,
@@ -217,6 +244,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       stopVibration();
       import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
       if (call.action === 'decline') {
+        await cacheTerminatedCallId(call.id, 'DECLINED').catch(() => {});
         await callManager.declineCall(call.id).catch(() => {});
         return true;
       }
@@ -294,6 +322,38 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     });
   }, [user?.id, router, showIncoming, stopVibration]);
 
+  const cleanupTerminalCall = useCallback(
+    (callId: string | null | undefined, status: string, reason: string) => {
+      const cid = callId || incomingCallIdRef.current || incomingRef.current?.id || null;
+      if (cid) {
+        dismissedCallIdsRef.current.add(cid);
+        cacheTerminatedCallId(cid, status).catch(() => {});
+      }
+      if (!cid || incomingCallIdRef.current === cid) incomingCallIdRef.current = null;
+      setIncoming((current) => (!cid || current?.id === cid ? null : current));
+      if (cid) {
+        clearPendingIncomingCall(cid).catch(() => {});
+        clearActiveCallState(cid).catch(() => {});
+        cancelFullScreenIncomingCallNotification(cid).catch(() => {});
+        try {
+          endIncomingCallNative(cid);
+        } catch {
+          /* ignore */
+        }
+      }
+      if (Platform.OS === 'android') stopActiveCallService().catch(() => {});
+      stopVibration();
+      import('./sounds').then((sounds) => sounds.stopRingtone()).catch(() => {});
+      logCallEvent('LOCAL_CALL_STATE_CLEARED', {
+        reason,
+        callId: cid,
+        status,
+        source: 'terminal_cleanup',
+      });
+    },
+    [stopVibration],
+  );
+
   const onMessage = useCallback(
     (msg: any) => {
       if (msg?.type === 'call:incoming' && msg.data && msg.data.caller_id !== user?.id) {
@@ -322,41 +382,33 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
             }
           }
         }
-      } else if (msg?.type === 'call:ended') {
-        const cid = msg.data?.call_id;
-        if (cid) dismissedCallIdsRef.current.add(cid);
-        if (incomingCallIdRef.current === cid) incomingCallIdRef.current = null;
-        setIncoming((cur) => (cur && cur.id === cid ? null : cur));
-        clearPendingIncomingCall(cid).catch(() => {});
-        clearActiveCallState(cid).catch(() => {});
-        // Also clear any pending native CallKeep screen (e.g. caller hung up
-        // while OS-level call screen was visible on lockscreen).
-        if (cid) {
-          cancelFullScreenIncomingCallNotification(cid).catch(() => {});
-          try {
-            endIncomingCallNative(cid);
-          } catch {
-            /* ignore */
-          }
-        }
+      } else if (
+        msg?.type === 'call:ended' ||
+        msg?.type === 'call:declined' ||
+        msg?.type === 'call:cancelled' ||
+        msg?.type === 'call:timeout' ||
+        msg?.type === 'call:failed' ||
+        msg?.event === 'call.declined' ||
+        msg?.event === 'call.cancelled' ||
+        msg?.event === 'call.ended' ||
+        msg?.event === 'call.timeout' ||
+        msg?.event === 'call.failed'
+      ) {
+        cleanupTerminalCall(
+          msg.data?.call_id || msg.call_id,
+          String(msg.data?.status || 'ended'),
+          'ws_call_ended',
+        );
       } else if (msg?.type === 'call:cancel' || msg?.type === 'call:end') {
         // Caller hung up before we accepted — close modal
-        if (msg.call_id) dismissedCallIdsRef.current.add(msg.call_id);
-        if (incomingCallIdRef.current === msg.call_id) incomingCallIdRef.current = null;
-        setIncoming((cur) => (cur && cur.id === msg.call_id ? null : cur));
-        clearPendingIncomingCall(msg.call_id).catch(() => {});
-        clearActiveCallState(msg.call_id).catch(() => {});
-        if (msg.call_id) {
-          cancelFullScreenIncomingCallNotification(msg.call_id).catch(() => {});
-          try {
-            endIncomingCallNative(msg.call_id);
-          } catch {
-            /* ignore */
-          }
-        }
+        cleanupTerminalCall(
+          msg.call_id,
+          msg.type === 'call:cancel' ? 'cancelled' : 'ended',
+          'ws_legacy_terminal_event',
+        );
       }
     },
-    [user?.id, showIncoming, stopVibration]
+    [user?.id, showIncoming, cleanupTerminalCall, stopVibration]
   );
 
   // Single WebSocket connection — capture the send() handle so reject() can
@@ -427,6 +479,14 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         const { data } = await api.get(`/calls/${call.id}`);
         const status = String(data?.status || '').toLowerCase();
         if (data?.ended_at || TERMINAL_CALL_STATUSES.has(status) || status === 'answered') {
+          if (data?.ended_at || TERMINAL_CALL_STATUSES.has(status)) {
+            await cacheTerminatedCallId(call.id, status || 'ENDED').catch(() => {});
+            try {
+              endIncomingCallNative(call.id);
+            } catch {
+              /* ignore */
+            }
+          }
           dismissedCallIdsRef.current.add(call.id);
           if (incomingCallIdRef.current === call.id) incomingCallIdRef.current = null;
           setIncoming((current) => (current?.id === call.id ? null : current));
@@ -467,6 +527,9 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     });
     const unsubControl = subscribeToCallControlEvents(({ call_id, action }) => {
       if (!call_id) return;
+      if (action !== 'accepted') {
+        cacheTerminatedCallId(call_id, action || 'ENDED').catch(() => {});
+      }
       dismissedCallIdsRef.current.add(call_id);
       if (incomingCallIdRef.current === call_id) incomingCallIdRef.current = null;
       setIncoming((current) => (current?.id === call_id ? null : current));

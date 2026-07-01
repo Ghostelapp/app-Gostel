@@ -1,7 +1,17 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
-import { hydrateIncomingCallNative } from './callkeep';
+import { endIncomingCallNative, hydrateIncomingCallNative } from './callkeep';
+import { api } from './api';
 import {
+  cacheTerminatedCallId,
+  clearActiveCallState,
+  getCachedTerminatedCallStatus,
+  isTerminalCallStatus,
+  logCallEvent,
+  mapBackendCallStatus,
+} from './callState';
+import {
+  clearPendingIncomingCall,
   normalizeIncomingCallPayload,
   showIncomingCallFromPush,
 } from './incomingCallStore';
@@ -18,6 +28,45 @@ async function rememberVoipToken(token: unknown): Promise<void> {
 async function handleVoipNotification(notification: any): Promise<void> {
   const call = normalizeIncomingCallPayload(notification);
   if (!call) return;
+  logCallEvent('IOS_VOIP_PUSH_RECEIVED', {
+    callId: call.id,
+    appPlatform: Platform.OS,
+  });
+
+  const cachedTerminalStatus = await getCachedTerminatedCallStatus(call.id);
+  if (cachedTerminalStatus) {
+    logCallEvent('STALE_PUSH_IGNORED', {
+      callId: call.id,
+      terminalStatus: cachedTerminalStatus,
+      source: 'voip_push_cache',
+    });
+    endIncomingCallNative(call.id);
+    await clearPendingIncomingCall(call.id).catch(() => {});
+    await clearActiveCallState(call.id).catch(() => {});
+    return;
+  }
+
+  try {
+    const statusResponse = await Promise.race([
+      api.get(`/calls/${call.id}/status`),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+    ]);
+    const status = mapBackendCallStatus((statusResponse as any)?.data?.status);
+    if (isTerminalCallStatus(status) || (statusResponse as any)?.data?.ended_at) {
+      await cacheTerminatedCallId(call.id, status);
+      logCallEvent('STALE_PUSH_IGNORED', {
+        callId: call.id,
+        terminalStatus: status,
+        source: 'voip_push_backend_status',
+      });
+      endIncomingCallNative(call.id);
+      await clearPendingIncomingCall(call.id).catch(() => {});
+      await clearActiveCallState(call.id).catch(() => {});
+      return;
+    }
+  } catch {
+    /* PushKit completion must stay fast; backend sync remains best-effort. */
+  }
 
   // AppDelegate has already reported this PushKit notification to CallKit.
   // Hydrate the JS-side map so answer/end actions can complete signaling.

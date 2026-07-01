@@ -3798,6 +3798,25 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
             return
 
         is_call = msg.get("kind") == "call"
+        if is_call:
+            call_id = str(msg.get("id") or msg.get("call_id") or "")
+            call = await db.calls.find_one({"id": call_id}, {"_id": 0})
+            status = str((call or {}).get("status") or "").lower()
+            expires_at = str((call or {}).get("expires_at") or (call or {}).get("expiresAt") or "")
+            if (
+                not call
+                or status in CALL_TERMINAL_STATUSES
+                or status != "ringing"
+                or call.get("ended_at")
+                or call.get("answered_at")
+                or (expires_at and expires_at <= now_iso)
+            ):
+                logger.info(
+                    "SKIP_PUSH_FOR_TERMINAL_CALL_STATE "
+                    f"call={call_id[:8]} status={status or 'missing'}"
+                )
+                return
+
         title = conv.get("name") or "New message"
         if conv.get("type") == "direct":
             title = msg.get("sender_name", "New message")
@@ -4171,6 +4190,22 @@ _ice_cache = {"servers": None, "source": None, "expires_at": 0.0}
 import time as _time
 
 CALL_RING_TIMEOUT_SECONDS = 45
+CALL_TERMINAL_STATUSES = {
+    "declined",
+    "cancelled",
+    "ended",
+    "missed",
+    "timeout",
+    "failed",
+    "rejected",
+}
+CALL_ACTIVE_STATUSES = {
+    "ringing",
+    "answered",
+    "connecting",
+    "active",
+    "reconnecting",
+}
 
 CALL_SIGNAL_EVENT_NAMES = {
     "call:offer": "call.offer",
@@ -4569,7 +4604,15 @@ async def get_active_call(user: dict = Depends(get_current_user)):
         sort=[("started_at", -1)],
     )
     if not call:
+        logger.info(
+            f"BACKEND_CALL_ACTIVE_QUERY_RESULT user={str(user.get('id', ''))[:8]} active=false"
+        )
         return None
+    logger.info(
+        "BACKEND_CALL_ACTIVE_QUERY_RESULT "
+        f"user={str(user.get('id', ''))[:8]} active=true "
+        f"call={str(call.get('id', ''))[:8]} status={call.get('status')}"
+    )
     call = await enrich_call_for_user(call, user["id"])
     return public_call_status(call, user["id"])
 
@@ -4622,7 +4665,11 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Not a participant")
     if user["id"] == call.get("caller_id"):
         raise HTTPException(status_code=403, detail="Caller cannot accept own call")
-    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "declined", "cancelled", "missed"}:
+    current_status = str(call.get("status") or "").lower()
+    logger.info(
+        f"BACKEND_CALL_STATUS_BEFORE_ACTION action=accept call={call_id[:8]} status={current_status}"
+    )
+    if call.get("ended_at") or current_status in CALL_TERMINAL_STATUSES:
         return {
             "accepted": False,
             "status": call.get("status", "ended"),
@@ -4672,6 +4719,9 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
     await broadcast_to_members(call.get("member_ids", []), accepted_event)
     asyncio.create_task(
         _send_call_control_push(call, "accepted", user["id"], user.get("_auth_sid"))
+    )
+    logger.info(
+        f"BACKEND_CALL_STATUS_AFTER_ACTION action=accept call={call_id[:8]} status=answered"
     )
     return {"accepted": True}
 
@@ -4857,17 +4907,20 @@ async def list_call_signals(call_id: str, user: dict = Depends(get_current_user)
     )
 
 
-@api.post("/calls/{call_id}/end")
-async def end_call(call_id: str, user: dict = Depends(get_current_user)):
+async def _finish_call(call_id: str, user: dict, action: str):
     await enforce_rate_limit(
-        "call-end-user", user["id"], limit=120, window_seconds=60 * 60
+        f"call-{action}-user", user["id"], limit=120, window_seconds=60 * 60
     )
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})
     if not call:
         return {"ended": True, "ephemeral": True}
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
-    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "declined", "cancelled", "missed"}:
+    current_status = str(call.get("status") or "").lower()
+    logger.info(
+        f"BACKEND_CALL_STATUS_BEFORE_ACTION action={action} call={call_id[:8]} status={current_status}"
+    )
+    if call.get("ended_at") or current_status in CALL_TERMINAL_STATUSES:
         return {"ended": True, "status": call.get("status", "ended"), "idempotent": True}
     ended_iso = now_utc().isoformat()
     update_doc: dict = {
@@ -4887,6 +4940,14 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
             update_doc["status"] = "ended"
         except Exception:
             update_doc["status"] = "ended"
+    elif action == "decline":
+        if user["id"] == call.get("caller_id"):
+            raise HTTPException(status_code=403, detail="Caller cannot decline own call")
+        update_doc["status"] = "declined"
+    elif action == "cancel":
+        if user["id"] != call.get("caller_id"):
+            raise HTTPException(status_code=403, detail="Only caller can cancel call")
+        update_doc["status"] = "cancelled"
     else:
         # Never answered. If the caller ends it, it is a cancellation; if the
         # callee ends it, it is an explicit decline rather than a missed call.
@@ -4920,9 +4981,24 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
         ended_event,
     )
     asyncio.create_task(_send_call_control_push(call, update_doc.get("status", "ended"), user["id"]))
+    logger.info(
+        "BACKEND_CALL_STATUS_AFTER_ACTION "
+        f"action={action} call={call_id[:8]} status={update_doc.get('status', 'ended')}"
+    )
+    if update_doc.get("status") == "declined":
+        logger.info(f"BACKEND_CALL_DECLINED call={call_id[:8]}")
+    elif update_doc.get("status") == "cancelled":
+        logger.info(f"BACKEND_CALL_CANCELLED call={call_id[:8]}")
+    elif update_doc.get("status") == "ended":
+        logger.info(f"BACKEND_CALL_ENDED call={call_id[:8]}")
     if call.get("ephemeral"):
         await db.calls.delete_one({"id": call_id})
     return {"ended": True, "status": update_doc.get("status", "ended")}
+
+
+@api.post("/calls/{call_id}/end")
+async def end_call(call_id: str, user: dict = Depends(get_current_user)):
+    return await _finish_call(call_id, user, "end")
 
 
 # ----------------- Call history -----------------
@@ -4995,12 +5071,12 @@ async def get_call_status(call_id: str, user: dict = Depends(get_current_user)):
 
 @api.post("/calls/{call_id}/decline")
 async def decline_call(call_id: str, user: dict = Depends(get_current_user)):
-    return await end_call(call_id, user)
+    return await _finish_call(call_id, user, "decline")
 
 
 @api.post("/calls/{call_id}/cancel")
 async def cancel_call(call_id: str, user: dict = Depends(get_current_user)):
-    return await end_call(call_id, user)
+    return await _finish_call(call_id, user, "cancel")
 
 
 @api.post("/calls/{call_id}/timeout")
@@ -5010,7 +5086,7 @@ async def timeout_call(call_id: str, user: dict = Depends(get_current_user)):
         return {"timed_out": True, "ephemeral": True}
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
-    if call.get("answered_at") or call.get("ended_at"):
+    if call.get("answered_at") or call.get("ended_at") or str(call.get("status") or "").lower() in CALL_TERMINAL_STATUSES:
         return {"timed_out": False, "status": call.get("status"), "idempotent": True}
     ended_iso = now_utc().isoformat()
     await db.calls.update_one(
@@ -5052,7 +5128,7 @@ async def update_call_client_state(
         return {"updated": False, "ephemeral": True}
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
-    if call.get("ended_at") or call.get("status") in {"ended", "rejected", "declined", "cancelled", "missed"}:
+    if call.get("ended_at") or str(call.get("status") or "").lower() in CALL_TERMINAL_STATUSES:
         return {"updated": False, "status": call.get("status"), "idempotent": True}
 
     now_iso = now_utc().isoformat()
@@ -5468,7 +5544,7 @@ async def root():
     return {"app": APP_NAME, "version": "1.0.0", "status": "ok"}
 
 
-ANDROID_APK_VERSION = "1.4.38"
+ANDROID_APK_VERSION = "1.4.39"
 
 
 @app.get("/app-release.apk")

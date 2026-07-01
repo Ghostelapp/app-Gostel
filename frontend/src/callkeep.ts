@@ -8,6 +8,15 @@ import {
   activateWebRtcAudioSession,
   deactivateWebRtcAudioSession,
 } from './webrtcAudioSession';
+import {
+  cacheTerminatedCallId,
+  clearActiveCallState,
+  getActiveCallState,
+  getCachedTerminatedCallStatus,
+  isTerminalCallStatus,
+  logCallEvent,
+  mapBackendCallStatus,
+} from './callState';
 
 let initialized = false;
 let setupPromise: Promise<boolean> | null = null;
@@ -144,6 +153,72 @@ async function getIncomingCallInfo(callId: string): Promise<IncomingCallInfo | n
   return null;
 }
 
+async function getIncomingCallInfoWithFallback(
+  callUUID: string,
+  reason: string,
+): Promise<IncomingCallInfo | null> {
+  const key = normalizeCallId(callUUID);
+  const cached = await getIncomingCallInfo(callUUID);
+  if (cached) {
+    logCallEvent('CALLKIT_UUID_TO_CALL_ID_FOUND', {
+      callId: cached.callId,
+      reason,
+    });
+    return cached;
+  }
+
+  logCallEvent('CALLKIT_UUID_TO_CALL_ID_MISSING', {
+    callId: callUUID,
+    reason,
+  });
+
+  try {
+    const local = await getActiveCallState();
+    if (local?.activeCallId && normalizeCallId(local.activeCallId) === key) {
+      const info: IncomingCallInfo = {
+        callId: local.activeCallId,
+        conversationId: local.conversationId,
+        callerId: local.callerId,
+        callerName: 'Caller',
+      };
+      await rememberIncomingCall(info);
+      logCallEvent('CALLKIT_UUID_TO_CALL_ID_FOUND', {
+        callId: info.callId,
+        reason: `${reason}:local_state`,
+      });
+      return info;
+    }
+  } catch {
+    /* backend status fallback remains available */
+  }
+
+  try {
+    const { api } = require('./api');
+    const { data } = await api.get(`/calls/${callUUID}/status`);
+    const callId = String(data?.call_id || data?.id || callUUID);
+    const conversationId = String(data?.conversation_id || data?.conversationId || '');
+    const callerId = String(data?.caller_id || data?.callerId || '');
+    if (callId && conversationId && callerId) {
+      const info: IncomingCallInfo = {
+        callId,
+        conversationId,
+        callerId,
+        callerName: String(data?.caller_name || 'Caller'),
+      };
+      await rememberIncomingCall(info);
+      logCallEvent('CALLKIT_UUID_TO_CALL_ID_FOUND', {
+        callId: info.callId,
+        reason: `${reason}:backend_status`,
+      });
+      return info;
+    }
+  } catch {
+    /* no fallback info */
+  }
+
+  return null;
+}
+
 async function forgetIncomingCall(callId: string): Promise<void> {
   const key = normalizeCallId(callId);
   if (!key) return;
@@ -259,8 +334,25 @@ async function flushPendingAnsweredCall(): Promise<void> {
 async function handleAnswerCall(callUUID: string): Promise<void> {
   const key = normalizeCallId(callUUID);
   if (!key) return;
-  const info = await getIncomingCallInfo(callUUID);
-  if (!info) return;
+  logCallEvent('IOS_CALLKIT_ANSWER_ACTION', {
+    callId: callUUID,
+    appState: AppState.currentState,
+  });
+  const cachedTerminalStatus = await getCachedTerminatedCallStatus(callUUID);
+  if (cachedTerminalStatus) {
+    logCallEvent('STALE_PUSH_IGNORED', {
+      callId: callUUID,
+      terminalStatus: cachedTerminalStatus,
+      source: 'callkit_answer_cached_terminal',
+    });
+    endIncomingCallNative(callUUID);
+    return;
+  }
+  const info = await getIncomingCallInfoWithFallback(callUUID, 'answer');
+  if (!info) {
+    endIncomingCallNative(callUUID);
+    return;
+  }
 
   answeredCalls.add(key);
   await markLocallyAcceptedCall(info.callId);
@@ -293,7 +385,15 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   }
   try {
     const { api } = require('./api');
-    api.post(`/calls/${info.callId}/accept`).catch(() => {});
+    api.post(`/calls/${info.callId}/accept`)
+      .then((response: any) => {
+        const status = mapBackendCallStatus(response?.data?.status);
+        if (isTerminalCallStatus(status)) {
+          cacheTerminatedCallId(info.callId, status).catch(() => {});
+          endIncomingCallNative(info.callId);
+        }
+      })
+      .catch(() => {});
   } catch {
     /* the persisted signaling path can still connect the call */
   }
@@ -324,6 +424,16 @@ async function hydrateFromCallKeepDisplay(event: any): Promise<void> {
   const conversationId = String(payload.conversation_id || '');
   const callerId = String(payload.caller_id || event?.handle || '');
   if (!callId || !conversationId || !callerId) return;
+  const cachedTerminalStatus = await getCachedTerminatedCallStatus(callId);
+  if (cachedTerminalStatus) {
+    logCallEvent('STALE_PUSH_IGNORED', {
+      callId,
+      terminalStatus: cachedTerminalStatus,
+      source: 'callkeep_display_cached_terminal',
+    });
+    endIncomingCallNative(callId);
+    return;
+  }
 
   const info: IncomingCallInfo = {
     callId,
@@ -344,34 +454,17 @@ async function hydrateFromCallKeepDisplay(event: any): Promise<void> {
   }
 }
 
-async function restoreAfterTransientNativeEnd(info: IncomingCallInfo): Promise<void> {
-  const key = normalizeCallId(info.callId);
-  displayedCalls.delete(key);
-  answeredCalls.delete(key);
-  appHandledAnswers.delete(key);
-  routedAnsweredCalls.delete(key);
-
-  try {
-    const { showIncomingCallFromPush } = require('./incomingCallStore');
-    await showIncomingCallFromPush({
-      call_id: info.callId,
-      caller_id: info.callerId,
-      caller_name: info.callerName,
-      conversation_id: info.conversationId,
-      mode: 'audio',
-      received_at: Date.now(),
-    });
-  } catch {
-    /* active-call recovery will query the backend as a second fallback */
-  }
-}
-
 async function handleEndCall(
   callUUID: string,
   { fromInitialEvent = false }: { fromInitialEvent?: boolean } = {},
 ): Promise<void> {
   const key = normalizeCallId(callUUID);
   if (!key) return;
+  logCallEvent('IOS_CALLKIT_END_ACTION', {
+    callId: callUUID,
+    appState: AppState.currentState,
+    fromInitialEvent,
+  });
 
   if (suppressedEndEvents.delete(key)) {
     answeredCalls.delete(key);
@@ -380,8 +473,9 @@ async function handleEndCall(
     return;
   }
 
-  const info = await getIncomingCallInfo(callUUID);
+  const info = await getIncomingCallInfoWithFallback(callUUID, 'end');
   const wasAnswered = answeredCalls.has(key);
+  const terminalStatus = wasAnswered ? 'ENDED' : 'DECLINED';
 
   if (
     info &&
@@ -391,12 +485,11 @@ async function handleEndCall(
   ) {
     await wait(INACTIVE_END_DEFER_MS);
     if (String(AppState.currentState) === 'active') {
-      reportCallKeepDiag(info, 'callkeep_end_ignored_after_unlock_deferred', {
+      reportCallKeepDiag(info, 'callkeep_end_honored_after_unlock_deferred', {
         deferred_ms: INACTIVE_END_DEFER_MS,
         native_displayed: displayedCalls.has(key),
+        answered: wasAnswered,
       });
-      await restoreAfterTransientNativeEnd(info);
-      return;
     }
   }
 
@@ -414,18 +507,14 @@ async function handleEndCall(
     activeTransitionAge >= 0 &&
     activeTransitionAge <= ACTIVE_TRANSITION_END_GUARD_MS;
 
-  if (info && isTransientUnlockEnd) {
+  if (info && isTransientUnlockEnd && wasAnswered) {
     reportCallKeepDiag(info, 'callkeep_end_ignored_after_unlock', {
       answered: wasAnswered,
       active_transition_age_ms: activeTransitionAge,
       native_displayed: displayedCalls.has(key),
     });
-    if (wasAnswered) {
-      await routeOrDeferAnsweredCall(info);
-      activateWebRtcAudioSession();
-      return;
-    }
-    await restoreAfterTransientNativeEnd(info);
+    await routeOrDeferAnsweredCall(info);
+    activateWebRtcAudioSession();
     return;
   }
 
@@ -434,7 +523,20 @@ async function handleEndCall(
   routedAnsweredCalls.delete(key);
   await forgetIncomingCall(callUUID);
   await clearPendingIncomingCall(callUUID);
-  if (!info) return;
+  await clearActiveCallState(callUUID).catch(() => {});
+  await cacheTerminatedCallId(callUUID, terminalStatus).catch(() => {});
+  if (!info) {
+    try {
+      const { api } = require('./api');
+      await api.post(`/calls/${callUUID}/decline`);
+    } catch {
+      /* backend may not know this UUID */
+    }
+    return;
+  }
+  await clearPendingIncomingCall(info.callId).catch(() => {});
+  await clearActiveCallState(info.callId).catch(() => {});
+  await cacheTerminatedCallId(info.callId, terminalStatus).catch(() => {});
   emitCallKeepAction({ callId: info.callId, action: 'end' });
   reportCallKeepDiag(info, 'callkeep_end_honored', {
     answered: wasAnswered,
@@ -454,7 +556,17 @@ async function handleEndCall(
   }
   try {
     const { api } = require('./api');
-    await api.post(`/calls/${info.callId}/end`);
+    if (wasAnswered) {
+      await api.post(`/calls/${info.callId}/end`);
+      logCallEvent('IOS_END_SENT_TO_BACKEND', {
+        callId: info.callId,
+      });
+    } else {
+      await api.post(`/calls/${info.callId}/decline`);
+      logCallEvent('IOS_DECLINE_SENT_TO_BACKEND', {
+        callId: info.callId,
+      });
+    }
   } catch {
     /* best-effort server record */
   }

@@ -1,7 +1,9 @@
 import { AppState, Platform } from 'react-native';
 import { api } from './api';
 import {
+  cacheTerminatedCallId,
   clearActiveCallState,
+  getCachedTerminatedCallStatus,
   getActiveCallState,
   isTerminalCallStatus,
   type LocalCallStatus,
@@ -139,6 +141,16 @@ class GhostelCallManager {
   async handleIncomingCallInvite(payload: unknown, reason = 'incoming_invite'): Promise<ManagedCallState | null> {
     const call = normalizeIncomingCallPayload(payload);
     if (!call) return this.state;
+    const cachedTerminalStatus = await getCachedTerminatedCallStatus(call.id);
+    if (cachedTerminalStatus) {
+      logCallEvent('STALE_PUSH_IGNORED', {
+        callId: call.id,
+        terminalStatus: cachedTerminalStatus,
+        source: reason,
+      });
+      await this.clearCallState(`${reason}:cached_terminal`, call.id);
+      return this.state;
+    }
     if (this.state?.activeCallId === call.id && !isTerminalCallStatus(this.state.callStatus)) {
       logCallEvent('DUPLICATE_CALL_IGNORED', {
         callId: call.id,
@@ -288,16 +300,22 @@ class GhostelCallManager {
   async declineCall(callId: string): Promise<void> {
     if (!callId) return;
     await api.post(`/calls/${callId}/decline`).catch(() => api.post(`/calls/${callId}/end`));
+    await cacheTerminatedCallId(callId, 'DECLINED').catch(() => {});
+    await this.clearCallState('decline_call', callId);
   }
 
   async cancelOutgoingCall(callId: string): Promise<void> {
     if (!callId) return;
     await api.post(`/calls/${callId}/cancel`).catch(() => api.post(`/calls/${callId}/end`));
+    await cacheTerminatedCallId(callId, 'CANCELLED').catch(() => {});
+    await this.clearCallState('cancel_outgoing_call', callId);
   }
 
   async endCall(callId: string): Promise<void> {
     if (!callId) return;
     await api.post(`/calls/${callId}/end`);
+    await cacheTerminatedCallId(callId, 'ENDED').catch(() => {});
+    await this.clearCallState('end_call', callId);
   }
 
   private async syncActiveCallFromBackendInternal(reason: string): Promise<ManagedCallState | null> {
@@ -337,20 +355,32 @@ class GhostelCallManager {
     const status = mapBackendCallStatus(data?.status);
     const callId = String(data?.call_id || data?.id || local?.activeCallId || '');
     const hasActiveCall = Boolean(data?.call_id || data?.id);
+    const cachedTerminalStatus = await getCachedTerminatedCallStatus(callId);
     logCallEvent('CALL_STATE_SYNC_RESULT', {
       reason,
       ok: true,
       hasActiveCall,
       callId,
       status,
+      cachedTerminalStatus: cachedTerminalStatus || '',
     });
 
-    if (!hasActiveCall || isTerminalCallStatus(status) || data?.ended_at) {
-      logCallEvent('NO_ACTIVE_CALL_AFTER_UNLOCK', {
+    if (cachedTerminalStatus || !hasActiveCall || isTerminalCallStatus(status) || data?.ended_at) {
+      logCallEvent(
+        !hasActiveCall
+          ? 'APP_RESUME_NO_ACTIVE_CALL_CLEARING_LOCAL_STATE'
+          : cachedTerminalStatus
+            ? 'APP_RESUME_NO_ACTIVE_CALL_CLEARING_LOCAL_STATE'
+            : 'NO_ACTIVE_CALL_AFTER_UNLOCK',
+        {
         reason,
         callId,
-        status,
-      });
+        status: cachedTerminalStatus || status,
+        },
+      );
+      if (isTerminalCallStatus(status)) {
+        await cacheTerminatedCallId(callId, status).catch(() => {});
+      }
       await this.clearCallState(reason, callId || local?.activeCallId || null);
       return null;
     }

@@ -1,6 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DeviceEventEmitter, Platform } from 'react-native';
-import { saveActiveCallState } from './callState';
+import {
+  clearActiveCallState,
+  getCachedTerminatedCallStatus,
+  logCallEvent,
+  saveActiveCallState,
+} from './callState';
 
 export type IncomingCallPayload = {
   id: string;
@@ -42,6 +47,17 @@ export function normalizeIncomingCallPayload(data: any): IncomingCallPayload | n
 export async function savePendingIncomingCall(data: any): Promise<IncomingCallPayload | null> {
   const call = normalizeIncomingCallPayload(data);
   if (!call) return null;
+  const terminalStatus = await getCachedTerminatedCallStatus(call.id);
+  if (terminalStatus) {
+    logCallEvent('STALE_PUSH_IGNORED', {
+      callId: call.id,
+      terminalStatus,
+      source: 'save_pending_incoming_call',
+    });
+    await clearPendingIncomingCall(call.id).catch(() => {});
+    await clearActiveCallState(call.id).catch(() => {});
+    return null;
+  }
   const storedCall = {
     ...call,
     received_at: call.received_at || Date.now(),
