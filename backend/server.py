@@ -3923,12 +3923,17 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         if fcm_recipients and fcm_is_configured():
             async with httpx.AsyncClient(timeout=10) as client:
                 for r in fcm_recipients:
+                    platform = str(r.get("platform") or "").lower()
                     if is_call and (
                         push_target_install_key(r) in voip_success_install_keys
                         or (
                             not normalize_push_device_id(r.get("device_id"))
-                            and str(r.get("platform") or "").lower() == "ios"
+                            and platform == "ios"
                             and r.get("user_id") in voip_success_users_without_device
+                        )
+                        or (
+                            platform in {"", "ios", "unknown"}
+                            and r.get("user_id") in voip_success_users
                         )
                     ):
                         continue
@@ -3995,6 +4000,11 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
             and not (
                 not normalize_push_device_id(r.get("device_id"))
                 and r.get("user_id") in delivered_users_without_device
+            )
+            and not (
+                is_call
+                and str(r.get("platform") or "").lower() in {"", "ios", "unknown"}
+                and r.get("user_id") in voip_success_users
             )
         ]
         if expo_fallback_recipients:
