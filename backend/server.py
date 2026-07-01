@@ -5452,10 +5452,17 @@ async def download_android_apk():
     apk_path = ROOT_DIR.parent / "frontend" / "android" / "app" / "build" / "outputs" / "apk" / "release" / "app-release.apk"
     if not apk_path.exists():
         raise HTTPException(status_code=404, detail="APK not built")
+    headers = {
+        "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "X-Ghostel-Android-Version": "1.4.36",
+    }
     return FileResponse(
         apk_path,
         media_type="application/vnd.android.package-archive",
-        filename="ghostel-app-release.apk",
+        filename="ghostel-app-release-1.4.36.apk",
+        headers=headers,
     )
 
 
@@ -5468,7 +5475,11 @@ async def head_android_apk():
         headers={
             "Content-Type": "application/vnd.android.package-archive",
             "Content-Length": str(apk_path.stat().st_size),
-            "Content-Disposition": 'attachment; filename="ghostel-app-release.apk"',
+            "Content-Disposition": 'attachment; filename="ghostel-app-release-1.4.36.apk"',
+            "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Ghostel-Android-Version": "1.4.36",
         }
     )
 
