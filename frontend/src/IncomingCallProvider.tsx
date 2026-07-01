@@ -185,7 +185,6 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
           callId: call.id,
           phase: 'incoming_ringing',
         });
-        startActiveCallService(call.id, call.caller_name).catch(() => {});
         if (notifyNative) {
           // Keep one native full-screen call notification alive until the call
           // is answered, rejected or ended. It owns the looping system ringtone.

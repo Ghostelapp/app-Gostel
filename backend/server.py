@@ -275,7 +275,12 @@ def normalize_push_device_id(value: Optional[str]) -> str:
 
 
 def user_push_targets(u: dict) -> list[dict]:
-    """Return all registered push targets, including legacy single-token fields."""
+    """Return registered push targets.
+
+    Modern clients store all transports in ``push_tokens``. Legacy single-token
+    fields are only a fallback for accounts that have no modern registrations;
+    mixing both paths for calls can deliver duplicate incoming-call alerts.
+    """
     targets: list[dict] = []
     seen: set[str] = set()
     for entry in u.get("push_tokens") or []:
@@ -299,7 +304,7 @@ def user_push_targets(u: dict) -> list[dict]:
             }
         )
     legacy = (u.get("push_token") or u.get("expo_push_token") or "").strip()
-    if legacy and legacy not in seen:
+    if not targets and legacy and legacy not in seen:
         targets.append(
             {
                 "token": legacy,
@@ -351,35 +356,9 @@ def push_target_install_key(target: dict) -> str:
 
 
 async def sync_user_push_legacy_fields(user_id: str) -> None:
-    user = await db.users.find_one(
-        {"id": user_id},
-        {
-            "_id": 0,
-            "id": 1,
-            "push_tokens": 1,
-            "push_token": 1,
-            "expo_push_token": 1,
-            "push_token_type": 1,
-            "push_platform": 1,
-        },
-    )
-    if not user:
-        return
-    targets = user_push_targets(user)
-    if targets:
-        primary = max(targets, key=lambda entry: entry.get("registered_at") or "")
-        await db.users.update_one(
-            {"id": user_id},
-            {
-                "$set": {
-                    "expo_push_token": primary.get("token") or "",
-                    "push_token": primary.get("token") or "",
-                    "push_token_type": primary.get("token_type") or "fcm",
-                    "push_platform": primary.get("platform") or "unknown",
-                }
-            },
-        )
-        return
+    # Legacy mirror fields caused duplicate call delivery when a user also had
+    # modern ``push_tokens``. Keep reading legacy fields for old accounts, but
+    # never recreate them for clients that register through /push/register.
     await db.users.update_one(
         {"id": user_id},
         {
@@ -3380,13 +3359,13 @@ async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_cur
     await db.users.update_one(
         {"id": user["id"]},
         {
-            "$set": {
-                "expo_push_token": token,  # backwards compat
-                "push_token": token,
-                "push_token_type": token_type,
-                "push_platform": platform or "unknown",
-            },
             "$addToSet": {"push_tokens": token_entry},
+            "$unset": {
+                "expo_push_token": "",
+                "push_platform": "",
+                "push_token": "",
+                "push_token_type": "",
+            },
         },
     )
     await sync_user_push_legacy_fields(user["id"])

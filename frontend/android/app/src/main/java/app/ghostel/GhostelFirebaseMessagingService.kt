@@ -13,7 +13,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
-import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -54,7 +53,6 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
 
       wakeScreenBriefly()
       showFullScreenCallNotification(callId, callerName, intent)
-      startRingingCallService(callId, callerName)
       openActivityIfLockedOrScreenOff(intent)
       Log.i(TAG, "ANDROID_FCM_INCOMING_CALL_RECEIVED callId=$callId")
     } catch (e: Exception) {
@@ -231,16 +229,4 @@ class GhostelFirebaseMessagingService : FirebaseMessagingService() {
     private const val TAG = "GhostelFCM"
   }
 
-  private fun startRingingCallService(callId: String, callerName: String) {
-    try {
-      val serviceIntent = Intent(this, GhostelActiveCallService::class.java).apply {
-        putExtra(GhostelActiveCallService.EXTRA_CALL_ID, callId)
-        putExtra(GhostelActiveCallService.EXTRA_PEER_NAME, callerName)
-      }
-      ContextCompat.startForegroundService(this, serviceIntent)
-      Log.i(TAG, "ANDROID_FOREGROUND_SERVICE_STARTED callId=$callId")
-    } catch (e: Exception) {
-      Log.w(TAG, "start foreground call service failed callId=$callId", e)
-    }
-  }
 }

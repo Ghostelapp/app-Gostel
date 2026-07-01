@@ -219,6 +219,9 @@ export default function CallScreen() {
   const inCallStartedRef = useRef(false);
   /** Caller side only: have we already created & sent the SDP offer? */
   const offerSentRef = useRef(false);
+  /** Caller side only: callee has finished media/bootstrap and requested an offer. */
+  const peerReadyRef = useRef(false);
+  const readyPeerIdRef = useRef<string | null>(null);
   /** Callee side only: have we already created & sent the SDP answer? */
   const answerSentRef = useRef(false);
   const restartAttemptedRef = useRef(false);
@@ -238,7 +241,7 @@ export default function CallScreen() {
   const InCall = getInCallManager();
   const { startRingback, stopRingback } = useCallRingback(
     RINGBACK,
-    isCaller && Platform.OS !== 'ios',
+    isCaller && Platform.OS !== 'web',
   );
 
   useEffect(() => {
@@ -784,6 +787,48 @@ export default function CallScreen() {
     stopRingback,
   ]);
 
+  const sendCallerOffer = useCallback(
+    async (reason: string, peerOverride?: string | null): Promise<boolean> => {
+      if (!isCaller || endedRef.current || offerSentRef.current) return false;
+      if (!peerReadyRef.current) return false;
+
+      const pc = pcRef.current;
+      const peerId = peerOverride || readyPeerIdRef.current || peerIdRef.current;
+      if (!pc || !peerId || !peerPublicKeyRef.current) return false;
+
+      offerSentRef.current = true;
+      try {
+        setStatus('connecting');
+        logCallEvent('WEBRTC_OFFER_CREATE_ATTEMPT', {
+          callId: id,
+          reason,
+          platform: Platform.OS,
+        });
+        const offer = await pc.createOffer({ offerToReceiveAudio: true });
+        await pc.setLocalDescription(offer);
+        logCallEvent('WEBRTC_LOCAL_DESCRIPTION_SET', {
+          callId: id,
+          descriptionType: 'offer',
+          signalingState: String(pc.signalingState || ''),
+        });
+        const sent = await sendEncryptedSignal('call:offer', peerId, {
+          sdp: offer.sdp,
+          sdp_type: offer.type || 'offer',
+        });
+        if (!sent) throw new Error('Encrypted offer not sent');
+        stopRingback();
+        return true;
+      } catch (e: any) {
+        offerSentRef.current = false;
+        setErrMsg(`Offer failed: ${e?.message || e}`);
+        setStatus('failed');
+        setTimeout(() => endCall('Offer failed'), 1500);
+        return false;
+      }
+    },
+    [endCall, id, isCaller, sendEncryptedSignal, stopRingback],
+  );
+
   const attemptIceRestart = useCallback(async (): Promise<boolean> => {
     const pc = pcRef.current;
     const peerId = peerIdRef.current;
@@ -1105,35 +1150,12 @@ export default function CallScreen() {
 
       // ----- Caller side: callee is ready, can send offer -----
       if (msg.type === 'call:ready' && isCaller) {
-        stopRingback();
-        if (offerSentRef.current) return; // already sent offer for this call
-        const from = msg.from;
+        const from = msg.from || msg.senderId;
         if (!from) return;
-        // Remember peer id even if pc isn't ready yet — the callee will retry
-        // sending call:ready until we (the caller) finally answer with an offer.
+        peerReadyRef.current = true;
+        readyPeerIdRef.current = from;
         peerIdRef.current = from;
-        if (!pc) return; // PC not ready yet — wait for next retry
-        offerSentRef.current = true;
-        try {
-          setStatus('connecting');
-          const offer = await pc.createOffer({ offerToReceiveAudio: true });
-          await pc.setLocalDescription(offer);
-          logCallEvent('WEBRTC_LOCAL_DESCRIPTION_SET', {
-            callId: id,
-            descriptionType: 'offer',
-            signalingState: String(pc.signalingState || ''),
-          });
-          const sent = await sendEncryptedSignal('call:offer', from, {
-            sdp: offer.sdp,
-            sdp_type: offer.type || 'offer',
-          });
-          if (!sent) throw new Error('Encrypted offer not sent');
-        } catch (e: any) {
-          offerSentRef.current = false; // allow retry
-          setErrMsg(`Offer failed: ${e?.message || e}`);
-          setStatus('failed');
-          setTimeout(() => endCall('Offer failed'), 1500);
-        }
+        await sendCallerOffer('callee_ready', from);
         return;
       }
 
@@ -1265,7 +1287,17 @@ export default function CallScreen() {
         return;
       }
     },
-    [id, isCaller, drainPendingIce, endCall, closeCallFromPeer, sendEncryptedSignal, decryptPeerSignal, stopRingback]
+    [
+      id,
+      isCaller,
+      drainPendingIce,
+      closeCallFromPeer,
+      decryptPeerSignal,
+      endCall,
+      sendCallerOffer,
+      sendEncryptedSignal,
+      stopRingback,
+    ]
   );
 
   const { send } = useWebSocket(onWs, !!user);
@@ -1477,34 +1509,12 @@ export default function CallScreen() {
       // had to bail because pc wasn't ready. Trigger the offer now.
       if (
         isCaller &&
-        peerIdRef.current &&
+        peerReadyRef.current &&
+        (readyPeerIdRef.current || peerIdRef.current) &&
         !offerSentRef.current &&
         pcRef.current
       ) {
-        offerSentRef.current = true;
-        try {
-          setStatus('connecting');
-          const offer = await pcRef.current.createOffer({
-            offerToReceiveAudio: true,
-          });
-          await pcRef.current.setLocalDescription(offer);
-          logCallEvent('WEBRTC_LOCAL_DESCRIPTION_SET', {
-            callId: id,
-            descriptionType: 'offer',
-            signalingState: String(pcRef.current.signalingState || ''),
-          });
-          const sent = await sendEncryptedSignal('call:offer', peerIdRef.current, {
-            sdp: offer.sdp,
-            sdp_type: offer.type || 'offer',
-          });
-          if (!sent) throw new Error('Encrypted offer not sent');
-        } catch (e: any) {
-          offerSentRef.current = false;
-          setErrMsg(`Offer failed: ${e?.message || e}`);
-          setStatus('failed');
-          setTimeout(() => endCall('Offer failed'), 1500);
-          return;
-        }
+        await sendCallerOffer('bootstrap_after_ready', readyPeerIdRef.current);
       }
 
       // 6. Timeout for no-answer
