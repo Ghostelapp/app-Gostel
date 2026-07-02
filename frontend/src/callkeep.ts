@@ -334,6 +334,10 @@ async function flushPendingAnsweredCall(): Promise<void> {
 async function handleAnswerCall(callUUID: string): Promise<void> {
   const key = normalizeCallId(callUUID);
   if (!key) return;
+  logCallEvent('IOS_CALLKIT_ANSWER_ACTION_START', {
+    callId: callUUID,
+    appState: AppState.currentState,
+  });
   logCallEvent('IOS_CALLKIT_ANSWER_ACTION', {
     callId: callUUID,
     appState: AppState.currentState,
@@ -353,12 +357,28 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
     endIncomingCallNative(callUUID);
     return;
   }
+  logCallEvent('IOS_CALLKIT_ANSWER_CALL_ID_FOUND', {
+    callId: info.callId,
+    nativeUuid: callUUID,
+  });
 
   answeredCalls.add(key);
   await markLocallyAcceptedCall(info.callId);
   await clearPendingIncomingCall(info.callId);
+  logCallEvent('IOS_CALLKIT_RING_TIMEOUT_CANCELLED', {
+    callId: info.callId,
+  });
   await saveAcceptedCallState(info);
+  logCallEvent('IOS_WEBRTC_CONNECTING_AFTER_ANSWER', {
+    callId: info.callId,
+  });
+  logCallEvent('IOS_AUDIO_SESSION_ACTIVATION_START', {
+    callId: info.callId,
+  });
   activateWebRtcAudioSession();
+  logCallEvent('IOS_AUDIO_SESSION_ACTIVATED', {
+    callId: info.callId,
+  });
   emitCallKeepAction({ callId: info.callId, action: 'answer' });
 
   // answerIncomingCall() also emits answerCall. The in-app answer button owns
@@ -371,6 +391,10 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   await routeOrDeferAnsweredCall(info);
   reportCallKeepDiag(info, 'callkit_answer_route_requested', {
     native_displayed: displayedCalls.has(key),
+  });
+  logCallEvent('IOS_CALLKIT_ANSWER_ACTION_FULFILLED', {
+    callId: info.callId,
+    appState: AppState.currentState,
   });
 
   try {
@@ -387,6 +411,10 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
     const { api } = require('./api');
     api.post(`/calls/${info.callId}/accept`)
       .then((response: any) => {
+        logCallEvent('IOS_CALLKIT_ACCEPT_SENT_TO_BACKEND', {
+          callId: info.callId,
+          status: String(response?.data?.status || response?.data?.accepted || ''),
+        });
         const status = mapBackendCallStatus(response?.data?.status);
         if (isTerminalCallStatus(status)) {
           cacheTerminatedCallId(info.callId, status).catch(() => {});
@@ -460,6 +488,14 @@ async function handleEndCall(
 ): Promise<void> {
   const key = normalizeCallId(callUUID);
   if (!key) return;
+  const activeStateAtEnd = await getActiveCallState().catch(() => null);
+  logCallEvent('IOS_CALLKIT_END_ACTION_TRIGGERED', {
+    callId: callUUID,
+    END_ACTION_REASON: fromInitialEvent ? 'initial_event' : 'native_end_event',
+    CALL_STATUS_AT_END_ACTION: activeStateAtEnd?.callStatus || '',
+    CALL_ID_AT_END_ACTION: activeStateAtEnd?.activeCallId || '',
+    appState: AppState.currentState,
+  });
   logCallEvent('IOS_CALLKIT_END_ACTION', {
     callId: callUUID,
     appState: AppState.currentState,

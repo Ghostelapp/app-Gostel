@@ -36,6 +36,7 @@ export function mapBackendCallStatus(status?: string): LocalCallStatus {
   switch (String(status || '').toLowerCase()) {
     case 'ringing':
       return 'INCOMING_RINGING';
+    case 'accepted':
     case 'answered':
     case 'connecting':
       return 'CONNECTING';

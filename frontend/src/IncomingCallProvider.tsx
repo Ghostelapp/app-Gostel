@@ -41,6 +41,7 @@ import {
   savePendingIncomingCall,
   subscribeToCallControlEvents,
   subscribeToIncomingCallEvents,
+  wasCallLocallyAccepted,
   type IncomingCallPayload,
 } from './incomingCallStore';
 import {
@@ -527,26 +528,40 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     });
     const unsubControl = subscribeToCallControlEvents(({ call_id, action }) => {
       if (!call_id) return;
-      if (action !== 'accepted') {
-        cacheTerminatedCallId(call_id, action || 'ENDED').catch(() => {});
-      }
-      dismissedCallIdsRef.current.add(call_id);
-      if (incomingCallIdRef.current === call_id) incomingCallIdRef.current = null;
-      setIncoming((current) => (current?.id === call_id ? null : current));
-      clearPendingIncomingCall(call_id).catch(() => {});
-      if (action !== 'accepted' || !locallyAcceptedCallIdsRef.current.has(call_id)) {
-        clearActiveCallState(call_id).catch(() => {});
-      }
-      cancelFullScreenIncomingCallNotification(call_id).catch(() => {});
-      stopVibration();
-      import('./sounds').then((sounds) => sounds.stopRingtone()).catch(() => {});
-      if (action !== 'accepted' || !locallyAcceptedCallIdsRef.current.has(call_id)) {
-        try {
-          endIncomingCallNative(call_id);
-        } catch {
-          /* ignore */
+      const normalizedAction = String(action || '').toLowerCase();
+      (async () => {
+        const locallyAccepted =
+          normalizedAction === 'accepted' &&
+          (locallyAcceptedCallIdsRef.current.has(call_id) ||
+            Boolean(await wasCallLocallyAccepted(call_id)));
+        const preserveAcceptedState = normalizedAction === 'accepted' && locallyAccepted;
+        logCallEvent('CALL_CONTROL_EVENT_RECEIVED', {
+          callId: call_id,
+          action: normalizedAction,
+          locallyAccepted,
+          preserveAcceptedState,
+        });
+        if (normalizedAction !== 'accepted') {
+          cacheTerminatedCallId(call_id, normalizedAction || 'ENDED').catch(() => {});
         }
-      }
+        dismissedCallIdsRef.current.add(call_id);
+        if (incomingCallIdRef.current === call_id) incomingCallIdRef.current = null;
+        setIncoming((current) => (current?.id === call_id ? null : current));
+        clearPendingIncomingCall(call_id).catch(() => {});
+        if (!preserveAcceptedState) {
+          clearActiveCallState(call_id).catch(() => {});
+        }
+        cancelFullScreenIncomingCallNotification(call_id).catch(() => {});
+        stopVibration();
+        import('./sounds').then((sounds) => sounds.stopRingtone()).catch(() => {});
+        if (!preserveAcceptedState) {
+          try {
+            endIncomingCallNative(call_id);
+          } catch {
+            /* ignore */
+          }
+        }
+      })().catch(() => {});
     });
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'background' || state === 'inactive') {

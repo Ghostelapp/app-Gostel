@@ -15,10 +15,18 @@ import {
   emitCallControlEvent,
   normalizeIncomingCallPayload,
   showIncomingCallFromPush,
+  wasCallLocallyAccepted,
 } from './incomingCallStore';
 
 const VOIP_TOKEN_STORAGE_KEY = 'ghostel_voip_push_token_v1';
 let initialized = false;
+
+export function shouldPreserveAcceptedCallControlState(
+  action: string,
+  locallyAccepted: boolean,
+): boolean {
+  return String(action || '').toLowerCase() === 'accepted' && locallyAccepted;
+}
 
 async function rememberVoipToken(token: unknown): Promise<void> {
   const normalized = String(token || '').trim();
@@ -33,19 +41,31 @@ async function handleVoipNotification(notification: any): Promise<void> {
   );
   if (notification?.type === 'call_control' || controlAction) {
     if (!controlCallId) return;
+    const normalizedAction = controlAction.toLowerCase();
+    const locallyAccepted =
+      normalizedAction === 'accepted' && Boolean(await wasCallLocallyAccepted(controlCallId));
+    const preserveAcceptedState = shouldPreserveAcceptedCallControlState(
+      normalizedAction,
+      locallyAccepted,
+    );
     logCallEvent('IOS_VOIP_PUSH_RECEIVED', {
       callId: controlCallId,
       pushType: 'call_control',
+      action: normalizedAction,
+      locallyAccepted,
+      preserveAcceptedState,
     });
-    if (controlAction !== 'accepted') {
-      await cacheTerminatedCallId(controlCallId, controlAction || 'ENDED').catch(() => {});
+    if (normalizedAction !== 'accepted') {
+      await cacheTerminatedCallId(controlCallId, normalizedAction || 'ENDED').catch(() => {});
     }
-    endIncomingCallNative(controlCallId);
     await clearPendingIncomingCall(controlCallId).catch(() => {});
-    await clearActiveCallState(controlCallId).catch(() => {});
+    if (!preserveAcceptedState) {
+      endIncomingCallNative(controlCallId);
+      await clearActiveCallState(controlCallId).catch(() => {});
+    }
     emitCallControlEvent({
       call_id: controlCallId,
-      action: controlAction,
+      action: normalizedAction,
       actor_id: String(notification?.actor_id || notification?.accepted_by || notification?.ended_by || ''),
     });
     return;

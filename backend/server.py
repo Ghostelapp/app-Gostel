@@ -4256,6 +4256,7 @@ CALL_TERMINAL_STATUSES = {
 }
 CALL_ACTIVE_STATUSES = {
     "ringing",
+    "accepted",
     "answered",
     "connecting",
     "active",
@@ -4472,7 +4473,7 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
             "ended_at": None,
             "$or": [
                 {"status": "ringing", "expires_at": {"$gt": started_at.isoformat()}},
-                {"status": {"$in": ["answered", "connecting", "active", "reconnecting"]}},
+                {"status": {"$in": ["accepted", "answered", "connecting", "active", "reconnecting"]}},
             ],
         },
         {"_id": 0},
@@ -4652,7 +4653,7 @@ async def get_active_call(user: dict = Depends(get_current_user)):
             "ended_at": None,
             "$or": [
                 {"status": "ringing", "started_at": {"$gte": ringing_cutoff}},
-                {"status": {"$in": ["answered", "active", "connecting", "reconnecting"]}},
+                {"status": {"$in": ["accepted", "answered", "active", "connecting", "reconnecting"]}},
             ],
         },
         {"_id": 0},
@@ -4668,6 +4669,11 @@ async def get_active_call(user: dict = Depends(get_current_user)):
         f"user={str(user.get('id', ''))[:8]} active=true "
         f"call={str(call.get('id', ''))[:8]} status={call.get('status')}"
     )
+    if str(call.get("status") or "").lower() in {"accepted", "answered", "connecting"}:
+        logger.info(
+            "BACKEND_CALL_ACTIVE_QUERY_INCLUDES_ACCEPTED_CONNECTING "
+            f"call={str(call.get('id', ''))[:8]} status={call.get('status')}"
+        )
     call = await enrich_call_for_user(call, user["id"])
     return public_call_status(call, user["id"])
 
@@ -4722,6 +4728,9 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Caller cannot accept own call")
     current_status = str(call.get("status") or "").lower()
     logger.info(
+        f"BACKEND_CALL_ACCEPT_REQUEST call={call_id[:8]} user={str(user.get('id', ''))[:8]}"
+    )
+    logger.info(
         f"BACKEND_CALL_STATUS_BEFORE_ACTION action=accept call={call_id[:8]} status={current_status}"
     )
     if call.get("ended_at") or current_status in CALL_TERMINAL_STATUSES:
@@ -4746,6 +4755,7 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
                 }
             },
         )
+        logger.info(f"BACKEND_RING_TIMEOUT_CANCELLED_AFTER_ACCEPT call={call_id[:8]}")
 
     accepted_event = {
         "type": "call:accepted",
@@ -4772,13 +4782,14 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
             upsert=True,
         )
     await broadcast_to_members(call.get("member_ids", []), accepted_event)
+    logger.info(f"BACKEND_CALL_ACCEPTED_EVENT_SENT call={call_id[:8]}")
     asyncio.create_task(
         _send_call_control_push(call, "accepted", user["id"], user.get("_auth_sid"))
     )
     logger.info(
         f"BACKEND_CALL_STATUS_AFTER_ACTION action=accept call={call_id[:8]} status=answered"
     )
-    return {"accepted": True}
+    return {"accepted": True, "status": "answered", "answered_at": answered_at}
 
 
 @api.post("/calls/{call_id}/diag")
@@ -5141,7 +5152,13 @@ async def timeout_call(call_id: str, user: dict = Depends(get_current_user)):
         return {"timed_out": True, "ephemeral": True}
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
-    if call.get("answered_at") or call.get("ended_at") or str(call.get("status") or "").lower() in CALL_TERMINAL_STATUSES:
+    current_status = str(call.get("status") or "").lower()
+    if (
+        call.get("answered_at")
+        or call.get("ended_at")
+        or current_status in CALL_TERMINAL_STATUSES
+        or (current_status in CALL_ACTIVE_STATUSES and current_status != "ringing")
+    ):
         return {"timed_out": False, "status": call.get("status"), "idempotent": True}
     ended_iso = now_utc().isoformat()
     await db.calls.update_one(
@@ -5599,7 +5616,7 @@ async def root():
     return {"app": APP_NAME, "version": "1.0.0", "status": "ok"}
 
 
-ANDROID_APK_VERSION = "1.4.39"
+ANDROID_APK_VERSION = "1.4.40"
 
 
 @app.get("/app-release.apk")
