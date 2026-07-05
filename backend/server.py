@@ -4127,10 +4127,11 @@ async def _send_call_control_push(
         for user_doc in users:
             for target in user_push_targets(user_doc):
                 token_type = (target.get("token_type") or "fcm").lower()
-                if token_type in {"fcm", "apns"}:
-                    targets.append({**target, "user_id": user_doc.get("id")})
-                elif token_type == "voip":
+                platform = (target.get("platform") or "").lower()
+                if token_type == "voip":
                     voip_targets.append({**target, "user_id": user_doc.get("id")})
+                elif token_type in {"fcm", "apns"} and platform != "ios":
+                    targets.append({**target, "user_id": user_doc.get("id")})
         targets = compact_push_targets(targets)
         voip_targets = compact_push_targets(voip_targets)
         if action == "accepted":
