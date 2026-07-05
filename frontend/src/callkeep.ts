@@ -41,6 +41,9 @@ const ACTIVE_TRANSITION_END_GUARD_MS = 12_000;
 const INACTIVE_END_DEFER_MS = 2_500;
 const ANSWER_ROUTE_RETRY_MS = [250, 750, 1500, 3000];
 const ANSWER_ROUTE_DEDUPE_MS = 4000;
+const SUPPRESSED_NATIVE_END_TTL_MS = 30_000;
+
+const ACTIVE_BACKEND_STATUSES = new Set(['CONNECTING', 'ACTIVE', 'RECONNECTING']);
 
 export type IncomingCallInfo = {
   callId: string;
@@ -121,6 +124,10 @@ function normalizeCallId(callId: string): string {
 
 function activeCallKey(callId: string): string {
   return `${ACTIVE_CALL_PREFIX}${normalizeCallId(callId)}`;
+}
+
+function suppressedNativeEndKey(callId: string): string {
+  return `ghostel_suppressed_callkeep_end_v1:${normalizeCallId(callId)}`;
 }
 
 function callHref(info: IncomingCallInfo): string {
@@ -475,6 +482,33 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   }
 }
 
+async function markSuppressedNativeEnd(callId: string): Promise<void> {
+  const key = normalizeCallId(callId);
+  if (!key) return;
+  await AsyncStorage.setItem(suppressedNativeEndKey(callId), String(Date.now()));
+}
+
+async function consumeSuppressedNativeEnd(callId: string): Promise<boolean> {
+  const key = normalizeCallId(callId);
+  if (!key) return false;
+  const storageKey = suppressedNativeEndKey(callId);
+  const raw = await AsyncStorage.getItem(storageKey);
+  if (!raw) return false;
+  await AsyncStorage.removeItem(storageKey);
+  const timestamp = Number(raw);
+  return Number.isFinite(timestamp) && Date.now() - timestamp <= SUPPRESSED_NATIVE_END_TTL_MS;
+}
+
+async function getBackendCallStatus(callId: string): Promise<any | null> {
+  try {
+    const { api } = require('./api');
+    const { data } = await api.get(`/calls/${callId}/status`);
+    return data || null;
+  } catch {
+    return null;
+  }
+}
+
 function reportCallKeepDiag(
   info: IncomingCallInfo,
   reason: string,
@@ -550,7 +584,8 @@ async function handleEndCall(
     fromInitialEvent,
   });
 
-  if (suppressedEndEvents.delete(key)) {
+  const persistentSuppressedEnd = await consumeSuppressedNativeEnd(callUUID);
+  if (suppressedEndEvents.delete(key) || persistentSuppressedEnd) {
     answeredCalls.delete(key);
     appHandledAnswers.delete(key);
     await forgetIncomingCall(callUUID);
@@ -560,6 +595,13 @@ async function handleEndCall(
   const info = await getIncomingCallInfoWithFallback(callUUID, 'end');
   const wasAnswered = answeredCalls.has(key);
   const terminalStatus = wasAnswered ? 'ENDED' : 'DECLINED';
+  const backendStatus = info ? await getBackendCallStatus(info.callId) : null;
+  const mappedBackendStatus = mapBackendCallStatus(backendStatus?.status);
+  const backendIsActive =
+    !!backendStatus &&
+    !backendStatus?.ended_at &&
+    !backendStatus?.endedAt &&
+    ACTIVE_BACKEND_STATUSES.has(mappedBackendStatus);
 
   if (
     info &&
@@ -575,6 +617,21 @@ async function handleEndCall(
         answered: wasAnswered,
       });
     }
+  }
+
+  if (info && !wasAnswered && !fromInitialEvent && backendIsActive) {
+    reportCallKeepDiag(info, 'callkeep_end_ignored_backend_active_after_accept', {
+      backend_status: String(backendStatus?.status || ''),
+      backend_direction: String(backendStatus?.direction || ''),
+      active_transition_age_ms: Date.now() - lastBecameActiveAt,
+      native_displayed: displayedCalls.has(key),
+    });
+    await forgetIncomingCall(info.callId);
+    await clearPendingIncomingCall(info.callId).catch(() => {});
+    if (String(backendStatus?.direction || '') === 'incoming') {
+      await clearActiveCallState(info.callId).catch(() => {});
+    }
+    return;
   }
 
   // During iOS lockscreen -> passcode -> app transitions CallKit can emit a
@@ -781,6 +838,7 @@ export function endIncomingCallNative(callId: string): void {
   try {
     const RNCallKeep = require('react-native-callkeep').default;
     suppressedEndEvents.add(key);
+    markSuppressedNativeEnd(callId).catch(() => {});
     RNCallKeep.endCall(callId);
     forgetIncomingCall(callId).catch(() => {});
     answeredCalls.delete(key);

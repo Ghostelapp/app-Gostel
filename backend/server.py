@@ -4989,6 +4989,18 @@ async def _finish_call(call_id: str, user: dict, action: str):
     if call.get("ended_at") or current_status in CALL_TERMINAL_STATUSES:
         return {"ended": True, "status": call.get("status", "ended"), "idempotent": True}
     ended_iso = now_utc().isoformat()
+    answered = call.get("answered_at")
+    if action == "decline" and answered:
+        logger.info(
+            "BACKEND_CALL_DECLINE_IGNORED_AFTER_ACCEPT "
+            f"call={call_id[:8]} status={current_status} user={str(user.get('id', ''))[:8]}"
+        )
+        return {
+            "ended": False,
+            "status": call.get("status") or "answered",
+            "ignored": True,
+            "reason": "already_accepted",
+        }
     update_doc: dict = {
         "ended_at": ended_iso,
         "endedAt": ended_iso,
@@ -4996,7 +5008,6 @@ async def _finish_call(call_id: str, user: dict, action: str):
         "last_updated_at": ended_iso,
         "lastUpdatedAt": ended_iso,
     }
-    answered = call.get("answered_at")
     if answered:
         try:
             ans_dt = datetime.fromisoformat(answered)
@@ -5616,7 +5627,7 @@ async def root():
     return {"app": APP_NAME, "version": "1.0.0", "status": "ok"}
 
 
-ANDROID_APK_VERSION = "1.4.41"
+ANDROID_APK_VERSION = "1.4.42"
 
 
 @app.get("/app-release.apk")

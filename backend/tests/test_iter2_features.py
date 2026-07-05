@@ -344,6 +344,39 @@ class TestCalls:
         )
         assert r.status_code == 404
 
+    def test_decline_after_accept_does_not_end_call(self, api_client, admin_token, demo_token, conv_id):
+        started = api_client.post(
+            f"{BASE_URL}/api/calls/start",
+            json={"conversation_id": conv_id, "mode": "audio"},
+            headers=auth_headers(admin_token),
+        )
+        assert started.status_code == 200, started.text
+        call = started.json()
+
+        accepted = api_client.post(
+            f"{BASE_URL}/api/calls/{call['id']}/accept",
+            headers=auth_headers(demo_token),
+        )
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["accepted"] is True
+
+        declined = api_client.post(
+            f"{BASE_URL}/api/calls/{call['id']}/decline",
+            headers=auth_headers(demo_token),
+        )
+        assert declined.status_code == 200, declined.text
+        assert declined.json()["ended"] is False
+        assert declined.json()["ignored"] is True
+        assert declined.json()["status"] == "answered"
+
+        status = api_client.get(
+            f"{BASE_URL}/api/calls/{call['id']}/status",
+            headers=auth_headers(admin_token),
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["status"] == "answered"
+        assert not status.json().get("ended_at")
+
 
 # ---------------- WebSocket ----------------
 @pytest.mark.asyncio

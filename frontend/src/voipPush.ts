@@ -23,9 +23,13 @@ let initialized = false;
 
 export function shouldPreserveAcceptedCallControlState(
   action: string,
-  locallyAccepted: boolean,
+  _locallyAccepted: boolean,
 ): boolean {
-  return String(action || '').toLowerCase() === 'accepted' && locallyAccepted;
+  // "accepted" is an active-call transition, not a terminal event. It may be
+  // delivered to the caller and to other devices on the callee account. Ending
+  // CallKit here can emit a native end action from a different JS runtime and
+  // accidentally send /decline after the backend already accepted the call.
+  return String(action || '').toLowerCase() === 'accepted';
 }
 
 async function rememberVoipToken(token: unknown): Promise<void> {

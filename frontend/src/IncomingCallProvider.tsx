@@ -526,7 +526,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     const unsubIncoming = subscribeToIncomingCallEvents((call) => {
       callManager.handlePushReceived(call).catch(() => showIncoming(call));
     });
-    const unsubControl = subscribeToCallControlEvents(({ call_id, action }) => {
+    const unsubControl = subscribeToCallControlEvents(({ call_id, action, actor_id }) => {
       if (!call_id) return;
       const normalizedAction = String(action || '').toLowerCase();
       (async () => {
@@ -534,12 +534,22 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
           normalizedAction === 'accepted' &&
           (locallyAcceptedCallIdsRef.current.has(call_id) ||
             Boolean(await wasCallLocallyAccepted(call_id)));
-        const preserveAcceptedState = normalizedAction === 'accepted' && locallyAccepted;
+        const actorId = String(actor_id || '');
+        const acceptedByThisAccount =
+          normalizedAction === 'accepted' && !!actorId && actorId === user?.id;
+        const acceptedByPeerOrUnknown =
+          normalizedAction === 'accepted' && (!actorId || actorId !== user?.id);
+        const preserveAcceptedState =
+          normalizedAction === 'accepted' && (locallyAccepted || acceptedByPeerOrUnknown);
+        const shouldDismissNativeCall =
+          normalizedAction !== 'accepted' || (acceptedByThisAccount && !locallyAccepted);
         logCallEvent('CALL_CONTROL_EVENT_RECEIVED', {
           callId: call_id,
           action: normalizedAction,
+          actorId,
           locallyAccepted,
           preserveAcceptedState,
+          shouldDismissNativeCall,
         });
         if (normalizedAction !== 'accepted') {
           cacheTerminatedCallId(call_id, normalizedAction || 'ENDED').catch(() => {});
@@ -554,7 +564,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
         cancelFullScreenIncomingCallNotification(call_id).catch(() => {});
         stopVibration();
         import('./sounds').then((sounds) => sounds.stopRingtone()).catch(() => {});
-        if (!preserveAcceptedState) {
+        if (shouldDismissNativeCall) {
           try {
             endIncomingCallNative(call_id);
           } catch {
