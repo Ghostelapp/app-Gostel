@@ -4133,23 +4133,35 @@ async def _send_call_control_push(
                     voip_targets.append({**target, "user_id": user_doc.get("id")})
         targets = compact_push_targets(targets)
         voip_targets = compact_push_targets(voip_targets)
-        if action == "accepted" and actor_session_id:
-            targets = [
-                target
-                for target in targets
-                if not (
-                    target.get("user_id") == actor_id
-                    and (target.get("session_id") or "") == actor_session_id
-                )
-            ]
+        if action == "accepted":
+            # Signal-style split:
+            # - call.accepted for the caller is delivered through signaling
+            #   (WebSocket + persisted call_signals);
+            # - call-control "accepted" is only a native UI cleanup event for
+            #   the callee account's other devices. Sending it to the caller's
+            #   iOS device can make CallKit emit a local end action and wrongly
+            #   terminate an already accepted call.
+            targets = [target for target in targets if target.get("user_id") == actor_id]
             voip_targets = [
-                target
-                for target in voip_targets
-                if not (
-                    target.get("user_id") == actor_id
-                    and (target.get("session_id") or "") == actor_session_id
-                )
+                target for target in voip_targets if target.get("user_id") == actor_id
             ]
+            if actor_session_id:
+                targets = [
+                    target
+                    for target in targets
+                    if not (
+                        target.get("user_id") == actor_id
+                        and (target.get("session_id") or "") == actor_session_id
+                    )
+                ]
+                voip_targets = [
+                    target
+                    for target in voip_targets
+                    if not (
+                        target.get("user_id") == actor_id
+                        and (target.get("session_id") or "") == actor_session_id
+                    )
+                ]
         if not targets and not voip_targets:
             return
 
