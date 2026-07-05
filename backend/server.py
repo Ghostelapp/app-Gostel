@@ -5648,7 +5648,7 @@ async def root():
     return {"app": APP_NAME, "version": "1.0.0", "status": "ok"}
 
 
-ANDROID_APK_VERSION = "1.4.42"
+ANDROID_APK_VERSION = "1.4.43"
 
 
 @app.get("/app-release.apk")
