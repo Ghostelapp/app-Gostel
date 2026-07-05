@@ -115,6 +115,8 @@ const CALL_TIMEOUT_MS = 45_000; // no-answer cutoff
 const READY_RETRY_MS = 1_000;   // callee retries call:ready every 1s
 const READY_RETRY_MAX = 15;     // 15s of retries — covers a slow caller bootstrap
 const CONNECTION_RECOVERY_MS = 12_000;
+const OFFER_RETRY_MS = 1_500;
+const OFFER_RETRY_MAX = 5;
 
 const FALLBACK_ICE: IceServer[] = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
@@ -250,6 +252,7 @@ export default function CallScreen() {
   const inCallStartedRef = useRef(false);
   /** Caller side only: have we already created & sent the SDP offer? */
   const offerSentRef = useRef(false);
+  const offerRetryCountRef = useRef(0);
   /** Caller side only: callee has finished media/bootstrap and requested an offer. */
   const peerReadyRef = useRef(false);
   const readyPeerIdRef = useRef<string | null>(null);
@@ -852,17 +855,63 @@ export default function CallScreen() {
           sdp_type: offer.type || 'offer',
         });
         if (!sent) throw new Error('Encrypted offer not sent');
+        offerRetryCountRef.current = 0;
         stopRingback();
         return true;
       } catch (e: any) {
         offerSentRef.current = false;
         setErrMsg(`Offer failed: ${e?.message || e}`);
-        setStatus('failed');
-        setTimeout(() => endCall('Offer failed'), 1500);
+        const canRetry =
+          peerReadyRef.current &&
+          offerRetryCountRef.current < OFFER_RETRY_MAX &&
+          !endedRef.current &&
+          !connectedRef.current;
+        if (canRetry) {
+          offerRetryCountRef.current += 1;
+          setStatus('connecting');
+          reportCallDiag('offer_retry_scheduled', {
+            retry_count: offerRetryCountRef.current,
+            reason,
+          }).catch(() => {});
+          setTimeout(() => {
+            if (!endedRef.current && !connectedRef.current && !offerSentRef.current) {
+              sendCallerOffer(`retry_${reason}`, peerId).catch(() => {});
+            }
+          }, OFFER_RETRY_MS);
+        } else {
+          setStatus('failed');
+          setTimeout(() => endCall('Offer failed'), 1500);
+        }
         return false;
       }
     },
-    [endCall, id, isCaller, sendEncryptedSignal, stopRingback],
+    [endCall, id, isCaller, reportCallDiag, sendEncryptedSignal, stopRingback],
+  );
+
+  const markPeerReadyForOffer = useCallback(
+    async (peerId: string | null | undefined, reason: string): Promise<boolean> => {
+      if (!isCaller || endedRef.current) return false;
+      const nextPeerId = peerId || readyPeerIdRef.current || peerIdRef.current;
+      if (!nextPeerId || nextPeerId === user?.id) return false;
+
+      const wasReady = peerReadyRef.current;
+      peerReadyRef.current = true;
+      readyPeerIdRef.current = nextPeerId;
+      peerIdRef.current = nextPeerId;
+      stopRingback();
+      if (!connectedRef.current) setStatus('connecting');
+
+      if (!wasReady) {
+        logCallEvent('CALL_PEER_READY_FOR_OFFER', {
+          callId: id,
+          reason,
+          platform: Platform.OS,
+        });
+      }
+
+      return await sendCallerOffer(reason, nextPeerId);
+    },
+    [id, isCaller, sendCallerOffer, stopRingback, user?.id],
   );
 
   const attemptIceRestart = useCallback(async (): Promise<boolean> => {
@@ -1175,11 +1224,18 @@ export default function CallScreen() {
       }
 
       // Acceptance is separate from WebRTC readiness. Stop ringback as soon
-      // as the callee answers, even if their media setup still needs time.
+      // as the callee answers. Treat accepted/answered as a durable fallback
+      // readiness signal too: if a transient call:ready is missed while iOS is
+      // resuming from CallKit, the caller must still send the SDP offer.
       if (msg.type === 'call:accepted' || msg.type === 'call:accept') {
         if (isCaller) {
-          stopRingback();
-          if (!connectedRef.current) setStatus('connecting');
+          const acceptedBy =
+            msg.from ||
+            msg.senderId ||
+            msg.data?.accepted_by ||
+            msg.accepted_by ||
+            null;
+          await markPeerReadyForOffer(acceptedBy, 'accepted_event');
         }
         return;
       }
@@ -1188,10 +1244,7 @@ export default function CallScreen() {
       if (msg.type === 'call:ready' && isCaller) {
         const from = msg.from || msg.senderId;
         if (!from) return;
-        peerReadyRef.current = true;
-        readyPeerIdRef.current = from;
-        peerIdRef.current = from;
-        await sendCallerOffer('callee_ready', from);
+        await markPeerReadyForOffer(from, 'callee_ready');
         return;
       }
 
@@ -1343,9 +1396,8 @@ export default function CallScreen() {
       closeCallFromPeer,
       decryptPeerSignal,
       endCall,
-      sendCallerOffer,
+      markPeerReadyForOffer,
       sendEncryptedSignal,
-      stopRingback,
     ]
   );
 
@@ -1445,6 +1497,9 @@ export default function CallScreen() {
               platform: Platform.OS,
             });
           }
+          if (isCaller) {
+            await markPeerReadyForOffer(resolvePeerId(call, user?.id), `status_${serverStatus}`);
+          }
           return;
         }
 
@@ -1470,7 +1525,7 @@ export default function CallScreen() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [applyCallDisplayName, closeCallFromPeer, id, stopRingback, user]);
+  }, [applyCallDisplayName, closeCallFromPeer, id, isCaller, markPeerReadyForOffer, stopRingback, user]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -1509,6 +1564,10 @@ export default function CallScreen() {
         pc.iceConnectionState !== 'connected' &&
         pc.iceConnectionState !== 'completed'
       ) {
+        if (isCaller && peerReadyRef.current && !offerSentRef.current) {
+          sendCallerOffer('app_resume_after_accept', readyPeerIdRef.current || peerIdRef.current)
+            .catch(() => {});
+        }
         scheduleConnectionRecovery(pc);
       }
     });
@@ -1516,8 +1575,10 @@ export default function CallScreen() {
   }, [
     callerName,
     id,
+    isCaller,
     reportCallDiag,
     scheduleConnectionRecovery,
+    sendCallerOffer,
     speakerOn,
     startNativeCallAudio,
   ]);
@@ -1633,9 +1694,18 @@ export default function CallScreen() {
         await onWs(pendingSignal);
       }
 
-      // 5. Set initial status
-      setStatus(isCaller ? 'ringing' : 'connecting');
-      if (isCaller) startRingback();
+      // 5. Set initial status. If the caller already learned about
+      // accepted/answered while bootstrapping, do not go back to ringing.
+      if (isCaller) {
+        if (peerReadyRef.current || offerSentRef.current) {
+          setStatus('connecting');
+        } else {
+          setStatus('ringing');
+          startRingback();
+        }
+      } else {
+        setStatus('connecting');
+      }
 
       // 4b. RACE FIX (caller): if callee already sent `call:ready` while we
       // were still fetching ICE / acquiring mic, the handler set peerIdRef but
@@ -1650,12 +1720,22 @@ export default function CallScreen() {
         await sendCallerOffer('bootstrap_after_ready', readyPeerIdRef.current);
       }
 
-      // 6. Timeout for no-answer
-      timeoutTimerRef.current = setTimeout(() => {
-        if (!endedRef.current && !connectedRef.current) {
-          endCall('No answer');
-        }
-      }, CALL_TIMEOUT_MS);
+      // 6. Timeout for no-answer. After accept/answered, this is no longer a
+      // missed call; WebRTC may still be negotiating across PushKit/FCM resume.
+      if (isCaller) {
+        timeoutTimerRef.current = setTimeout(() => {
+          if (endedRef.current || connectedRef.current) return;
+          const stillWaitingForAnswer =
+            statusRef.current === 'ringing' &&
+            !peerReadyRef.current &&
+            !offerSentRef.current;
+          if (stillWaitingForAnswer) {
+            endCall('No answer');
+            return;
+          }
+          reportCallDiag('no_answer_timeout_ignored_after_accept').catch(() => {});
+        }, CALL_TIMEOUT_MS);
+      }
 
       // 7. Callee: notify caller we're ready (will retry)
       if (!isCaller) {

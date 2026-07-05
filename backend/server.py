@@ -4926,6 +4926,14 @@ async def _persist_call_signal_payload(
         },
         upsert=True,
     )
+    logger.info(
+        "BACKEND_CALL_SIGNAL_STORED "
+        f"call={call_id[:8]} "
+        f"type={signal_type} "
+        f"from={str(user.get('id', ''))[:8]} "
+        f"to={target[:8]} "
+        f"encrypted={bool(forwarded.get('encrypted'))}"
+    )
     await ws_manager.send_to(target, forwarded)
     return {"stored": True, "signal_id": signal_id}
 
