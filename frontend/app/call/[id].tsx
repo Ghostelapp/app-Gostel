@@ -1416,7 +1416,7 @@ export default function CallScreen() {
   useEffect(() => {
     if (!id || !user) return;
     let cancelled = false;
-    const activeStatuses = new Set(['answered', 'connecting', 'active', 'reconnecting']);
+    const activeStatuses = new Set(['accepted', 'answered', 'connecting', 'active', 'reconnecting']);
     const terminalStatuses = new Set([
       'ended',
       'rejected',

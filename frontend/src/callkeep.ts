@@ -27,6 +27,7 @@ const appHandledAnswers = new Set<string>();
 const suppressedEndEvents = new Set<string>();
 const routedAnsweredCalls = new Map<string, number>();
 const actionListeners = new Set<(action: CallKeepAction) => void>();
+const audioActivationAnswerRecovery = new Set<string>();
 
 const ACTIVE_CALL_PREFIX = 'ghostel_active_call_v1:';
 const PENDING_ANSWERED_CALL_KEY = 'ghostel_pending_answered_call_v1';
@@ -217,6 +218,53 @@ async function getIncomingCallInfoWithFallback(
   }
 
   return null;
+}
+
+function extractCallKeepUuid(event: any): string {
+  return String(
+    event?.callUUID ||
+      event?.callUuid ||
+      event?.uuid ||
+      event?.data?.callUUID ||
+      event?.data?.callUuid ||
+      event?.data?.uuid ||
+      event?.data?.call_id ||
+      event?.payload?.call_id ||
+      '',
+  );
+}
+
+async function replayCallKeepEvent(event: any): Promise<void> {
+  const name = String(event?.name || event?.type || '');
+  const callUUID = extractCallKeepUuid(event);
+  if (name.includes('DidDisplayIncomingCall')) {
+    await hydrateFromCallKeepDisplay(event?.data || event);
+    return;
+  }
+  if (!callUUID) return;
+  if (name.includes('PerformAnswerCallAction') || name === 'answerCall') {
+    await handleAnswerCall(callUUID);
+  } else if (name.includes('PerformEndCallAction') || name === 'endCall') {
+    await handleEndCall(callUUID, { fromInitialEvent: true });
+  }
+}
+
+async function recoverAnswerFromAudioActivation(): Promise<void> {
+  if (answeredCalls.size > 0) return;
+  const callId = Array.from(displayedCalls)[0];
+  if (!callId || audioActivationAnswerRecovery.has(callId)) return;
+  const info = await getIncomingCallInfo(callId);
+  if (!info) return;
+  audioActivationAnswerRecovery.add(callId);
+  logCallEvent('IOS_CALLKIT_ANSWER_RECOVERED_FROM_AUDIO_SESSION', {
+    callId,
+    appState: AppState.currentState,
+  });
+  try {
+    await handleAnswerCall(callId);
+  } finally {
+    setTimeout(() => audioActivationAnswerRecovery.delete(callId), 5_000);
+  }
 }
 
 async function forgetIncomingCall(callId: string): Promise<void> {
@@ -635,9 +683,15 @@ export async function setupCallKeep(): Promise<boolean> {
       });
       RNCallKeep.addEventListener('didActivateAudioSession', () => {
         activateWebRtcAudioSession();
+        recoverAnswerFromAudioActivation().catch(() => {});
       });
       RNCallKeep.addEventListener('didDeactivateAudioSession', () => {
         deactivateWebRtcAudioSession();
+      });
+      RNCallKeep.addEventListener('didLoadWithEvents', (events: any[]) => {
+        for (const event of Array.isArray(events) ? events : []) {
+          replayCallKeepEvent(event).catch(() => {});
+        }
       });
 
       AppState.addEventListener('change', (state) => {
@@ -653,18 +707,7 @@ export async function setupCallKeep(): Promise<boolean> {
       try {
         const events = await RNCallKeep.getInitialEvents?.();
         for (const event of Array.isArray(events) ? events : []) {
-          const name = String(event?.name || '');
-          const callUUID = String(event?.data?.callUUID || '');
-          if (name.includes('DidDisplayIncomingCall')) {
-            await hydrateFromCallKeepDisplay(event?.data);
-            continue;
-          }
-          if (!callUUID) continue;
-          if (name.includes('PerformAnswerCallAction')) {
-            await handleAnswerCall(callUUID);
-          } else if (name.includes('PerformEndCallAction')) {
-            await handleEndCall(callUUID, { fromInitialEvent: true });
-          }
+          await replayCallKeepEvent(event);
         }
         RNCallKeep.clearInitialEvents?.();
       } catch {
