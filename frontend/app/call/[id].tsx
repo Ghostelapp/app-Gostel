@@ -26,6 +26,7 @@ import { useWebSocket } from '../../src/ws';
 import { theme } from '../../src/theme';
 import { getInCallManager } from '../../src/incall';
 import {
+  clearPendingAnsweredCall,
   markCallActive,
   endIncomingCallNative,
   subscribeToCallKeepActions,
@@ -1437,6 +1438,11 @@ export default function CallScreen() {
   useEffect(() => {
     cancelFullScreenIncomingCallNotification(id).catch(() => {});
     import('../../src/sounds').then((s) => s.stopRingtone()).catch(() => {});
+  }, [id]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios' || !id) return;
+    clearPendingAnsweredCall(id).catch(() => {});
   }, [id]);
 
   useEffect(() => {

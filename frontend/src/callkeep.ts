@@ -39,8 +39,9 @@ let lastBecameActiveAt = AppState.currentState === 'active' ? Date.now() : 0;
 
 const ACTIVE_TRANSITION_END_GUARD_MS = 12_000;
 const INACTIVE_END_DEFER_MS = 2_500;
-const ANSWER_ROUTE_RETRY_MS = [250, 750, 1500, 3000];
-const ANSWER_ROUTE_DEDUPE_MS = 4000;
+const ANSWER_ROUTE_RETRY_MS = [100, 250, 500, 1000, 2000, 4000, 8000, 12000, 20000, 30000];
+const ANSWER_ROUTE_DEDUPE_MS = 750;
+const ANSWER_ROUTE_MAX_AGE_MS = 90_000;
 const SUPPRESSED_NATIVE_END_TTL_MS = 30_000;
 
 const ACTIVE_BACKEND_STATUSES = new Set(['CONNECTING', 'ACTIVE', 'RECONNECTING']);
@@ -325,18 +326,19 @@ function requestAppForegroundFromCallKeep(): void {
   }
 }
 
-function navigateToAnsweredCall(href: string, callId: string): void {
-  if (!router) return;
+function navigateToAnsweredCall(href: string, callId: string, force = false): boolean {
+  if (!router) return false;
   const key = normalizeCallId(callId) || href;
   const now = Date.now();
   const lastRoutedAt = routedAnsweredCalls.get(key) || 0;
-  if (lastRoutedAt && now - lastRoutedAt < ANSWER_ROUTE_DEDUPE_MS) return;
+  if (!force && lastRoutedAt && now - lastRoutedAt < ANSWER_ROUTE_DEDUPE_MS) return false;
   routedAnsweredCalls.set(key, now);
   if (router.replace) {
     router.replace(href);
   } else {
     router.push(href);
   }
+  return true;
 }
 
 async function storePendingAnsweredCall(info: IncomingCallInfo): Promise<void> {
@@ -346,20 +348,45 @@ async function storePendingAnsweredCall(info: IncomingCallInfo): Promise<void> {
     JSON.stringify({
       href,
       callId: info.callId,
+      conversationId: info.conversationId,
+      callerId: info.callerId,
+      callerName: info.callerName,
       createdAt: Date.now(),
     }),
   );
 }
 
+export async function clearPendingAnsweredCall(callId?: string): Promise<void> {
+  const raw = await AsyncStorage.getItem(PENDING_ANSWERED_CALL_KEY);
+  if (!raw) return;
+  if (!callId) {
+    await AsyncStorage.removeItem(PENDING_ANSWERED_CALL_KEY);
+    return;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const pendingCallId = String(parsed?.callId || '');
+    if (!pendingCallId || normalizeCallId(pendingCallId) === normalizeCallId(callId)) {
+      await AsyncStorage.removeItem(PENDING_ANSWERED_CALL_KEY);
+    }
+  } catch {
+    if (raw.includes(`/call/${callId}`)) {
+      await AsyncStorage.removeItem(PENDING_ANSWERED_CALL_KEY);
+    }
+  }
+}
+
 async function routeOrDeferAnsweredCall(info: IncomingCallInfo): Promise<void> {
   const href = callHref(info);
   await saveAcceptedCallState(info);
-  requestAppForegroundFromCallKeep();
-  if (router && AppState.currentState === 'active') {
-    navigateToAnsweredCall(href, info.callId);
-    return;
-  }
   await storePendingAnsweredCall(info);
+  requestAppForegroundFromCallKeep();
+  const routed = navigateToAnsweredCall(href, info.callId, true);
+  reportCallKeepDiag(info, routed ? 'callkit_answer_route_attempted' : 'callkit_answer_route_deferred', {
+    app_state: AppState.currentState,
+    router_ready: !!router,
+    immediate: true,
+  });
   ANSWER_ROUTE_RETRY_MS.forEach((delay) => {
     setTimeout(() => {
       flushPendingAnsweredCall().catch(() => {});
@@ -368,22 +395,46 @@ async function routeOrDeferAnsweredCall(info: IncomingCallInfo): Promise<void> {
 }
 
 async function flushPendingAnsweredCall(): Promise<void> {
-  if (!router || AppState.currentState !== 'active') return;
+  if (!router) return;
   const raw = await AsyncStorage.getItem(PENDING_ANSWERED_CALL_KEY);
   if (!raw) return;
   let href = raw;
   let callId = '';
+  let createdAt = 0;
+  let pendingInfo: IncomingCallInfo | null = null;
   try {
     const parsed = JSON.parse(raw);
     href = String(parsed?.href || raw);
     callId = String(parsed?.callId || '');
+    createdAt = Number(parsed?.createdAt || 0);
+    if (callId && parsed?.conversationId && parsed?.callerId) {
+      pendingInfo = {
+        callId,
+        conversationId: String(parsed.conversationId),
+        callerId: String(parsed.callerId),
+        callerName: String(parsed.callerName || 'Ghostel call'),
+      };
+    }
   } catch {
     const match = raw.match(/\/call\/([^?]+)/);
     callId = match?.[1] || '';
   }
+  if (createdAt && Date.now() - createdAt > ANSWER_ROUTE_MAX_AGE_MS) {
+    await AsyncStorage.removeItem(PENDING_ANSWERED_CALL_KEY);
+    return;
+  }
   if (!href) return;
-  await AsyncStorage.removeItem(PENDING_ANSWERED_CALL_KEY);
-  navigateToAnsweredCall(href, callId);
+  const routed = navigateToAnsweredCall(href, callId, AppState.currentState === 'active');
+  if (pendingInfo) {
+    reportCallKeepDiag(
+      pendingInfo,
+      routed ? 'callkit_answer_route_retry' : 'callkit_answer_route_retry_skipped',
+      {
+        app_state: AppState.currentState,
+        router_ready: !!router,
+      },
+    );
+  }
 }
 
 async function handleAnswerCall(callUUID: string): Promise<void> {
