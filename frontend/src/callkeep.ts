@@ -333,10 +333,19 @@ function navigateToAnsweredCall(href: string, callId: string, force = false): bo
   const lastRoutedAt = routedAnsweredCalls.get(key) || 0;
   if (!force && lastRoutedAt && now - lastRoutedAt < ANSWER_ROUTE_DEDUPE_MS) return false;
   routedAnsweredCalls.set(key, now);
-  if (router.replace) {
-    router.replace(href);
-  } else {
-    router.push(href);
+  try {
+    if (router.replace) {
+      router.replace(href);
+    } else {
+      router.push(href);
+    }
+  } catch {
+    routedAnsweredCalls.delete(key);
+    logCallEvent('IOS_CALLKIT_ROUTE_NAVIGATION_FAILED', {
+      callId,
+      appState: AppState.currentState,
+    });
+    return false;
   }
   return true;
 }
@@ -381,7 +390,8 @@ async function routeOrDeferAnsweredCall(info: IncomingCallInfo): Promise<void> {
   await saveAcceptedCallState(info);
   await storePendingAnsweredCall(info);
   requestAppForegroundFromCallKeep();
-  const routed = navigateToAnsweredCall(href, info.callId, true);
+  const canRouteNow = router && AppState.currentState === 'active';
+  const routed = canRouteNow ? navigateToAnsweredCall(href, info.callId, true) : false;
   reportCallKeepDiag(info, routed ? 'callkit_answer_route_attempted' : 'callkit_answer_route_deferred', {
     app_state: AppState.currentState,
     router_ready: !!router,
@@ -423,8 +433,22 @@ async function flushPendingAnsweredCall(): Promise<void> {
     await AsyncStorage.removeItem(PENDING_ANSWERED_CALL_KEY);
     return;
   }
+  if (AppState.currentState !== 'active') return;
+  if (callId) {
+    const backendStatus = await getBackendCallStatus(callId);
+    const mappedStatus = mapBackendCallStatus(backendStatus?.status);
+    if (
+      backendStatus &&
+      (backendStatus?.ended_at ||
+        backendStatus?.endedAt ||
+        isTerminalCallStatus(mappedStatus))
+    ) {
+      await AsyncStorage.removeItem(PENDING_ANSWERED_CALL_KEY);
+      return;
+    }
+  }
   if (!href) return;
-  const routed = navigateToAnsweredCall(href, callId, AppState.currentState === 'active');
+  const routed = navigateToAnsweredCall(href, callId, true);
   if (pendingInfo) {
     reportCallKeepDiag(
       pendingInfo,
