@@ -52,6 +52,7 @@ export default function RootLayout() {
                       {Platform.OS !== 'web' ? (
                         <StatusBar style="light" backgroundColor="#0f1419" />
                       ) : null}
+                      <NativeCallServicesBoot />
                       <Stack
                         screenOptions={{
                           headerShown: false,
@@ -73,4 +74,36 @@ export default function RootLayout() {
 
 function AppKeyboardProvider({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
+}
+
+function NativeCallServicesBoot() {
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+
+      import('../src/voipPush')
+        .then(({ setupVoipPushNotifications }) => {
+          if (!cancelled) setupVoipPushNotifications();
+        })
+        .catch((error) => {
+          console.warn('[boot] setupVoipPushNotifications failed', error);
+        });
+
+      import('../src/callkeep')
+        .then(({ setupCallKeep }) => setupCallKeep())
+        .catch((error) => {
+          console.warn('[boot] setupCallKeep failed', error);
+        });
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  return null;
 }

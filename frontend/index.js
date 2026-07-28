@@ -1,7 +1,5 @@
 import { LogBox, Platform } from 'react-native';
 import { registerFcmHandlers } from './src/fcmBackground';
-import { setupCallKeep } from './src/callkeep';
-import { setupVoipPushNotifications } from './src/voipPush';
 
 if (__DEV__) {
   LogBox.ignoreLogs([
@@ -10,19 +8,15 @@ if (__DEV__) {
   ]);
 }
 
-// Register Firebase Messaging handlers before Expo Router mounts. Android can
-// start Headless JS for data-only FCM pushes without rendering app/_layout.tsx.
-try {
-  registerFcmHandlers();
-} catch (error) {
-  console.warn('[boot] registerFcmHandlers failed', error);
+// Android must register Firebase Messaging before Expo Router mounts so Headless
+// JS can handle data-only call pushes without rendering app/_layout.tsx.
+if (Platform.OS === 'android') {
+  try {
+    registerFcmHandlers();
+  } catch (error) {
+    console.warn('[boot] registerFcmHandlers failed', error);
+  }
 }
 
-if (Platform.OS === 'ios') {
-  setupVoipPushNotifications();
-  setupCallKeep().catch((error) => {
-    console.warn('[boot] setupCallKeep failed', error);
-  });
-}
-
+// eslint-disable-next-line import/first
 import 'expo-router/entry';
