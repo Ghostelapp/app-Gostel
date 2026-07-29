@@ -95,6 +95,7 @@ frontend/.metro-cache/
 frontend/.expo/
 frontend/.expo-home/
 frontend/.npm-cache/
+frontend/.tmp-*-export/
 backend/.pip-cache/
 
 memory/test_credentials.md
