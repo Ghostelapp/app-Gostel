@@ -154,10 +154,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = async (email: string, password: string, name: string, title?: string, username?: string) => {
     try {
+      console.log('[AUTH] Starting registration...', { email, name, username });
       const { data } = await api.post('/auth/register', { email, password, name, title, username });
+      console.log('[AUTH] Registration successful');
       await setStoredToken(data.access_token);
       setUser(data.user);
-    } catch (e) {
+    } catch (e: any) {
+      console.error('[AUTH] Registration failed:', e);
+      console.error('[AUTH] Error details:', {
+        message: e?.message,
+        response: e?.response?.data,
+        status: e?.response?.status,
+        code: e?.code,
+      });
+      // More descriptive error for network issues
+      if (e?.code === 'ECONNABORTED' || e?.code === 'ETIMEDOUT') {
+        throw new Error('Connection timeout - please check your internet connection');
+      }
+      if (e?.message === 'Network Error' || e?.message?.includes('Network')) {
+        throw new Error('Network error - please check your internet connection and try again');
+      }
       throw new Error(formatApiErrorDetail(e));
     }
   };

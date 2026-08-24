@@ -678,6 +678,10 @@ export default function CallScreen() {
       }
 
       await cleanup();
+      logCallEvent(isCaller ? 'CALLER_CLEANUP_AFTER_DECLINE' : 'CALLEE_CLEANUP_AFTER_DECLINE', {
+        callId: id,
+        reason: reason || '',
+      });
       try {
         const sounds = await import('../../src/sounds');
         await sounds.playDisconnectTone();
@@ -686,7 +690,7 @@ export default function CallScreen() {
       }
       setTimeout(returnToChat, 350);
     },
-    [id, cleanup, reportCallDiag, returnToChat],
+    [id, cleanup, isCaller, reportCallDiag, returnToChat],
   );
 
   // ---------------------------------------------------------------------------
@@ -834,7 +838,28 @@ export default function CallScreen() {
 
       const pc = pcRef.current;
       const peerId = peerOverride || readyPeerIdRef.current || peerIdRef.current;
-      if (!pc || !peerId || !peerPublicKeyRef.current) return false;
+      const hasPeerKey = !!peerPublicKeyRef.current;
+      
+      logCallEvent('SEND_CALLER_OFFER_ATTEMPT', {
+        callId: id,
+        reason,
+        has_pc: !!pc,
+        has_peer_id: !!peerId,
+        has_peer_key: hasPeerKey,
+        peer_ready: peerReadyRef.current,
+        offer_sent: offerSentRef.current,
+      });
+      
+      if (!pc || !peerId || !peerPublicKeyRef.current) {
+        logCallEvent('SEND_CALLER_OFFER_BLOCKED', {
+          callId: id,
+          reason,
+          missing_pc: !pc,
+          missing_peer_id: !peerId,
+          missing_peer_key: !peerPublicKeyRef.current,
+        });
+        return false;
+      }
 
       offerSentRef.current = true;
       try {
@@ -908,6 +933,21 @@ export default function CallScreen() {
           reason,
           platform: Platform.OS,
         });
+      }
+
+      // If E2EE not ready yet (bootstrap still running), retry after short delay
+      if (!peerPublicKeyRef.current) {
+        logCallEvent('PEER_READY_BUT_E2EE_NOT_READY', {
+          callId: id,
+          reason,
+          will_retry: true,
+        });
+        setTimeout(() => {
+          if (!endedRef.current && peerReadyRef.current && !offerSentRef.current) {
+            markPeerReadyForOffer(nextPeerId, `${reason}_retry`).catch(() => {});
+          }
+        }, 500);
+        return false;
       }
 
       return await sendCallerOffer(reason, nextPeerId);
@@ -1207,6 +1247,13 @@ export default function CallScreen() {
       // them leaves both peers stuck on "Connecting", so replay them once the
       // bootstrap is complete.
       if (isPeerSignal && (!pc || !peerPublicKeyRef.current)) {
+        logCallEvent('SIGNAL_QUEUED_PENDING_BOOTSTRAP', {
+          callId: id,
+          signalType: msg.type,
+          has_pc: !!pc,
+          has_e2ee_key: !!peerPublicKeyRef.current,
+          queue_length: pendingSignalMessagesRef.current.length,
+        });
         pendingSignalMessagesRef.current.push(msg);
         if (pendingSignalMessagesRef.current.length > 100) {
           pendingSignalMessagesRef.current.shift();
@@ -1236,6 +1283,20 @@ export default function CallScreen() {
             msg.data?.accepted_by ||
             msg.accepted_by ||
             null;
+          
+          logCallEvent('CALL_ACCEPTED_EVENT_RECEIVED', {
+            callId: id,
+            acceptedBy,
+            currentStatus: statusRef.current,
+            peerReady: peerReadyRef.current,
+          });
+          
+          // Immediately stop ringback and update UI to show call is being connected
+          stopRingback();
+          if (!connectedRef.current && !endedRef.current) {
+            setStatus('connecting');
+          }
+          
           await markPeerReadyForOffer(acceptedBy, 'accepted_event');
         }
         return;
@@ -1254,6 +1315,13 @@ export default function CallScreen() {
         const from = msg.from;
         if (from && !peerIdRef.current) peerIdRef.current = from;
         if (!pc) return; // PC not ready — caller will give up on no-answer timeout
+        
+        // Cancel timeout - we got the offer, signaling is working
+        if (timeoutTimerRef.current) {
+          clearTimeout(timeoutTimerRef.current);
+          timeoutTimerRef.current = null;
+        }
+        
         try {
           const signal = await decryptPeerSignal(msg);
           if (!signal?.sdp) throw new Error('Encrypted offer unavailable');
@@ -1376,6 +1444,23 @@ export default function CallScreen() {
         const evCallId = msg.call_id ?? msg.data?.call_id;
         if (evCallId && evCallId !== id) return;
         const status = msg.data?.status;
+        if (
+          isCaller &&
+          (
+            msg.type === 'call:reject' ||
+            msg.type === 'call:declined' ||
+            msg.event === 'call.declined' ||
+            status === 'rejected' ||
+            status === 'declined'
+          )
+        ) {
+          logCallEvent('CALLER_RECEIVED_DECLINED_EVENT', {
+            callId: id,
+            type: String(msg.type || ''),
+            event: String(msg.event || ''),
+            status: String(status || ''),
+          });
+        }
         closeCallFromPeer(
           msg.type === 'call:reject' || status === 'rejected' || status === 'declined'
             ? 'Call rejected'
@@ -1448,6 +1533,7 @@ export default function CallScreen() {
   useEffect(() => {
     if (!id || !user) return;
     let cancelled = false;
+
     const poll = async () => {
       try {
         const { data } = await api.get(`/calls/${id}/signals`);
@@ -1463,11 +1549,22 @@ export default function CallScreen() {
         /* WebSocket remains the primary signaling path. */
       }
     };
+
+    // Immediate fetch on mount
     poll().catch(() => {});
-    const timer = setInterval(() => poll().catch(() => {}), 750);
+
+    // Standard polling: every 750ms
+    const pollingInterval = setInterval(() => {
+      if (cancelled) {
+        clearInterval(pollingInterval);
+        return;
+      }
+      poll().catch(() => {});
+    }, 750);
+
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      clearInterval(pollingInterval);
     };
   }, [closeCallFromPeer, id, onWs, user]);
 
@@ -1640,6 +1737,56 @@ export default function CallScreen() {
 
     const bootstrap = async () => {
       reportCallDiag('bootstrap_start').catch(() => {});
+      
+      // CALLEE: Fetch signals IMMEDIATELY on mount, before ICE/E2EE/media setup.
+      // This ensures we get caller's early offer as soon as possible, even if
+      // iOS delayed mounting this screen after CallKit answer (locked screen).
+      if (!isCaller) {
+        try {
+          logCallEvent('CALLEE_EARLY_SIGNAL_FETCH_START', { callId: id });
+          const { data } = await api.get(`/calls/${id}/signals`);
+          const signals = Array.isArray(data) ? data : [];
+          if (signals.length > 0) {
+            logCallEvent('CALLEE_EARLY_SIGNAL_FETCH_SUCCESS', {
+              callId: id,
+              count: signals.length,
+              types: signals.map((s: any) => s?.type).join(','),
+            });
+            // Queue signals - they'll be processed after bootstrap completes
+            for (const sig of signals) {
+              pendingSignalMessagesRef.current.push(sig);
+            }
+          }
+        } catch {
+          /* Polling will retry */
+        }
+      }
+      
+      // CALLER: Fetch call info to get peer ID if we don't have it yet.
+      // Without peer ID, we can't send early offer (nowhere to send it).
+      if (isCaller && !peerIdRef.current) {
+        try {
+          logCallEvent('CALLER_FETCHING_CALL_INFO_FOR_PEER_ID', { callId: id });
+          const { data: callInfo } = await api.get(`/calls/${id}`);
+          const peerId = resolvePeerId(callInfo, user?.id);
+          if (peerId) {
+            peerIdRef.current = peerId;
+            logCallEvent('CALLER_RESOLVED_PEER_ID_FROM_BACKEND', {
+              callId: id,
+              peer_id: peerId,
+            });
+          } else {
+            logCallEvent('CALLER_NO_PEER_ID_IN_CALL_INFO', { callId: id });
+          }
+        } catch (err: any) {
+          logCallEvent('CALLER_FAILED_TO_FETCH_CALL_INFO', {
+            callId: id,
+            error: err?.message,
+          });
+          /* Will fall back to waiting for call:accepted */
+        }
+      }
+      
       // 1. Fetch ICE servers (cached on backend)
       await fetchIceServers();
       reportCallDiag('ice_servers_loaded').catch(() => {});
@@ -1695,6 +1842,11 @@ export default function CallScreen() {
 
       const pendingSignals = pendingSignalMessagesRef.current;
       pendingSignalMessagesRef.current = [];
+      logCallEvent('REPLAYING_PENDING_SIGNALS', {
+        callId: id,
+        count: pendingSignals.length,
+        signal_types: pendingSignals.map((s: any) => s.type).join(','),
+      });
       for (const pendingSignal of pendingSignals) {
         if (cancelled || endedRef.current) return;
         await onWs(pendingSignal);
@@ -1713,35 +1865,38 @@ export default function CallScreen() {
         setStatus('connecting');
       }
 
-      // 4b. RACE FIX (caller): if callee already sent `call:ready` while we
-      // were still fetching ICE / acquiring mic, the handler set peerIdRef but
-      // had to bail because pc wasn't ready. Trigger the offer now.
-      if (
-        isCaller &&
-        peerReadyRef.current &&
-        (readyPeerIdRef.current || peerIdRef.current) &&
-        !offerSentRef.current &&
-        pcRef.current
-      ) {
-        await sendCallerOffer('bootstrap_after_ready', readyPeerIdRef.current);
+      // 4b. EARLY OFFER (caller): Send offer IMMEDIATELY after bootstrap completes.
+      // Don't wait for callee to send ready/accept - this avoids locked-screen race
+      // where iOS delays UI mount and callee never sends ready signal.
+      // Offer is persisted in backend /signals and callee will fetch it on answer.
+      if (isCaller && !offerSentRef.current && pcRef.current) {
+        const targetPeerId = readyPeerIdRef.current || peerIdRef.current;
+        if (targetPeerId) {
+          logCallEvent('EARLY_OFFER_SENDING', {
+            callId: id,
+            peer_id: targetPeerId,
+            reason: 'bootstrap_complete',
+          });
+          await sendCallerOffer('early_offer_bootstrap_complete', targetPeerId);
+        } else {
+          // Fallback: if we don't have peer ID yet from URL params, we'll send
+          // when we get call:accepted or call:ready (existing flow)
+          logCallEvent('EARLY_OFFER_SKIPPED_NO_PEER_ID', { callId: id });
+        }
       }
 
-      // 6. Timeout for no-answer. After accept/answered, this is no longer a
-      // missed call; WebRTC may still be negotiating across PushKit/FCM resume.
-      if (isCaller) {
-        timeoutTimerRef.current = setTimeout(() => {
-          if (endedRef.current || connectedRef.current) return;
-          const stillWaitingForAnswer =
-            statusRef.current === 'ringing' &&
-            !peerReadyRef.current &&
-            !offerSentRef.current;
-          if (stillWaitingForAnswer) {
-            endCall('No answer');
-            return;
-          }
-          reportCallDiag('no_answer_timeout_ignored_after_accept').catch(() => {});
-        }, CALL_TIMEOUT_MS);
-      }
+      // 6. Safety timeout: must never stay in ringing/connecting forever.
+      timeoutTimerRef.current = setTimeout(() => {
+        if (endedRef.current || connectedRef.current) return;
+        logCallEvent(isCaller ? 'CALLER_CONNECTING_TIMEOUT_ENFORCED' : 'CALLEE_CONNECTING_TIMEOUT_ENFORCED', {
+          callId: id,
+          status: statusRef.current,
+          peerReady: peerReadyRef.current,
+          offerSent: offerSentRef.current,
+          answerSent: answerSentRef.current,
+        });
+        endCall(isCaller ? 'No answer' : 'Call setup failed');
+      }, CALL_TIMEOUT_MS);
 
       // 7. Callee: notify caller we're ready (will retry)
       if (!isCaller) {
