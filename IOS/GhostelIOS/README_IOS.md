@@ -24,7 +24,7 @@ Ten folder zawiera osobna wersje projektu przygotowana pod iOS.
 
    `https://api.ghostel.app`
 
-   Jesli zmieniasz backend, podmien ten adres na nowy URL po HTTPS.
+   Jeśli zmieniasz backend, podmień ten adres na nowy URL po HTTPS.
 
    Do testow moze byc np. ngrok:
 
