@@ -10,6 +10,8 @@ import logging
 import base64
 import binascii
 import hashlib
+import subprocess
+import psutil
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Literal
 
@@ -3115,6 +3117,84 @@ async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)):
     return {"deleted": True}
 
 
+@api.get("/admin/health")
+async def admin_health_check(admin: dict = Depends(require_admin)):
+    """Admin endpoint to check backend health and system status"""
+    import subprocess
+    import psutil
+    from datetime import datetime
+    
+    try:
+        # Database check
+        db_ok = False
+        try:
+            await db.users.count_documents({}, limit=1)
+            db_ok = True
+        except Exception as e:
+            logger.error(f"DB health check failed: {e}")
+        
+        # System info
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        # Process info
+        process = psutil.Process()
+        process_memory = process.memory_info().rss / 1024 / 1024  # MB
+        
+        return {
+            "status": "healthy" if db_ok else "unhealthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "database": {
+                "connected": db_ok,
+            },
+            "system": {
+                "cpu_percent": cpu_percent,
+                "memory_percent": memory.percent,
+                "memory_available_mb": memory.available / 1024 / 1024,
+                "disk_percent": disk.percent,
+                "disk_free_gb": disk.free / 1024 / 1024 / 1024,
+            },
+            "process": {
+                "memory_mb": process_memory,
+                "uptime_seconds": (datetime.now() - datetime.fromtimestamp(process.create_time())).total_seconds(),
+            },
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+
+@api.post("/admin/restart")
+async def admin_restart_backend(admin: dict = Depends(require_admin)):
+    """Admin endpoint to restart the backend service via systemctl"""
+    import subprocess
+    
+    try:
+        # Log the restart request
+        logger.warning(f"Backend restart requested by admin: {admin['email']}")
+        
+        # Restart the systemd service in background
+        subprocess.Popen(
+            ["sudo", "systemctl", "restart", "ghostel-backend"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        
+        return {
+            "status": "restarting",
+            "message": "Backend restart initiated. Service will be back online in ~10 seconds.",
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Backend restart failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Restart failed: {str(e)}")
+
+
 # ----------------- Uploads (encrypted attachments) -----------------
 @api.post("/uploads")
 async def upload_attachment(request: Request, user: dict = Depends(get_current_user)):
@@ -5648,7 +5728,7 @@ async def root():
     return {"app": APP_NAME, "version": "1.0.0", "status": "ok"}
 
 
-ANDROID_APK_VERSION = "1.4.53"
+ANDROID_APK_VERSION = "1.4.43"
 
 
 @app.get("/app-release.apk")

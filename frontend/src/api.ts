@@ -7,7 +7,7 @@ export const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://api.ghos
 
 export const api: AxiosInstance = axios.create({
   baseURL: `${BASE_URL}/api`,
-  timeout: 20000,
+  timeout: 60000, // Increased from 20s to 60s for slow connections
 });
 
 api.interceptors.request.use(async (config) => {
