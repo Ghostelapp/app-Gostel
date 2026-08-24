@@ -20,11 +20,11 @@ Ten folder zawiera osobna wersje projektu przygotowana pod iOS.
 
    `app.ghostel`
 
-2. W `eas.json` zamien:
+2. W `eas.json` backend jest ustawiony na:
 
-   `https://YOUR-BACKEND-HTTPS.example.com`
+   `https://api.ghostel.app`
 
-   na prawdziwy adres backendu po HTTPS.
+   Jesli zmieniasz backend, podmien ten adres na nowy URL po HTTPS.
 
    Do testow moze byc np. ngrok:
 
