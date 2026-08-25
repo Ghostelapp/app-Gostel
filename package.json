@@ -1,0 +1,14 @@
+{
+  "name": "ghostel",
+  "version": "1.4.53",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "cd frontend && npx expo export --platform web --output-dir ../dist --clear"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "http-proxy-middleware": "^3.0.0"
+  }
+}
