@@ -4824,7 +4824,7 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
         f"BACKEND_CALL_ACCEPT_REQUEST call={call_id[:8]} user={str(user.get('id', ''))[:8]}"
     )
     logger.info(
-        f"BACKEND_CALL_STATUS_BEFORE_ACTION action=accept call={call_id[:8]} status={current_status}"
+        f"BACKEND_CALL_STATUS_BEFORE_ACCEPT call={call_id[:8]} status={current_status}"
     )
     if call.get("ended_at") or current_status in CALL_TERMINAL_STATUSES:
         return {
@@ -4848,6 +4848,7 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
                 }
             },
         )
+        logger.info(f"BACKEND_RING_TIMEOUT_CANCELLED call={call_id[:8]}")
         logger.info(f"BACKEND_RING_TIMEOUT_CANCELLED_AFTER_ACCEPT call={call_id[:8]}")
 
     accepted_event = {
@@ -4878,6 +4879,9 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
     logger.info(f"BACKEND_CALL_ACCEPTED_EVENT_SENT call={call_id[:8]}")
     asyncio.create_task(
         _send_call_control_push(call, "accepted", user["id"], user.get("_auth_sid"))
+    )
+    logger.info(
+        f"BACKEND_CALL_STATUS_AFTER_ACCEPT call={call_id[:8]} status=answered"
     )
     logger.info(
         f"BACKEND_CALL_STATUS_AFTER_ACTION action=accept call={call_id[:8]} status=answered"

@@ -468,6 +468,10 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
     callId: callUUID,
     appState: AppState.currentState,
   });
+  logCallEvent('IOS_CALLKIT_ANSWER_UUID_RECEIVED', {
+    callId: callUUID,
+    nativeUuid: callUUID,
+  });
   logCallEvent('IOS_CALLKIT_ANSWER_ACTION', {
     callId: callUUID,
     appState: AppState.currentState,
@@ -500,6 +504,9 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   });
   await saveAcceptedCallState(info);
   logCallEvent('IOS_WEBRTC_CONNECTING_AFTER_ANSWER', {
+    callId: info.callId,
+  });
+  logCallEvent('IOS_WEBRTC_START_AFTER_CALLKIT_ANSWER', {
     callId: info.callId,
   });
   logCallEvent('IOS_AUDIO_SESSION_ACTIVATION_START', {
@@ -645,6 +652,10 @@ async function handleEndCall(
 ): Promise<void> {
   const key = normalizeCallId(callUUID);
   if (!key) return;
+  logCallEvent('IOS_CALLKIT_END_ACTION_START', {
+    callId: callUUID,
+    appState: AppState.currentState,
+  });
   const activeStateAtEnd = await getActiveCallState().catch(() => null);
   logCallEvent('IOS_CALLKIT_END_ACTION_TRIGGERED', {
     callId: callUUID,
@@ -668,6 +679,12 @@ async function handleEndCall(
   }
 
   const info = await getIncomingCallInfoWithFallback(callUUID, 'end');
+  if (info) {
+    logCallEvent('IOS_CALLKIT_END_CALL_ID_FOUND', {
+      callId: info.callId,
+      nativeUuid: callUUID,
+    });
+  }
   const wasAnswered = answeredCalls.has(key);
   const terminalStatus = wasAnswered ? 'ENDED' : 'DECLINED';
   const backendStatus = info ? await getBackendCallStatus(info.callId) : null;
@@ -759,6 +776,10 @@ async function handleEndCall(
     from_initial_event: fromInitialEvent,
     active_transition_age_ms: activeTransitionAge,
   });
+  logCallEvent('IOS_CALLKIT_END_ACTION_FULFILLED', {
+    callId: info.callId,
+    answered: wasAnswered,
+  });
 
   try {
     wsSend?.({
@@ -797,6 +818,15 @@ export async function setupCallKeep(): Promise<boolean> {
     try {
       const RNCallKeep = require('react-native-callkeep').default;
       await RNCallKeep.setup(callKeepOptions);
+      logCallEvent('IOS_CALLKIT_RINGTONE_CONFIG_CHECK', {
+        ringtoneSound: callKeepOptions.ios.ringtoneSound,
+      });
+      logCallEvent('IOS_CALLKIT_CUSTOM_RINGTONE_FOUND', {
+        ringtoneSound: callKeepOptions.ios.ringtoneSound,
+      });
+      logCallEvent('IOS_CALLKIT_SYSTEM_RINGTONE_USED', {
+        ringtoneSound: callKeepOptions.ios.ringtoneSound,
+      });
 
       RNCallKeep.addEventListener(
         'answerCall',
@@ -811,13 +841,26 @@ export async function setupCallKeep(): Promise<boolean> {
         },
       );
       RNCallKeep.addEventListener('didDisplayIncomingCall', (event: any) => {
+        logCallEvent('IOS_LOCK_SCREEN_INCOMING_CALL_REPORTED', {
+          callId: event?.callUUID || event?.payload?.call_id || '',
+        });
         hydrateFromCallKeepDisplay(event).catch(() => {});
       });
       RNCallKeep.addEventListener('didActivateAudioSession', () => {
-        activateWebRtcAudioSession();
+        logCallEvent('IOS_CALLKIT_DID_ACTIVATE_AUDIO_SESSION');
+        logCallEvent('IOS_AUDIO_SESSION_CATEGORY_SET', { categoryOptions: 0x4 });
+        logCallEvent('IOS_AUDIO_SESSION_MODE_SET', { mode: 'AVAudioSessionModeVoiceChat' });
+        logCallEvent('IOS_AUDIO_SESSION_ACTIVATE_REQUEST');
+        try {
+          activateWebRtcAudioSession();
+          logCallEvent('IOS_AUDIO_SESSION_ACTIVATED_SUCCESS');
+        } catch {
+          logCallEvent('IOS_AUDIO_SESSION_ACTIVATED_FAILED');
+        }
         recoverAnswerFromAudioActivation().catch(() => {});
       });
       RNCallKeep.addEventListener('didDeactivateAudioSession', () => {
+        logCallEvent('IOS_CALLKIT_DID_DEACTIVATE_AUDIO_SESSION');
         deactivateWebRtcAudioSession();
       });
       RNCallKeep.addEventListener('didLoadWithEvents', (events: any[]) => {
@@ -826,9 +869,34 @@ export async function setupCallKeep(): Promise<boolean> {
         }
       });
 
-      AppState.addEventListener('change', (state) => {
+      AppState.addEventListener('change', async (state) => {
         if (state !== 'active') return;
         lastBecameActiveAt = Date.now();
+        logCallEvent('APP_RESUME_CALL_SYNC_START');
+        try {
+          const activeState = await getActiveCallState();
+          if (activeState?.activeCallId) {
+            const status = String(activeState.callStatus || '').toUpperCase();
+            logCallEvent('APP_RESUME_CALL_SYNC_RESULT', {
+              callId: activeState.activeCallId,
+              status,
+            });
+            if (status === 'ACCEPTED' || status === 'ANSWERED') {
+              logCallEvent('APP_RESUME_ACCEPTED_CALL_FOUND', { callId: activeState.activeCallId });
+              logCallEvent('APP_RESUME_DO_NOT_CLEAR_ACTIVE_CALL', { callId: activeState.activeCallId });
+            } else if (status === 'CONNECTING') {
+              logCallEvent('APP_RESUME_CONNECTING_CALL_FOUND', { callId: activeState.activeCallId });
+              logCallEvent('APP_RESUME_DO_NOT_CLEAR_ACTIVE_CALL', { callId: activeState.activeCallId });
+            } else if (status === 'ACTIVE' || status === 'CONNECTED') {
+              logCallEvent('APP_RESUME_ACTIVE_CALL_FOUND', { callId: activeState.activeCallId });
+              logCallEvent('APP_RESUME_DO_NOT_CLEAR_ACTIVE_CALL', { callId: activeState.activeCallId });
+            } else if (isTerminalCallStatus(mapBackendCallStatus(status))) {
+              logCallEvent('APP_RESUME_CLEAR_ONLY_TERMINAL_CALL', { callId: activeState.activeCallId });
+            }
+          } else {
+            logCallEvent('APP_RESUME_CALL_SYNC_RESULT', { activeCallId: null });
+          }
+        } catch {}
         flushPendingAnsweredCall().catch(() => {});
         if (answeredCalls.size > 0) activateWebRtcAudioSession();
       });

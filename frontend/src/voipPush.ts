@@ -81,6 +81,22 @@ async function handleVoipNotification(notification: any): Promise<void> {
     callId: call.id,
     appPlatform: Platform.OS,
   });
+  logCallEvent('IOS_VOIP_PUSH_PAYLOAD_VALID', {
+    callId: call.id,
+    callerId: call.caller_id,
+    callerName: call.caller_name,
+    conversationId: call.conversation_id,
+  });
+  logCallEvent('IOS_CALL_ID_STORED', {
+    callId: call.id,
+  });
+  logCallEvent('IOS_CALLKIT_UUID_CREATED', {
+    callId: call.id,
+    callKitUUID: call.id,
+  });
+  logCallEvent('IOS_CALLKIT_REPORTED_FROM_PUSH', {
+    callId: call.id,
+  });
 
   const cachedTerminalStatus = await getCachedTerminatedCallStatus(call.id);
   if (cachedTerminalStatus) {
@@ -142,7 +158,10 @@ export function setupVoipPushNotifications(): void {
         .catch(() => {})
         .finally(() => {
           const uuid = String(notification?.uuid || notification?.call_id || '');
-          if (uuid) VoipPushNotification.onVoipNotificationCompleted(uuid);
+          if (uuid) {
+            VoipPushNotification.onVoipNotificationCompleted(uuid);
+            logCallEvent('IOS_PUSH_COMPLETION_CALLED', { callId: uuid });
+          }
         });
     };
 

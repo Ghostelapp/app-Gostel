@@ -3,6 +3,11 @@
                  "name":  "ghostel.app",
                  "slug":  "ghostel",
                  "version":  "1.4.54",
+                 "platforms": [
+                     "ios",
+                     "android",
+                     "web"
+                 ],
                  "orientation":  "portrait",
                  "icon":  "./assets/images/icon.png",
                  "scheme":  "ghostel",

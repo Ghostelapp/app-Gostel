@@ -1056,6 +1056,12 @@ export default function CallScreen() {
         icePolicy: config.iceTransportPolicy,
         iceSource: iceSourceRef.current,
       });
+      if (!isCaller) {
+        logCallEvent('WEBRTC_PEER_CREATED_AFTER_CALLKIT_ANSWER', {
+          callId: id,
+          platform: Platform.OS,
+        });
+      }
 
       // remote track → attach
       const handleRemoteStream = (remoteStream: any) => {
@@ -1177,10 +1183,14 @@ export default function CallScreen() {
       // compatibility fallback for an older native runtime.
       if (stream) {
         try {
-          stream.getTracks().forEach((t: any) => pc.addTrack(t, stream));
+          stream.getTracks().forEach((t: any) => {
+            pc.addTrack(t, stream);
+            logCallEvent('WEBRTC_LOCAL_AUDIO_TRACK_ADDED', { callId: id, trackId: t.id });
+          });
         } catch {
           try {
             pc.addStream?.(stream);
+            logCallEvent('WEBRTC_LOCAL_AUDIO_TRACK_ADDED', { callId: id });
           } catch {}
         }
       }
@@ -1345,6 +1355,10 @@ export default function CallScreen() {
           remoteSetRef.current = true;
           await drainPendingIce();
           const answer = await pc.createAnswer();
+          logCallEvent('WEBRTC_ANSWER_CREATED', {
+            callId: id,
+            platform: Platform.OS,
+          });
           await pc.setLocalDescription(answer);
           logCallEvent('WEBRTC_LOCAL_DESCRIPTION_SET', {
             callId: id,
@@ -1358,6 +1372,10 @@ export default function CallScreen() {
               ice_restart: isRestart,
             });
             if (!sent) throw new Error('Encrypted answer not sent');
+            logCallEvent('WEBRTC_ANSWER_SENT', {
+              callId: id,
+              platform: Platform.OS,
+            });
           }
         } catch (e: any) {
           answerSentRef.current = false;

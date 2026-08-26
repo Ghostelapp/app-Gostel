@@ -93,6 +93,7 @@ function patchAppDelegate(source) {
         `      "includesCallsInRecents": false,\n` +
         `      "maximumCallGroups": 1,\n` +
         `      "maximumCallsPerCallGroup": 1,\n` +
+        `      "ringtoneSound": "Ringtone.caf",\n` +
         `      "audioSession": [\n` +
         `        "categoryOptions": 4,\n` +
         `        "mode": "AVAudioSessionModeVoiceChat"\n` +
