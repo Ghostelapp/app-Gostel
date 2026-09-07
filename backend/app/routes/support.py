@@ -1,8 +1,13 @@
+import json
+import os
+import uuid
+import hashlib
+
+import httpx
 from fastapi import APIRouter, Depends, Request
 
-from app.core.config import logger
-from app.core.database import db, client
-from app.core.utils import api_error, now_utc, client_ip, enforce_rate_limit
+from app.core.database import db
+from app.core.utils import now_utc, client_ip, enforce_rate_limit
 from app.core.auth import get_current_user
 from app.services.push import sanitize_diag_value
 from app.models import SupportReportIn

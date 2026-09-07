@@ -7,11 +7,7 @@ load_dotenv(ROOT_DIR / ".env")
 import os
 import uuid
 import logging
-import base64
-import binascii
 import hashlib
-import subprocess
-import psutil
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Literal
 
@@ -20,14 +16,19 @@ import json
 import httpx
 import bcrypt
 import jwt
-import pyotp
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, status, Body, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, Response
 from fastapi.responses import FileResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
-from pydantic import BaseModel, Field, EmailStr, ValidationError
+from pydantic import BaseModel, Field, EmailStr
+
+from app.core.config import (
+    CALL_RING_TIMEOUT_SECONDS,
+    CALL_TERMINAL_STATUSES,
+    CALL_SIGNAL_EVENT_NAMES,
+)
 
 # ----------------- Setup -----------------
 mongo_url = os.environ["MONGO_URL"]
@@ -563,12 +564,12 @@ def public_user(u: dict) -> dict:
     }
 
 
-from app.core.utils import _USERNAME_RE
+import re
 
 
 def normalize_username(s: str) -> str:
     s = (s or "").strip().lower().lstrip("@")
-    s = _re.sub(r"[^a-z0-9_]", "", s)
+    s = re.sub(r"[^a-z0-9_]", "", s)
     return s
 
 
@@ -1773,7 +1774,6 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         # Each iOS install registers both transports. Use Expo only for users
         # whose direct FCM delivery did not succeed, avoiding duplicate alerts
         # while retaining EAS-managed APNs as an independent fallback.
-        delivered_users = fcm_success_users | voip_success_users
         delivered_install_keys = fcm_success_install_keys | voip_success_install_keys
         delivered_users_without_device = (
             fcm_success_users_without_device | voip_success_users_without_device
@@ -2020,38 +2020,6 @@ async def _send_call_control_push(
 # ----------------- Calls (signaling + record) -----------------
 # ICE servers cache (TTL 50min — Cloudflare creds valid 1h, refresh every 50min)
 _ice_cache = {"servers": None, "source": None, "expires_at": 0.0}
-import time as _time
-
-CALL_RING_TIMEOUT_SECONDS = 45
-CALL_TERMINAL_STATUSES = {
-    "declined",
-    "cancelled",
-    "ended",
-    "missed",
-    "timeout",
-    "failed",
-    "rejected",
-}
-CALL_ACTIVE_STATUSES = {
-    "ringing",
-    "accepted",
-    "answered",
-    "connecting",
-    "active",
-    "reconnecting",
-}
-
-CALL_SIGNAL_EVENT_NAMES = {
-    "call:offer": "call.offer",
-    "call:answer": "call.answer",
-    "call:ice": "call.ice_candidate",
-    "call:ready": "call.ready",
-    "call:accept": "call.accepted",
-    "call:reject": "call.declined",
-    "call:end": "call.ended",
-    "call:cancel": "call.cancelled",
-}
-
 
 def normalize_call_signal_envelope(
     signal: dict,

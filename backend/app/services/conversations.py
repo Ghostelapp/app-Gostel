@@ -1,8 +1,9 @@
-from typing import Optional, Dict
-from datetime import datetime
+from datetime import datetime, timezone
+
+from fastapi import HTTPException
 
 from app.core.database import db
-from app.core.utils import now_utc, ensure_utc
+from app.services.users import public_user
 
 
 async def _hydrate_conversation(conv: dict, current_user_id: str) -> dict:

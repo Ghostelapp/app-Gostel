@@ -1,18 +1,60 @@
+import os
+import time as _time
+import asyncio
 import uuid
 import json
 import httpx
-from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict
+from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from app.core.config import APP_NAME, logger
+from app.core.config import (
+    logger,
+    CALL_RING_TIMEOUT_SECONDS, CALL_TERMINAL_STATUSES,
+    CALL_ACTIVE_STATUSES, CALL_SIGNAL_EVENT_NAMES,
+)
 from app.core.database import db
-from app.core.utils import now_utc, ensure_utc
+from app.core.utils import now_utc, enforce_rate_limit
 from app.core.auth import get_current_user
 from app.models import CallStartIn, CallStateUpdateIn
+from app.services.users import (
+    ensure_direct_conversation_not_blocked,
+    require_conversation_e2ee_ready,
+    user_can_signal_target,
+)
+from app.services.websocket import broadcast_to_members, ws_manager
+from app.services.push import _send_push_to_members, _send_call_control_push, sanitize_diag_value
 
 router = APIRouter()
+
+# ICE servers cache (TTL 50min — Cloudflare creds valid 1h, refresh every 50min)
+_ice_cache = {"servers": None, "source": None, "expires_at": 0.0}
+
+# Public Open Relay TURN is best-effort only. Production should configure
+# TURN_URLS or Cloudflare TURN because public relay capacity is not guaranteed.
+_OPEN_RELAY_SERVERS = [
+    {"urls": "stun:openrelay.metered.ca:80"},
+    {
+        "urls": "turn:openrelay.metered.ca:80",
+        "username": "openrelayproject",
+        "credential": "openrelayproject",
+    },
+    {
+        "urls": "turn:openrelay.metered.ca:443",
+        "username": "openrelayproject",
+        "credential": "openrelayproject",
+    },
+    {
+        "urls": "turn:openrelay.metered.ca:443?transport=tcp",
+        "username": "openrelayproject",
+        "credential": "openrelayproject",
+    },
+]
+
+_GOOGLE_STUN_SERVERS = [
+    {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
+]
 
 def normalize_call_signal_envelope(
     signal: dict,

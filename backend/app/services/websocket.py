@@ -1,12 +1,15 @@
 import json
 import asyncio
-from typing import Dict, List, Optional
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException
+import jwt
+from typing import Optional
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
-from app.core.config import logger
+from app.core.config import ALLOW_LEGACY_WS_TOKEN, JWT_SECRET, JWT_ALG
 from app.core.database import db
 from app.core.utils import now_utc
 from app.core.auth import get_current_user, create_ws_ticket
+from app.services.calls import normalize_call_signal_envelope
+from app.services.users import user_can_signal_target
 
 router = APIRouter()
 
@@ -35,6 +38,9 @@ class WSManager:
                 await ws.send_text(json.dumps(payload))
             except Exception:
                 pass
+
+
+ws_manager = WSManager()
 
 
 async def broadcast_to_members(member_ids, payload, exclude: Optional[str] = None):

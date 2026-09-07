@@ -1,16 +1,17 @@
 """Announcement endpoints."""
 
+import asyncio
 import uuid
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from pymongo import ReturnDocument
 
 from app.core.auth import get_current_user, require_admin
 from app.core.config import logger
 from app.core.database import db
-from app.core.utils import now_utc
+from app.core.utils import now_utc, ensure_utc
 from app.services.announcements import (
     AnnouncementCreateIn,
     AnnouncementUpdateIn,

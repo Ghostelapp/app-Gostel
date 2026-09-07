@@ -1,13 +1,14 @@
+import re
 from datetime import timedelta
 from typing import List, Optional
 
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.config import APP_NAME, logger
+from app.core.config import APP_NAME
 from app.core.database import db
-from app.core.utils import api_error, now_utc, client_ip, enforce_rate_limit, _USERNAME_RE
+from app.core.utils import now_utc, _USERNAME_RE
 from app.core.auth import get_current_user
-from app.services.users import public_user, ensure_not_blocked_between, normalize_username, is_username_taken
+from app.services.users import public_user, normalize_username, is_username_taken
 from app.services.websocket import broadcast_to_members
 from app.models import (
     ProfileUpdateIn, AvatarUpdateIn, StatusUpdateIn, MuteUserIn,
@@ -71,7 +72,7 @@ async def search_users(
     query = {
         "id": {"$nin": list(exclude_ids)},
         "$or": [
-            {"username": {"$regex": f"^{_re.escape(qn_lower)}", "$options": "i"}},
+            {"username": {"$regex": f"^{re.escape(qn_lower)}", "$options": "i"}},
             {"name": {"$regex": qn, "$options": "i"}},
         ],
     }

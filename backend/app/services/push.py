@@ -1,9 +1,7 @@
-import uuid
-import logging
-from typing import Optional, List, Dict
-from datetime import datetime, timezone
+import httpx
+from typing import Optional
 
-from app.core.config import APP_NAME, logger
+from app.core.config import logger, EXPO_PUSH_URL, CALL_TERMINAL_STATUSES
 from app.core.database import db
 from app.core.utils import now_utc
 
@@ -677,7 +675,6 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
         # Each iOS install registers both transports. Use Expo only for users
         # whose direct FCM delivery did not succeed, avoiding duplicate alerts
         # while retaining EAS-managed APNs as an independent fallback.
-        delivered_users = fcm_success_users | voip_success_users
         delivered_install_keys = fcm_success_install_keys | voip_success_install_keys
         delivered_users_without_device = (
             fcm_success_users_without_device | voip_success_users_without_device

@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends
+import datetime
+
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.config import logger
 from app.core.database import db
@@ -81,7 +83,6 @@ async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)):
 @router.get("/admin/health")
 async def admin_health_check(admin: dict = Depends(require_admin)):
     """Admin endpoint to check backend health and system status"""
-    import subprocess
     import psutil
     from datetime import datetime
     

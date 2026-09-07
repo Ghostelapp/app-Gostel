@@ -24,5 +24,34 @@ SUPPORTED_VOICE_ATTACHMENT_MIME_TYPES = {
 }
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"  # legacy, retained for /push/test
 
+CALL_RING_TIMEOUT_SECONDS = 45
+CALL_TERMINAL_STATUSES = {
+    "declined",
+    "cancelled",
+    "ended",
+    "missed",
+    "timeout",
+    "failed",
+    "rejected",
+}
+CALL_ACTIVE_STATUSES = {
+    "ringing",
+    "accepted",
+    "answered",
+    "connecting",
+    "active",
+    "reconnecting",
+}
+CALL_SIGNAL_EVENT_NAMES = {
+    "call:offer": "call.offer",
+    "call:answer": "call.answer",
+    "call:ice": "call.ice_candidate",
+    "call:ready": "call.ready",
+    "call:accept": "call.accepted",
+    "call:reject": "call.declined",
+    "call:end": "call.ended",
+    "call:cancel": "call.cancelled",
+}
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ghostel")
