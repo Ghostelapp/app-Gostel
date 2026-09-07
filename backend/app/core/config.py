@@ -22,6 +22,7 @@ SUPPORTED_VOICE_ATTACHMENT_MIME_TYPES = {
     "audio/webm",
     "audio/x-m4a",
 }
+EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"  # legacy, retained for /push/test
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ghostel")

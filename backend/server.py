@@ -41,11 +41,25 @@ from app.routes import auth as auth_routes
 from app.routes import users as users_routes
 from app.routes import contacts as contacts_routes
 from app.routes import conversations as conversations_routes
+from app.routes import admin as admin_routes
+from app.routes import uploads as uploads_routes
+from app.routes import push as push_routes
+from app.routes import support as support_routes
+from app.routes import root as root_routes
+from app.services import calls as calls_routes
+from app.services import websocket as websocket_routes
 
 api.include_router(auth_routes.router)
 api.include_router(users_routes.router)
 api.include_router(contacts_routes.router)
 api.include_router(conversations_routes.router)
+api.include_router(admin_routes.router)
+api.include_router(uploads_routes.router)
+api.include_router(push_routes.router)
+api.include_router(support_routes.router)
+api.include_router(root_routes.router)
+api.include_router(calls_routes.router)
+api.include_router(websocket_routes.router)
 
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALG = "HS256"
@@ -1426,279 +1440,21 @@ async def _admin_activity_chart(days_count: int = 14) -> list[dict]:
     return _admin_bucket_chart(activity_rows, "last_active", "active", days_count)
 
 
-@api.get("/admin/users")
-async def admin_list_users(
-    admin: dict = Depends(require_admin),
-    limit: int = 200,
-    skip: int = 0,
-):
-    limit = max(1, min(limit, 500))
-    skip = max(0, skip)
-    cursor = (
-        db.users.find({}, {"_id": 0})
-        .sort("created_at", -1)
-        .skip(skip)
-        .limit(limit)
-    )
-    return [admin_user(u) async for u in cursor]
 
 
-@api.get("/admin/stats")
-async def admin_stats(admin: dict = Depends(require_admin)):
-    users = await db.users.count_documents({})
-    convs = await db.conversations.count_documents({})
-    msgs = await db.messages.count_documents({})
-    online = await db.users.count_documents({"status": "online"})
-    twofa = await db.users.count_documents({"two_factor_enabled": True})
-    push_ready = await db.users.count_documents(
-        {
-            "$or": [
-                {"push_tokens.0": {"$exists": True}},
-                {"push_token": {"$exists": True, "$ne": None}},
-                {"expo_push_token": {"$exists": True, "$ne": None}},
-            ]
-        }
-    )
-    activity_chart = await _admin_activity_chart()
-    registrations_chart = await _admin_collection_date_chart(db.users, "created_at", "count")
-    messages_chart = await _admin_collection_date_chart(db.messages, "created_at", "count")
-    return {
-        "users": users,
-        "conversations": convs,
-        "messages": msgs,
-        "online": online,
-        "two_factor_enabled": twofa,
-        "push_ready": push_ready,
-        "activity_chart": activity_chart,
-        "registrations_chart": registrations_chart,
-        "messages_chart": messages_chart,
-    }
 
 
-@api.patch("/admin/users/{user_id}/role")
-async def admin_update_role(user_id: str, payload: RoleUpdateIn, admin: dict = Depends(require_admin)):
-    if user_id == admin["id"] and payload.role != "admin":
-        raise HTTPException(status_code=400, detail="Cannot demote yourself")
-    result = await db.users.update_one({"id": user_id}, {"$set": {"role": payload.role}})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="User not found")
-    fresh = await db.users.find_one({"id": user_id}, {"_id": 0})
-    return admin_user(fresh)
 
 
-@api.delete("/admin/users/{user_id}")
-async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)):
-    if user_id == admin["id"]:
-        raise HTTPException(status_code=400, detail="Cannot delete yourself")
-    deleted = await delete_user_account_data(user_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {"deleted": True}
 
 
-@api.get("/admin/health")
-async def admin_health_check(admin: dict = Depends(require_admin)):
-    """Admin endpoint to check backend health and system status"""
-    import subprocess
-    import psutil
-    from datetime import datetime
-    
-    try:
-        # Database check
-        db_ok = False
-        try:
-            await db.users.count_documents({}, limit=1)
-            db_ok = True
-        except Exception as e:
-            logger.error(f"DB health check failed: {e}")
-        
-        # System info
-        cpu_percent = psutil.cpu_percent(interval=0.1)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        
-        # Process info
-        process = psutil.Process()
-        process_memory = process.memory_info().rss / 1024 / 1024  # MB
-        
-        return {
-            "status": "healthy" if db_ok else "unhealthy",
-            "timestamp": datetime.utcnow().isoformat(),
-            "database": {
-                "connected": db_ok,
-            },
-            "system": {
-                "cpu_percent": cpu_percent,
-                "memory_percent": memory.percent,
-                "memory_available_mb": memory.available / 1024 / 1024,
-                "disk_percent": disk.percent,
-                "disk_free_gb": disk.free / 1024 / 1024 / 1024,
-            },
-            "process": {
-                "memory_mb": process_memory,
-                "uptime_seconds": (datetime.now() - datetime.fromtimestamp(process.create_time())).total_seconds(),
-            },
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "timestamp": datetime.utcnow().isoformat(),
-        }
 
 
-@api.post("/admin/restart")
-async def admin_restart_backend(admin: dict = Depends(require_admin)):
-    """Admin endpoint to restart the backend service via systemctl"""
-    import subprocess
-    
-    try:
-        # Log the restart request
-        logger.warning(f"Backend restart requested by admin: {admin['email']}")
-        
-        # Restart the systemd service in background
-        subprocess.Popen(
-            ["sudo", "systemctl", "restart", "ghostel-backend"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        
-        return {
-            "status": "restarting",
-            "message": "Backend restart initiated. Service will be back online in ~10 seconds.",
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-    except Exception as e:
-        logger.error(f"Backend restart failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Restart failed: {str(e)}")
 
 
 # ----------------- Uploads (encrypted attachments) -----------------
-@api.post("/uploads")
-async def upload_attachment(request: Request, user: dict = Depends(get_current_user)):
-    await enforce_rate_limit(
-        "upload-user-minute", user["id"], limit=12, window_seconds=60
-    )
-    await enforce_rate_limit(
-        "upload-user-hour", user["id"], limit=80, window_seconds=60 * 60
-    )
-    content_type = (request.headers.get("content-type") or "").lower()
-    upload_kind = ""
-    if content_type.startswith("multipart/form-data"):
-        try:
-            form = await request.form()
-        except Exception:
-            raise HTTPException(
-                status_code=400,
-                detail=api_error("INVALID_AUDIO_UPLOAD", "Invalid multipart upload"),
-            )
-        upload_file = (
-            form.get("encryptedAudioFile")
-            or form.get("file")
-            or form.get("encrypted_file")
-        )
-        if upload_file is None or not hasattr(upload_file, "read"):
-            raise HTTPException(
-                status_code=400,
-                detail=api_error("INVALID_AUDIO_UPLOAD", "Encrypted upload file is required"),
-        )
-        upload_kind = str(form.get("kind") or form.get("uploadKind") or "").strip().lower()
-        if upload_kind == "voice":
-            logger.info("VOICE_UPLOAD_STARTED transport=multipart")
-        filename = Path(
-            str(form.get("filename") or getattr(upload_file, "filename", "") or "attachment.ghostel")
-        ).name.strip()[:200] or "attachment.ghostel"
-        mime = str(
-            form.get("mime")
-            or getattr(upload_file, "content_type", "")
-            or "application/octet-stream"
-        ).strip()
-        decoded = await upload_file.read(MAX_ENCRYPTED_ATTACHMENT_SIZE + 1)
-        real_size = len(decoded)
-        if upload_kind == "voice":
-            logger.info(
-                f"VOICE_UPLOAD_SIZE_CHECK size={real_size} limit={MAX_ENCRYPTED_ATTACHMENT_SIZE}"
-            )
-        if real_size > MAX_ENCRYPTED_ATTACHMENT_SIZE:
-            if upload_kind == "voice":
-                logger.info(f"VOICE_UPLOAD_FAILED_413 reason=encrypted_blob_size size={real_size}")
-            raise HTTPException(
-                status_code=413,
-                detail=api_error(
-                    "VOICE_MESSAGE_TOO_LARGE" if upload_kind == "voice" else "ATTACHMENT_TOO_LARGE",
-                    "Voice message is too large" if upload_kind == "voice" else "Attachment is too large",
-                ),
-            )
-        payload_data = base64.b64encode(decoded).decode()
-    else:
-        try:
-            body = await request.json()
-            payload = UploadIn.model_validate(body)
-            decoded = base64.b64decode(payload.data, validate=True)
-        except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.errors())
-        except (binascii.Error, ValueError):
-            raise HTTPException(status_code=400, detail="Invalid base64 payload")
-
-        real_size = len(decoded)
-        filename = Path(payload.filename).name.strip()[:200] or "attachment.ghostel"
-        mime = payload.mime
-        payload_data = payload.data
-
-    if real_size > MAX_ENCRYPTED_ATTACHMENT_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail=api_error("ATTACHMENT_TOO_LARGE", "Attachment is too large"),
-        )
-
-    if mime != "application/octet-stream" or not filename.endswith(".ghostel"):
-        raise HTTPException(
-            status_code=400,
-            detail=api_error("INVALID_AUDIO_UPLOAD", "Attachments must be encrypted before upload"),
-        )
-    att = {
-        "id": str(uuid.uuid4()),
-        "owner_id": user["id"],
-        "filename": filename,
-        "mime": mime,
-        "data": payload_data,  # encrypted blob stored as base64
-        "size": real_size,
-        "created_at": now_utc().isoformat(),
-    }
-    await db.attachments.insert_one(att)
-    if upload_kind == "voice":
-        logger.info(f"VOICE_UPLOAD_SUCCESS size={real_size}")
-    return {"id": att["id"], "filename": att["filename"], "mime": att["mime"], "size": att["size"]}
 
 
-@api.get("/uploads/{att_id}")
-async def get_attachment(att_id: str, user: dict = Depends(get_current_user)):
-    att = await db.attachments.find_one({"id": att_id}, {"_id": 0})
-    if not att:
-        raise HTTPException(status_code=404, detail="Attachment not found")
-    if att.get("owner_id") != user["id"]:
-        msg = await db.messages.find_one({"attachment_id": att_id}, {"_id": 0})
-        if not msg:
-            raise HTTPException(status_code=403, detail="Attachment not accessible")
-        conv = await db.conversations.find_one(
-            {"id": msg.get("conversation_id"), "member_ids": user["id"]},
-            {"_id": 0, "id": 1},
-        )
-        if not conv:
-            raise HTTPException(status_code=403, detail="Attachment not accessible")
-        one_time_seconds = int(msg.get("one_time_seconds") or 0)
-        if one_time_seconds:
-            viewed = (msg.get("one_time_viewed_at") or {}).get(user["id"])
-            if not viewed:
-                raise HTTPException(status_code=403, detail="Open the one-time image first")
-            try:
-                viewed_at = datetime.fromisoformat(viewed.replace("Z", "+00:00"))
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=410, detail="One-time image expired")
-            if now_utc() >= viewed_at + timedelta(seconds=one_time_seconds):
-                raise HTTPException(status_code=410, detail="One-time image expired")
-    return att
 
 
 # ----------------- Push (Direct FCM HTTP v1 — bypasses Expo Push) -----------------
@@ -1733,473 +1489,18 @@ def sanitize_diag_value(value, depth: int = 0):
     return str(value)[:200]
 
 
-@api.get("/push/status")
-async def push_status(admin: dict = Depends(require_admin)):
-    """Return push/call transport readiness without exposing credentials."""
-    from apns import is_configured as apns_is_configured
-    from fcm import get_config_error, get_project_id, is_configured
-
-    fcm_ok = is_configured()
-    apns_ok = apns_is_configured()
-    configured_turn = bool(os.environ.get("TURN_URLS", "").strip())
-    cloudflare_turn = bool(
-        os.environ.get("CLOUDFLARE_TURN_APP_ID", "").strip()
-        and os.environ.get("CLOUDFLARE_TURN_API_TOKEN", "").strip()
-    )
-    if configured_turn:
-        turn_source = "configured"
-    elif cloudflare_turn:
-        turn_source = "cloudflare"
-    else:
-        turn_source = "public-fallback"
-    warnings = []
-    if not fcm_ok:
-        warnings.append("FCM is not configured; Android/APNs fallback pushes may fail.")
-    if not apns_ok:
-        warnings.append("APNs VoIP is not configured; locked iOS incoming calls may fail.")
-    if turn_source == "public-fallback":
-        warnings.append("TURN uses public fallback; configure production TURN for reliable mobile calls.")
-    return {
-        "fcm_configured": fcm_ok,
-        "fcm_project_configured": bool(get_project_id()),
-        "fcm_config_error": get_config_error() if not fcm_ok else None,
-        "apns_voip_configured": apns_ok,
-        "apns_voip_topic_configured": bool(os.environ.get("APNS_VOIP_TOPIC", "").strip()),
-        "turn_configured": turn_source != "public-fallback",
-        "turn_source": turn_source,
-        "production_call_ready": bool(fcm_ok and apns_ok and turn_source != "public-fallback"),
-        "warnings": warnings,
-    }
 
 
-@api.post("/push/register")
-async def register_push_token(payload: PushTokenIn, user: dict = Depends(get_current_user)):
-    token = (payload.token or "").strip()
-    platform = (payload.platform or "").strip()
-    device_id = normalize_push_device_id(payload.device_id)
-    raw_type = (payload.token_type or "fcm").strip().lower()
-    # Normalize Expo-style names to canonical FCM/APNS:
-    _TYPE_MAP = {"android": "fcm", "ios": "apns"}
-    token_type = _TYPE_MAP.get(raw_type, raw_type)
-    if not token:
-        logger.warning(
-            f"Push registration with empty token from user {user.get('email')} platform={platform!r}"
-        )
-        raise HTTPException(
-            status_code=400,
-            detail="Empty push token.",
-        )
-    token_entry = {
-        "token": token,
-        "token_type": token_type,
-        "platform": platform or "unknown",
-        "device_id": device_id,
-        "session_id": user.get("_auth_sid") or "",
-        "device_model": (payload.device_model or "").strip()[:120],
-        "os_version": (payload.os_version or "").strip()[:80],
-        "source": (payload.source or "").strip()[:80],
-        "registered_at": now_utc().isoformat(),
-    }
-    # A push token identifies one physical app install. If a user logs out and
-    # signs into another account on the same phone, move that phone to the new
-    # account instead of ringing both accounts.
-    if device_id:
-        await remove_push_device_from_other_users(device_id, user["id"])
-    await remove_push_token_from_users(token)
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$pull": {"push_tokens": {"token": token}}},
-    )
-    if device_id:
-        await db.users.update_one(
-            {"id": user["id"]},
-            {"$pull": {"push_tokens": {"device_id": device_id, "token_type": token_type}}},
-        )
-    await db.users.update_one(
-        {"id": user["id"]},
-        {
-            "$addToSet": {"push_tokens": token_entry},
-            "$unset": {
-                "expo_push_token": "",
-                "push_platform": "",
-                "push_token": "",
-                "push_token_type": "",
-            },
-        },
-    )
-    await sync_user_push_legacy_fields(user["id"])
-    logger.info(
-        f"Push token registered for {user.get('email')} type={token_type} (raw={raw_type}) platform={platform} device_id={device_id or '-'}"
-    )
-    return {"registered": True, "platform": platform, "token_type": token_type, "device_id": device_id}
 
 
-@api.get("/push/devices")
-async def list_push_devices(user: dict = Depends(get_current_user)):
-    """Return masked push-token registrations for the current account."""
-    grouped: dict[str, dict] = {}
-    current_session_id = user.get("_auth_sid") or ""
-    for idx, target in enumerate(user_push_targets(user), start=1):
-        token = target.get("token") or ""
-        resolved_id = target.get("device_id") or (
-            hashlib.sha256(token.encode("utf-8")).hexdigest()[:16] if token else str(idx)
-        )
-        entry = grouped.get(resolved_id)
-        if not entry:
-            entry = {
-                "id": resolved_id,
-                "platform": target.get("platform") or "unknown",
-                "token_type": target.get("token_type") or "unknown",
-                "token_types": [],
-                "token_prefix": token[:18],
-                "token_suffix": token[-6:] if len(token) > 6 else "",
-                "device_model": target.get("device_model") or "",
-                "os_version": target.get("os_version") or "",
-                "source": target.get("source") or "",
-                "registered_at": target.get("registered_at") or "",
-                "current_session": False,
-            }
-            grouped[resolved_id] = entry
-        token_type = target.get("token_type") or "unknown"
-        if token_type not in entry["token_types"]:
-            entry["token_types"].append(token_type)
-        if (target.get("session_id") or "") == current_session_id and current_session_id:
-            entry["current_session"] = True
-        if (target.get("registered_at") or "") > (entry.get("registered_at") or ""):
-            entry["token_type"] = token_type
-            entry["platform"] = target.get("platform") or entry["platform"]
-            entry["token_prefix"] = token[:18]
-            entry["token_suffix"] = token[-6:] if len(token) > 6 else ""
-            entry["device_model"] = target.get("device_model") or entry["device_model"]
-            entry["os_version"] = target.get("os_version") or entry["os_version"]
-            entry["source"] = target.get("source") or entry["source"]
-            entry["registered_at"] = target.get("registered_at") or entry["registered_at"]
-    devices = list(grouped.values())
-    for entry in devices:
-        entry["token_types"].sort()
-    return {
-        "count": len(devices),
-        "devices": devices,
-        "last_diag": user.get("push_diag") or None,
-    }
 
 
-@api.post("/push/unregister")
-async def unregister_push(
-    payload: Optional[PushUnregisterIn] = Body(default=None),
-    user: dict = Depends(get_current_user),
-):
-    token = ((payload.token if payload else None) or "").strip()
-    device_id = normalize_push_device_id((payload.device_id if payload else None) or "")
-    if device_id:
-        removed = await remove_push_device_from_users(device_id, user["id"])
-        if not removed:
-            raise HTTPException(status_code=404, detail="Push device not found")
-        return {"unregistered": True, "device_id": device_id, "scope": "device"}
-
-    if token:
-        await remove_push_token_from_users(token, user["id"])
-        return {"unregistered": True, "token_scoped": True, "scope": "token"}
-
-    removed = await remove_push_tokens_for_session(user["id"], user.get("_auth_sid"))
-    return {"unregistered": True, "scope": "session", "removed": removed}
 
 
-@api.post("/push/diag")
-async def push_diag(
-    request: Request,
-    payload: dict = Body(default_factory=dict),
-    user: dict = Depends(get_current_user),
-):
-    """Receives diagnostic payload from client when push registration fails or succeeds.
-    Used to debug 'why isn't push working on user X?' on production."""
-    try:
-        await enforce_rate_limit(
-            "push-diag-user", user["id"], limit=20, window_seconds=60 * 60
-        )
-        allowed = {
-            "platform", "reason", "is_expo_go", "is_device", "device_model",
-            "os_version", "channels_configured", "permission_initial",
-            "permission_final", "firebase_permission", "token_source",
-            "token_type", "token_prefix", "expo_device_token_error",
-            "expo_push_token_error", "expo_project_id",
-            "firebase_remote_registered", "firebase_token_error",
-            "register_error", "error", "token_resp",
-        }
-        sanitized = {}
-        for key, value in payload.items():
-            if key not in allowed or not isinstance(value, (str, bool, int, float, type(None))):
-                continue
-            sanitized[key] = value[:300] if isinstance(value, str) else value
-        if len(json.dumps(sanitized)) > 4096:
-            raise HTTPException(status_code=413, detail="Diagnostic payload too large")
-        # Store last diag on user doc (overwrite previous)
-        await db.users.update_one(
-            {"id": user["id"]},
-            {"$set": {"push_diag": {"at": now_utc().isoformat(), **sanitized}}},
-        )
-        reason = sanitized.get("reason", "unknown")
-        # Log clearly to backend logs
-        logger.info(f"PushDiag user_id={user.get('id')} reason={reason}")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"push_diag store error: {e}")
-    return {"received": True}
 
 
-@api.post("/push/test")
-async def send_test_push(
-    payload: dict = Body(default_factory=dict),
-    user: dict = Depends(get_current_user),
-):
-    """Sends a test push to the current user. Uses direct FCM.
-    Optional body: {"kind": "call" | "message" | "notification"}"""
-    from fcm import is_configured as fcm_is_configured, send_fcm, get_config_error
-
-    targets = user_push_targets(user)
-    if not targets:
-        return {
-            "sent": False,
-            "reason": "no_token",
-            "hint": "Open the app on your device and grant notification permissions. The push_token should auto-register on next login.",
-        }
-    kind = (payload.get("kind") if isinstance(payload, dict) else None) or "notification"
-    if kind not in ("call", "message", "notification"):
-        kind = "notification"
-
-    if kind == "call":
-        title = "📞 Test incoming call"
-        body = "This is a test push (call channel)"
-        channel = "calls"
-        sound = "ringtone"
-    elif kind == "message":
-        title = "💬 Test message"
-        body = "This is a test push (messages channel)"
-        channel = "messages"
-        sound = "message"
-    else:
-        title = "🔔 Test notification"
-        body = "Push notifications are working correctly!"
-        channel = "notifications"
-        sound = "notification"
-
-    result: dict = {
-        "kind": kind,
-        "channel": channel,
-        "registered_tokens": len(targets),
-        "sent_count": 0,
-        "failed_count": 0,
-        "targets": [],
-    }
-
-    fcm_targets = [t for t in targets if (t.get("token_type") or "fcm") in ("fcm", "apns")]
-    expo_targets = [t for t in targets if (t.get("token_type") or "") == "expo"]
-
-    if fcm_targets:
-        if not fcm_is_configured():
-            result["sent"] = False
-            result["error"] = "fcm_not_configured"
-            result["detail"] = get_config_error()
-            return result
-        push_data = {"type": "test", "kind": kind, "push_kind": kind}
-        if kind == "call":
-            test_call_id = str(uuid.uuid4())
-            push_data = {
-                "type": "incoming_call",
-                "kind": "call",
-                "push_kind": "call",
-                "screen": "call",
-                "call_id": test_call_id,
-                "message_id": test_call_id,
-                "conversation_id": "",
-                "caller_id": "ghostel-test",
-                "caller_name": "ghostel.app Test",
-                "mode": "audio",
-            }
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                for target in fcm_targets:
-                    token = target["token"]
-                    fcm_res = await send_fcm(
-                        client,
-                        token=token,
-                        title=title,
-                        body=body,
-                        channel_id=channel,
-                        sound=sound,
-                        priority="high",
-                        ttl_seconds=30,
-                        data=push_data,
-                        is_call=(kind == "call"),
-                    )
-                    ok = bool(fcm_res.get("ok"))
-                    result["sent_count" if ok else "failed_count"] += 1
-                    target_result = {
-                        "token_type": target.get("token_type"),
-                        "platform": target.get("platform"),
-                        "device_model": target.get("device_model") or "",
-                        "token_prefix": token[:18],
-                        "ok": ok,
-                    }
-                    if not ok:
-                        target_result["error"] = fcm_res.get("fcm_error_code") or fcm_res.get("error")
-                    result["targets"].append(target_result)
-                    if not ok and fcm_res.get("fcm_error_code") in (
-                        "UNREGISTERED",
-                        "INVALID_ARGUMENT",
-                        "NOT_FOUND",
-                    ):
-                        await db.users.update_one(
-                            {"id": user["id"]},
-                            {
-                                "$pull": {"push_tokens": {"token": token}},
-                                "$unset": {
-                                    "push_token": "",
-                                    "push_token_type": "",
-                                    "push_platform": "",
-                                    "expo_push_token": "",
-                                },
-                            },
-                        )
-                        target_result["token_cleared"] = True
-        except Exception as e:
-            result["failed_count"] += len(fcm_targets)
-            result["error"] = str(e)
-
-    # Legacy Expo token path
-    if expo_targets:
-        msg_payload = [
-            {
-                "to": target["token"],
-                "title": title,
-                "body": body,
-                "sound": expo_push_sound_name(sound),
-                "priority": "high",
-                "channelId": channel,
-                "ttl": 30,
-                "data": {"type": "test", "kind": kind},
-            }
-            for target in expo_targets
-        ]
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(EXPO_PUSH_URL, json=msg_payload)
-                try:
-                    data = resp.json()
-                except Exception:
-                    data = None
-                result["expo_status_code"] = resp.status_code
-                if resp.status_code in (200, 201):
-                    tickets = data.get("data", []) if isinstance(data, dict) else []
-                    for target, ticket in zip(expo_targets, tickets):
-                        ok = isinstance(ticket, dict) and ticket.get("status") == "ok"
-                        result["sent_count" if ok else "failed_count"] += 1
-                        result["targets"].append(
-                            {
-                                "token_type": "expo",
-                                "platform": target.get("platform"),
-                                "device_model": target.get("device_model") or "",
-                                "token_prefix": target["token"][:18],
-                                "ok": ok,
-                                "error": None if ok else ticket.get("message") if isinstance(ticket, dict) else "expo_failed",
-                            }
-                        )
-                    if len(tickets) < len(expo_targets):
-                        result["failed_count"] += len(expo_targets) - len(tickets)
-                else:
-                    result["failed_count"] += len(expo_targets)
-                    result["expo_response"] = data
-        except Exception as e:
-            result["failed_count"] += len(expo_targets)
-            result["error"] = str(e)
-    result["sent"] = result["sent_count"] > 0 and result["failed_count"] == 0
-    return result
 
 
-@api.post("/support/report")
-async def create_support_report(
-    request: Request,
-    payload: SupportReportIn,
-    user: dict = Depends(get_current_user),
-):
-    await enforce_rate_limit(
-        "support-report-user", user["id"], limit=10, window_seconds=60 * 60
-    )
-    now_iso = now_utc().isoformat()
-    diagnostics = sanitize_diag_value(payload.diagnostics or {}) or {}
-    local_doc = {
-        "id": str(uuid.uuid4()),
-        "user_id": user["id"],
-        "email": user.get("email"),
-        "name": user.get("name") or user.get("email"),
-        "category": payload.category,
-        "subject": payload.subject.strip(),
-        "message": payload.message.strip(),
-        "platform": payload.platform,
-        "app_version": (payload.app_version or "").strip(),
-        "diagnostics": diagnostics,
-        "created_at": now_iso,
-        "status": "created",
-        "ip_hash": hashlib.sha256(client_ip(request).encode("utf-8")).hexdigest(),
-    }
-    await db.support_reports.insert_one(local_doc)
-
-    support_api = os.environ.get(
-        "SUPPORT_CONTACT_API_URL",
-        "https://panel-api.ghostel.app/api/contact",
-    )
-    support_payload = {
-        "name": user.get("name") or user.get("email") or "Ghostel user",
-        "email": user.get("email"),
-        "category": "technical" if payload.category in {"call", "push", "device", "bug"} else "account",
-        "app_platform": payload.platform,
-        "app_version": payload.app_version or "",
-        "subject": f"[App] {payload.subject.strip()}",
-        "message": "\n\n".join(
-            [
-                payload.message.strip(),
-                f"User: {user.get('email')} ({user.get('id')})",
-                f"Category: {payload.category}",
-                f"Platform: {payload.platform}",
-                f"App version: {payload.app_version or '-'}",
-                "Diagnostics:",
-                json.dumps(diagnostics, ensure_ascii=False, indent=2)[:3500],
-            ]
-        ),
-    }
-    panel_result: dict = {"forwarded": False}
-    try:
-        async with httpx.AsyncClient(timeout=12) as client:
-            resp = await client.post(support_api, json=support_payload)
-            panel_result["status_code"] = resp.status_code
-            if resp.status_code < 400:
-                data = resp.json()
-                panel_result.update(data if isinstance(data, dict) else {})
-                panel_result["forwarded"] = True
-                await db.support_reports.update_one(
-                    {"id": local_doc["id"]},
-                    {"$set": {"status": "forwarded", "panel_response": panel_result}},
-                )
-            else:
-                panel_result["error"] = resp.text[:500]
-                await db.support_reports.update_one(
-                    {"id": local_doc["id"]},
-                    {"$set": {"status": "forward_failed", "panel_response": panel_result}},
-                )
-    except Exception as e:
-        panel_result["error"] = str(e)[:500]
-        await db.support_reports.update_one(
-            {"id": local_doc["id"]},
-            {"$set": {"status": "forward_failed", "panel_response": panel_result}},
-        )
-
-    return {
-        "ok": True,
-        "local_id": local_doc["id"],
-        "forwarded": panel_result.get("forwarded", False),
-        "ticket_id": panel_result.get("ticket_id"),
-    }
 
 
 async def _send_push_to_members(member_ids, sender_id, conv, msg):
@@ -2868,168 +2169,8 @@ _GOOGLE_STUN_SERVERS = [
 ]
 
 
-@api.get("/calls/ice-servers")
-async def get_ice_servers(user: dict = Depends(get_current_user)):
-    """Return ICE servers for WebRTC with relay diagnostics."""
-    now = _time.time()
-    if _ice_cache["servers"] and now < _ice_cache["expires_at"]:
-        return {
-            "iceServers": _ice_cache["servers"],
-            "source": _ice_cache["source"],
-            "relayAvailable": True,
-        }
-
-    configured = _configured_turn_servers()
-    if configured:
-        servers = list(configured) + list(_GOOGLE_STUN_SERVERS)
-        source = "configured"
-    elif cf := await _fetch_cloudflare_ice_servers():
-        servers = list(cf)
-        servers.extend(_GOOGLE_STUN_SERVERS)
-        source = "cloudflare"
-    else:
-        servers = list(_GOOGLE_STUN_SERVERS) + list(_OPEN_RELAY_SERVERS)
-        source = "public-fallback"
-
-    _ice_cache["servers"] = servers
-    _ice_cache["source"] = source
-    _ice_cache["expires_at"] = now + 50 * 60  # 50 minutes
-    return {"iceServers": servers, "source": source, "relayAvailable": True}
 
 
-@api.post("/calls/start")
-async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user)):
-    await enforce_rate_limit(
-        "call-start-user", user["id"], limit=30, window_seconds=10 * 60
-    )
-    await enforce_rate_limit(
-        "call-start-conversation",
-        f"{user['id']}:{payload.conversation_id}",
-        limit=12,
-        window_seconds=10 * 60,
-    )
-    conv = await db.conversations.find_one(
-        {"id": payload.conversation_id, "member_ids": user["id"]}, {"_id": 0}
-    )
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    await ensure_direct_conversation_not_blocked(conv, user, action="call")
-    members = await require_conversation_e2ee_ready(conv, action="Calls")
-    member_keys = {
-        m["id"]: {
-            "public_key": m.get("e2ee_public_key"),
-            "name": m.get("name") or m.get("username") or m["id"],
-        }
-        for m in members
-    }
-    started_at = now_utc()
-    expires_at = started_at + timedelta(seconds=CALL_RING_TIMEOUT_SECONDS)
-    callee_ids = [member_id for member_id in conv["member_ids"] if member_id != user["id"]]
-    requested_call_id = (payload.call_id or "").strip()
-    if requested_call_id:
-        existing = await db.calls.find_one(
-            {"id": requested_call_id, "member_ids": user["id"]},
-            {"_id": 0},
-        )
-        if existing:
-            logger.info(
-                f"DUPLICATE_CALL_IGNORED call={requested_call_id[:8]} reason=idempotency_key"
-            )
-            return existing
-
-    existing_active = await db.calls.find_one(
-        {
-            "conversation_id": conv["id"],
-            "caller_id": user["id"],
-            "member_ids": {"$all": conv["member_ids"]},
-            "ended_at": None,
-            "$or": [
-                {"status": "ringing", "expires_at": {"$gt": started_at.isoformat()}},
-                {"status": {"$in": ["accepted", "answered", "connecting", "active", "reconnecting"]}},
-            ],
-        },
-        {"_id": 0},
-        sort=[("started_at", -1)],
-    )
-    if existing_active:
-        logger.info(
-            f"DUPLICATE_CALL_IGNORED call={str(existing_active.get('id', ''))[:8]} reason=active_call_exists"
-        )
-        return existing_active
-
-    call_id = requested_call_id or str(uuid.uuid4())
-    call = {
-        "id": call_id,
-        "callId": call_id,
-        "conversation_id": conv["id"],
-        "conversationId": conv["id"],
-        "caller_id": user["id"],
-        "callerId": user["id"],
-        "caller_name": user.get("name", ""),
-        "callee_ids": callee_ids,
-        "calleeId": callee_ids[0] if callee_ids else "",
-        "member_ids": conv["member_ids"],
-        "participants": conv["member_ids"],
-        "mode": payload.mode,
-        "callType": payload.mode,
-        "status": "ringing",
-        "created_at": started_at.isoformat(),
-        "createdAt": started_at.isoformat(),
-        "started_at": started_at.isoformat(),
-        "expires_at": expires_at.isoformat(),
-        "expiresAt": expires_at.isoformat(),
-        "answered_at": None,
-        "answeredAt": None,
-        "ended_at": None,
-        "endedAt": None,
-        "last_updated_at": started_at.isoformat(),
-        "lastUpdatedAt": started_at.isoformat(),
-        "callerDeviceId": user.get("_auth_sid") or "",
-        "calleeDeviceId": "",
-        "platform": "unknown",
-        "pushSentAt": None,
-        "lastKnownClientState": {},
-        "duration_sec": 0,
-        "encrypted": True,
-        "e2ee_required": True,
-        "e2ee_media": "webrtc-dtls-srtp",
-        "e2ee_member_keys": member_keys,
-    }
-
-    # Active signaling requires the call to be queryable by both peers. Calls
-    # with history disabled are stored only for their active lifetime.
-    caller_save = user.get("save_call_history")
-    if caller_save is None:
-        caller_save = True
-    if not caller_save:
-        call["ephemeral"] = True
-    await db.calls.insert_one(call)
-    call.pop("_id", None)
-
-    # notify other members
-    await broadcast_to_members(
-        conv["member_ids"],
-        {"type": "call:incoming", "data": call},
-        exclude=user["id"],
-    )
-    push_sent_at = now_utc().isoformat()
-    await db.calls.update_one(
-        {"id": call["id"]},
-        {"$set": {"pushSentAt": push_sent_at, "push_sent_at": push_sent_at}},
-    )
-    call["pushSentAt"] = push_sent_at
-    call["push_sent_at"] = push_sent_at
-
-    # push notification "Incoming call"
-    asyncio.create_task(_send_push_to_members(
-        conv["member_ids"], user["id"], conv,
-        {"sender_name": user.get("name", "Someone"), "kind": "call",
-         "content": f"Incoming {payload.mode} call", "id": call["id"],
-         "caller_id": user["id"],
-         "caller_avatar": user.get("avatar", ""),
-         "mode": payload.mode}
-    ))
-    return call
 
 
 def public_call_status(call: dict, user_id: str) -> dict:
@@ -3114,219 +2255,12 @@ async def expire_stale_ringing_calls_for_user(user_id: str) -> None:
         asyncio.create_task(_send_call_control_push(call, "missed", "timeout"))
 
 
-@api.get("/calls/active")
-async def get_active_call(user: dict = Depends(get_current_user)):
-    """Return the authoritative active call for resume/unlock state sync."""
-    await expire_stale_ringing_calls_for_user(user["id"])
-    ringing_cutoff = (now_utc() - timedelta(seconds=CALL_RING_TIMEOUT_SECONDS + 15)).isoformat()
-    call = await db.calls.find_one(
-        {
-            "member_ids": user["id"],
-            "ended_at": None,
-            "$or": [
-                {"status": "ringing", "started_at": {"$gte": ringing_cutoff}},
-                {"status": {"$in": ["accepted", "answered", "active", "connecting", "reconnecting"]}},
-            ],
-        },
-        {"_id": 0},
-        sort=[("started_at", -1)],
-    )
-    if not call:
-        logger.info(
-            f"BACKEND_CALL_ACTIVE_QUERY_RESULT user={str(user.get('id', ''))[:8]} active=false"
-        )
-        return None
-    logger.info(
-        "BACKEND_CALL_ACTIVE_QUERY_RESULT "
-        f"user={str(user.get('id', ''))[:8]} active=true "
-        f"call={str(call.get('id', ''))[:8]} status={call.get('status')}"
-    )
-    if str(call.get("status") or "").lower() in {"accepted", "answered", "connecting"}:
-        logger.info(
-            "BACKEND_CALL_ACTIVE_QUERY_INCLUDES_ACCEPTED_CONNECTING "
-            f"call={str(call.get('id', ''))[:8]} status={call.get('status')}"
-        )
-    call = await enrich_call_for_user(call, user["id"])
-    return public_call_status(call, user["id"])
 
 
-@api.post("/calls/{call_id}/ring")
-async def ring_call(call_id: str, user: dict = Depends(get_current_user)):
-    await enforce_rate_limit(
-        "call-ring-user", user["id"], limit=120, window_seconds=60 * 60
-    )
-    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
-    if not call:
-        raise HTTPException(status_code=404, detail="Call not found")
-    if user["id"] not in call.get("member_ids", []):
-        raise HTTPException(status_code=403, detail="Not a participant")
-    if call.get("ended_at") or call.get("answered_at"):
-        return {"ringing": False, "status": call.get("status")}
-    now_iso = now_utc().isoformat()
-    await db.calls.update_one(
-        {"id": call_id, "ended_at": None, "answered_at": None},
-        {
-            "$set": {
-                "status": "ringing",
-                "last_ring_at": now_iso,
-                "last_updated_at": now_iso,
-                "lastUpdatedAt": now_iso,
-            }
-        },
-    )
-    event = {
-        "type": "call:ringing",
-        "event": "call.ringing",
-        "call_id": call_id,
-        "from": user["id"],
-    }
-    await broadcast_to_members(call.get("member_ids", []), event)
-    return {"ringing": True, "status": "ringing"}
 
 
-@api.post("/calls/{call_id}/accept")
-async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
-    """Callee marks the call as accepted — sets answered_at so it doesn't
-    count as missed."""
-    await enforce_rate_limit(
-        "call-accept-user", user["id"], limit=120, window_seconds=60 * 60
-    )
-    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
-    if not call:
-        return {"accepted": True, "ephemeral": True}
-    if user["id"] not in call.get("member_ids", []):
-        raise HTTPException(status_code=403, detail="Not a participant")
-    if user["id"] == call.get("caller_id"):
-        raise HTTPException(status_code=403, detail="Caller cannot accept own call")
-    current_status = str(call.get("status") or "").lower()
-    logger.info(
-        f"BACKEND_CALL_ACCEPT_REQUEST call={call_id[:8]} user={str(user.get('id', ''))[:8]}"
-    )
-    logger.info(
-        f"BACKEND_CALL_STATUS_BEFORE_ACTION action=accept call={call_id[:8]} status={current_status}"
-    )
-    if call.get("ended_at") or current_status in CALL_TERMINAL_STATUSES:
-        return {
-            "accepted": False,
-            "status": call.get("status", "ended"),
-            "idempotent": True,
-        }
-
-    answered_at = call.get("answered_at") or now_utc().isoformat()
-    if not call.get("answered_at"):
-        await db.calls.update_one(
-            {"id": call_id, "answered_at": None, "ended_at": None},
-            {
-                "$set": {
-                    "status": "answered",
-                    "answered_at": answered_at,
-                    "answeredAt": answered_at,
-                    "last_updated_at": answered_at,
-                    "lastUpdatedAt": answered_at,
-                    "lastKnownClientState.accepted_by": user["id"],
-                }
-            },
-        )
-        logger.info(f"BACKEND_RING_TIMEOUT_CANCELLED_AFTER_ACCEPT call={call_id[:8]}")
-
-    accepted_event = {
-        "type": "call:accepted",
-        "event": "call.accepted",
-        "call_id": call_id,
-        "from": user["id"],
-        "data": {
-            "call_id": call_id,
-            "accepted_by": user["id"],
-            "status": "answered",
-            "answered_at": answered_at,
-        },
-    }
-    for member_id in call.get("member_ids", []):
-        signal = {
-            **accepted_event,
-            "signal_id": f"{call_id}:accepted:{member_id}",
-            "to": member_id,
-            "created_at": answered_at,
-        }
-        await db.call_signals.update_one(
-            {"signal_id": signal["signal_id"]},
-            {"$setOnInsert": signal},
-            upsert=True,
-        )
-    await broadcast_to_members(call.get("member_ids", []), accepted_event)
-    logger.info(f"BACKEND_CALL_ACCEPTED_EVENT_SENT call={call_id[:8]}")
-    asyncio.create_task(
-        _send_call_control_push(call, "accepted", user["id"], user.get("_auth_sid"))
-    )
-    logger.info(
-        f"BACKEND_CALL_STATUS_AFTER_ACTION action=accept call={call_id[:8]} status=answered"
-    )
-    return {"accepted": True, "status": "answered", "answered_at": answered_at}
 
 
-@api.post("/calls/{call_id}/diag")
-async def call_diag(
-    call_id: str,
-    payload: dict = Body(default_factory=dict),
-    user: dict = Depends(get_current_user),
-):
-    """Store short-lived client-side WebRTC diagnostics for failed mobile calls."""
-    try:
-        await enforce_rate_limit(
-            "call-diag-user", user["id"], limit=900, window_seconds=60 * 60
-        )
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="Invalid diagnostic payload")
-        sanitized = sanitize_diag_value(payload)
-        if not isinstance(sanitized, dict):
-            sanitized = {}
-        if len(json.dumps(sanitized, default=str)) > 20_000:
-            raise HTTPException(status_code=413, detail="Diagnostic payload too large")
-
-        call = await db.calls.find_one({"id": call_id}, {"_id": 0, "member_ids": 1})
-        if call and user["id"] not in call.get("member_ids", []):
-            raise HTTPException(status_code=403, detail="Not a participant")
-
-        diag = {
-            "id": str(uuid.uuid4()),
-            "call_id": call_id,
-            "user_id": user["id"],
-            "created_at": now_utc().isoformat(),
-            **sanitized,
-        }
-        await db.call_diagnostics.insert_one(diag)
-        await db.users.update_one(
-            {"id": user["id"]},
-            {
-                "$set": {
-                    "last_call_diag": {
-                        "at": diag["created_at"],
-                        "call_id": call_id,
-                        "reason": sanitized.get("reason", "unknown"),
-                        "status": sanitized.get("status", ""),
-                        "ice_state": sanitized.get("ice_state", ""),
-                        "connection_state": sanitized.get("connection_state", ""),
-                        "relay_seen": sanitized.get("relay_seen", False),
-                        "remote_tracks": len(sanitized.get("remote_tracks") or []),
-                    }
-                }
-            },
-        )
-        logger.info(
-            "CallDiag "
-            f"call={call_id[:8]} user={user.get('id')} "
-            f"reason={sanitized.get('reason', 'unknown')} "
-            f"status={sanitized.get('status', '')} "
-            f"ice={sanitized.get('ice_state', '')} "
-            f"pc={sanitized.get('connection_state', '')} "
-            f"relay={sanitized.get('relay_seen', False)} "
-            f"remote_tracks={len(sanitized.get('remote_tracks') or [])}"
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning(f"call_diag store error: {exc}")
-    return {"received": True}
 
 
 async def _persist_call_signal_payload(
@@ -3398,59 +2332,14 @@ async def _persist_call_signal_payload(
     return {"stored": True, "signal_id": signal_id}
 
 
-@api.post("/calls/{call_id}/signals")
-async def persist_call_signal(
-    call_id: str,
-    payload: dict = Body(...),
-    user: dict = Depends(get_current_user),
-):
-    return await _persist_call_signal_payload(call_id, payload, user)
 
 
-@api.post("/calls/{call_id}/offer")
-async def persist_call_offer(
-    call_id: str,
-    payload: dict = Body(...),
-    user: dict = Depends(get_current_user),
-):
-    return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:offer")
 
 
-@api.post("/calls/{call_id}/answer")
-async def persist_call_answer(
-    call_id: str,
-    payload: dict = Body(...),
-    user: dict = Depends(get_current_user),
-):
-    return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:answer")
 
 
-@api.post("/calls/{call_id}/ice-candidate")
-async def persist_call_ice_candidate(
-    call_id: str,
-    payload: dict = Body(...),
-    user: dict = Depends(get_current_user),
-):
-    return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:ice")
 
 
-@api.get("/calls/{call_id}/signals")
-async def list_call_signals(call_id: str, user: dict = Depends(get_current_user)):
-    """Return recent signaling addressed to this participant."""
-    call = await db.calls.find_one({"id": call_id}, {"_id": 0, "member_ids": 1})
-    if not call:
-        raise HTTPException(status_code=404, detail="Call not found")
-    if user["id"] not in call.get("member_ids", []):
-        raise HTTPException(status_code=403, detail="Not a participant")
-    return await (
-        db.call_signals.find(
-            {"call_id": call_id, "to": user["id"]},
-            {"_id": 0},
-        )
-        .sort("created_at", 1)
-        .limit(500)
-        .to_list(500)
-    )
 
 
 async def _finish_call(call_id: str, user: dict, action: str):
@@ -3553,9 +2442,6 @@ async def _finish_call(call_id: str, user: dict, action: str):
     return {"ended": True, "status": update_doc.get("status", "ended")}
 
 
-@api.post("/calls/{call_id}/end")
-async def end_call(call_id: str, user: dict = Depends(get_current_user)):
-    return await _finish_call(call_id, user, "end")
 
 
 # ----------------- Call history -----------------
@@ -3587,262 +2473,28 @@ async def enrich_call_for_user(call: dict, user_id: str) -> dict:
     return call
 
 
-@api.get("/calls/active-incoming")
-async def get_active_incoming_call(user: dict = Depends(get_current_user)):
-    """Return a recent unanswered call so mobile clients can restore UI after unlock."""
-    cutoff = (now_utc() - timedelta(seconds=75)).isoformat()
-    call = await db.calls.find_one(
-        {
-            "member_ids": user["id"],
-            "caller_id": {"$ne": user["id"]},
-            "status": "ringing",
-            "answered_at": None,
-            "ended_at": None,
-            "started_at": {"$gte": cutoff},
-        },
-        {"_id": 0},
-        sort=[("started_at", -1)],
-    )
-    if not call:
-        return None
-    return {
-        "id": call.get("id"),
-        "caller_id": call.get("caller_id"),
-        "caller_name": call.get("caller_name") or "Unknown",
-        "conversation_id": call.get("conversation_id") or call.get("conv_id"),
-        "mode": call.get("mode") or "audio",
-        "received_at": int(_time.time() * 1000),
-    }
 
 
-@api.get("/calls/{call_id}/status")
-async def get_call_status(call_id: str, user: dict = Depends(get_current_user)):
-    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
-    if not call:
-        raise HTTPException(status_code=404, detail="Call not found")
-    if user["id"] not in call.get("member_ids", []):
-        raise HTTPException(status_code=403, detail="Not a participant")
-    call = await enrich_call_for_user(call, user["id"])
-    return public_call_status(call, user["id"])
 
 
-@api.post("/calls/{call_id}/decline")
-async def decline_call(call_id: str, user: dict = Depends(get_current_user)):
-    return await _finish_call(call_id, user, "decline")
 
 
-@api.post("/calls/{call_id}/cancel")
-async def cancel_call(call_id: str, user: dict = Depends(get_current_user)):
-    return await _finish_call(call_id, user, "cancel")
 
 
-@api.post("/calls/{call_id}/timeout")
-async def timeout_call(call_id: str, user: dict = Depends(get_current_user)):
-    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
-    if not call:
-        return {"timed_out": True, "ephemeral": True}
-    if user["id"] not in call.get("member_ids", []):
-        raise HTTPException(status_code=403, detail="Not a participant")
-    current_status = str(call.get("status") or "").lower()
-    if (
-        call.get("answered_at")
-        or call.get("ended_at")
-        or current_status in CALL_TERMINAL_STATUSES
-        or (current_status in CALL_ACTIVE_STATUSES and current_status != "ringing")
-    ):
-        return {"timed_out": False, "status": call.get("status"), "idempotent": True}
-    ended_iso = now_utc().isoformat()
-    await db.calls.update_one(
-        {"id": call_id, "answered_at": None, "ended_at": None},
-        {
-            "$set": {
-                "status": "missed",
-                "ended_at": ended_iso,
-                "endedAt": ended_iso,
-                "ended_by": "timeout",
-                "last_updated_at": ended_iso,
-                "lastUpdatedAt": ended_iso,
-            }
-        },
-    )
-    event = {
-        "type": "call:ended",
-        "event": "call.timeout",
-        "call_id": call_id,
-        "from": "timeout",
-        "data": {"call_id": call_id, "status": "missed", "ended_by": "timeout"},
-    }
-    await broadcast_to_members(call.get("member_ids", []), event)
-    asyncio.create_task(_send_call_control_push(call, "missed", "timeout"))
-    return {"timed_out": True, "status": "missed"}
 
 
-@api.post("/calls/{call_id}/state")
-async def update_call_client_state(
-    call_id: str,
-    payload: CallStateUpdateIn,
-    user: dict = Depends(get_current_user),
-):
-    await enforce_rate_limit(
-        "call-state-user-minute", user["id"], limit=120, window_seconds=60
-    )
-    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
-    if not call:
-        return {"updated": False, "ephemeral": True}
-    if user["id"] not in call.get("member_ids", []):
-        raise HTTPException(status_code=403, detail="Not a participant")
-    if call.get("ended_at") or str(call.get("status") or "").lower() in CALL_TERMINAL_STATUSES:
-        return {"updated": False, "status": call.get("status"), "idempotent": True}
-
-    now_iso = now_utc().isoformat()
-    client_state = {
-        "user_id": user["id"],
-        "peer_connection_state": payload.peer_connection_state or "",
-        "local_audio_enabled": payload.local_audio_enabled,
-        "remote_audio_connected": payload.remote_audio_connected,
-        "updated_at": now_iso,
-    }
-    update_doc: dict = {
-        "last_updated_at": now_iso,
-        "lastUpdatedAt": now_iso,
-        f"lastKnownClientState.{user['id']}": client_state,
-    }
-    if payload.status:
-        update_doc["status"] = payload.status
-    await db.calls.update_one({"id": call_id}, {"$set": update_doc})
-
-    event = {
-        "type": "call:state_sync",
-        "event": "call.state_sync",
-        "call_id": call_id,
-        "from": user["id"],
-        "data": {
-            "call_id": call_id,
-            "status": payload.status or call.get("status"),
-            "updated_at": now_iso,
-        },
-    }
-    await broadcast_to_members(call.get("member_ids", []), event)
-    return {"updated": True, "status": payload.status or call.get("status")}
 
 
-@api.get("/calls")
-async def list_calls(
-    user: dict = Depends(get_current_user),
-    limit: int = 50,
-    skip: int = 0,
-    conversation_id: Optional[str] = None,
-):
-    """List the user's call history (excluding entries they've removed).
-
-    If `conversation_id` is provided, only calls inside that conversation are
-    returned (used by the chat screen to show a compact "recent calls" section).
-    """
-    limit = max(1, min(int(limit or 50), 200))
-    skip = max(0, int(skip or 0))
-    hidden = set(user.get("hidden_call_ids", []) or [])
-    query: dict = {"member_ids": user["id"], "ephemeral": {"$ne": True}}
-    if conversation_id:
-        query["$or"] = [
-            {"conv_id": conversation_id},
-            {"conversation_id": conversation_id},
-        ]
-    cursor = (
-        db.calls.find(query, {"_id": 0})
-        .sort("started_at", -1)
-        .skip(skip)
-        .limit(limit + len(hidden))
-    )
-    items = []
-    async for c in cursor:
-        if c.get("id") in hidden:
-            continue
-        items.append(await enrich_call_for_user(c, user["id"]))
-        if len(items) >= limit:
-            break
-    return items
 
 
-@api.get("/calls/missed")
-async def missed_calls_count(user: dict = Depends(get_current_user)):
-    """Returns count of unread missed calls (for badge)."""
-    hidden = set(user.get("hidden_call_ids", []) or [])
-    seen = set(user.get("seen_call_ids", []) or [])
-    cursor = db.calls.find(
-        {
-            "member_ids": user["id"],
-            "caller_id": {"$ne": user["id"]},
-            "answered_at": None,
-            "status": {"$in": ["missed", "ended", "ringing"]},
-        },
-        {"id": 1, "_id": 0},
-    )
-    count = 0
-    async for c in cursor:
-        cid = c.get("id")
-        if not cid or cid in hidden or cid in seen:
-            continue
-        count += 1
-    return {"count": count}
 
 
-@api.post("/calls/missed/seen")
-async def mark_missed_as_seen(user: dict = Depends(get_current_user)):
-    """Mark all currently missed calls as seen (clears the badge)."""
-    cursor = db.calls.find(
-        {
-            "member_ids": user["id"],
-            "caller_id": {"$ne": user["id"]},
-            "answered_at": None,
-        },
-        {"id": 1, "_id": 0},
-    )
-    ids = [c["id"] async for c in cursor if c.get("id")]
-    if ids:
-        await db.users.update_one(
-            {"id": user["id"]},
-            {"$addToSet": {"seen_call_ids": {"$each": ids}}},
-        )
-    return {"marked": len(ids)}
 
 
-@api.get("/calls/{call_id}")
-async def get_call(call_id: str, user: dict = Depends(get_current_user)):
-    """Return one call history entry for the current user."""
-    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
-    if not call:
-        raise HTTPException(status_code=404, detail="Call not found")
-    if user["id"] not in call.get("member_ids", []):
-        raise HTTPException(status_code=403, detail="Not a participant")
-    return await enrich_call_for_user(call, user["id"])
 
 
-@api.delete("/calls/{call_id}")
-async def delete_call_entry(call_id: str, user: dict = Depends(get_current_user)):
-    """Hide one call from this user's history (does not affect peer)."""
-    call = await db.calls.find_one({"id": call_id}, {"_id": 0})
-    if not call:
-        raise HTTPException(status_code=404, detail="Call not found")
-    if user["id"] not in call.get("member_ids", []):
-        raise HTTPException(status_code=403, detail="Not a participant")
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$addToSet": {"hidden_call_ids": call_id}},
-    )
-    return {"deleted": True}
 
 
-@api.delete("/calls")
-async def clear_call_history(user: dict = Depends(get_current_user)):
-    """Hide ALL calls from this user's history."""
-    cursor = db.calls.find({"member_ids": user["id"]}, {"id": 1, "_id": 0})
-    ids = [c["id"] async for c in cursor if c.get("id")]
-    if ids:
-        await db.users.update_one(
-            {"id": user["id"]},
-            {"$addToSet": {"hidden_call_ids": {"$each": ids}}},
-        )
-    return {"cleared": len(ids)}
 
 
 # ----------------- Privacy & Blocking -----------------
@@ -3895,13 +2547,6 @@ async def broadcast_to_members(member_ids, payload, exclude: Optional[str] = Non
         await ws_manager.send_to(uid, payload)
 
 
-@api.post("/ws-ticket")
-async def issue_ws_ticket(user: dict = Depends(get_current_user)):
-    ticket, jti, expires_at = create_ws_ticket(user["id"], user.get("_auth_sid"))
-    await db.ws_tickets.insert_one(
-        {"jti": jti, "user_id": user["id"], "expires_at": expires_at}
-    )
-    return {"ticket": ticket, "expires_in": 60}
 
 
 @app.websocket("/api/ws")
@@ -4031,9 +2676,6 @@ async def websocket_endpoint(
 
 
 # ----------------- Health -----------------
-@api.get("/")
-async def root():
-    return {"app": APP_NAME, "version": "1.0.0", "status": "ok"}
 
 
 ANDROID_APK_VERSION = "1.4.43"

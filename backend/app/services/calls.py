@@ -4,12 +4,15 @@ import httpx
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 
-from fastapi import HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.core.config import APP_NAME, logger
 from app.core.database import db
 from app.core.utils import now_utc, ensure_utc
+from app.core.auth import get_current_user
+from app.models import CallStartIn, CallStateUpdateIn
 
+router = APIRouter()
 
 def normalize_call_signal_envelope(
     signal: dict,
@@ -106,6 +109,7 @@ async def _fetch_cloudflare_ice_servers():
         return None
 
 
+@router.get('/calls/ice-servers')
 async def get_ice_servers(user: dict = Depends(get_current_user)):
     """Return ICE servers for WebRTC with relay diagnostics."""
     now = _time.time()
@@ -134,6 +138,7 @@ async def get_ice_servers(user: dict = Depends(get_current_user)):
     return {"iceServers": servers, "source": source, "relayAvailable": True}
 
 
+@router.post('/calls/start')
 async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user)):
     await enforce_rate_limit(
         "call-start-user", user["id"], limit=30, window_seconds=10 * 60
@@ -350,6 +355,7 @@ async def expire_stale_ringing_calls_for_user(user_id: str) -> None:
         asyncio.create_task(_send_call_control_push(call, "missed", "timeout"))
 
 
+@router.get('/calls/active')
 async def get_active_call(user: dict = Depends(get_current_user)):
     """Return the authoritative active call for resume/unlock state sync."""
     await expire_stale_ringing_calls_for_user(user["id"])
@@ -385,6 +391,7 @@ async def get_active_call(user: dict = Depends(get_current_user)):
     return public_call_status(call, user["id"])
 
 
+@router.post('/calls/{call_id}/ring')
 async def ring_call(call_id: str, user: dict = Depends(get_current_user)):
     await enforce_rate_limit(
         "call-ring-user", user["id"], limit=120, window_seconds=60 * 60
@@ -418,6 +425,7 @@ async def ring_call(call_id: str, user: dict = Depends(get_current_user)):
     return {"ringing": True, "status": "ringing"}
 
 
+@router.post('/calls/{call_id}/accept')
 async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
     """Callee marks the call as accepted — sets answered_at so it doesn't
     count as missed."""
@@ -497,6 +505,7 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
     return {"accepted": True, "status": "answered", "answered_at": answered_at}
 
 
+@router.post('/calls/{call_id}/diag')
 async def call_diag(
     call_id: str,
     payload: dict = Body(default_factory=dict),
@@ -630,6 +639,7 @@ async def _persist_call_signal_payload(
     return {"stored": True, "signal_id": signal_id}
 
 
+@router.post('/calls/{call_id}/signals')
 async def persist_call_signal(
     call_id: str,
     payload: dict = Body(...),
@@ -638,6 +648,7 @@ async def persist_call_signal(
     return await _persist_call_signal_payload(call_id, payload, user)
 
 
+@router.post('/calls/{call_id}/offer')
 async def persist_call_offer(
     call_id: str,
     payload: dict = Body(...),
@@ -646,6 +657,7 @@ async def persist_call_offer(
     return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:offer")
 
 
+@router.post('/calls/{call_id}/answer')
 async def persist_call_answer(
     call_id: str,
     payload: dict = Body(...),
@@ -654,6 +666,7 @@ async def persist_call_answer(
     return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:answer")
 
 
+@router.post('/calls/{call_id}/ice-candidate')
 async def persist_call_ice_candidate(
     call_id: str,
     payload: dict = Body(...),
@@ -662,6 +675,7 @@ async def persist_call_ice_candidate(
     return await _persist_call_signal_payload(call_id, payload, user, forced_type="call:ice")
 
 
+@router.get('/calls/{call_id}/signals')
 async def list_call_signals(call_id: str, user: dict = Depends(get_current_user)):
     """Return recent signaling addressed to this participant."""
     call = await db.calls.find_one({"id": call_id}, {"_id": 0, "member_ids": 1})
@@ -780,6 +794,7 @@ async def _finish_call(call_id: str, user: dict, action: str):
     return {"ended": True, "status": update_doc.get("status", "ended")}
 
 
+@router.post('/calls/{call_id}/end')
 async def end_call(call_id: str, user: dict = Depends(get_current_user)):
     return await _finish_call(call_id, user, "end")
 
@@ -812,6 +827,7 @@ async def enrich_call_for_user(call: dict, user_id: str) -> dict:
     return call
 
 
+@router.get('/calls/active-incoming')
 async def get_active_incoming_call(user: dict = Depends(get_current_user)):
     """Return a recent unanswered call so mobile clients can restore UI after unlock."""
     cutoff = (now_utc() - timedelta(seconds=75)).isoformat()
@@ -839,6 +855,7 @@ async def get_active_incoming_call(user: dict = Depends(get_current_user)):
     }
 
 
+@router.get('/calls/{call_id}/status')
 async def get_call_status(call_id: str, user: dict = Depends(get_current_user)):
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})
     if not call:
@@ -849,14 +866,17 @@ async def get_call_status(call_id: str, user: dict = Depends(get_current_user)):
     return public_call_status(call, user["id"])
 
 
+@router.post('/calls/{call_id}/decline')
 async def decline_call(call_id: str, user: dict = Depends(get_current_user)):
     return await _finish_call(call_id, user, "decline")
 
 
+@router.post('/calls/{call_id}/cancel')
 async def cancel_call(call_id: str, user: dict = Depends(get_current_user)):
     return await _finish_call(call_id, user, "cancel")
 
 
+@router.post('/calls/{call_id}/timeout')
 async def timeout_call(call_id: str, user: dict = Depends(get_current_user)):
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})
     if not call:
@@ -897,6 +917,7 @@ async def timeout_call(call_id: str, user: dict = Depends(get_current_user)):
     return {"timed_out": True, "status": "missed"}
 
 
+@router.post('/calls/{call_id}/state')
 async def update_call_client_state(
     call_id: str,
     payload: CallStateUpdateIn,
@@ -945,6 +966,7 @@ async def update_call_client_state(
     return {"updated": True, "status": payload.status or call.get("status")}
 
 
+@router.get('/calls')
 async def list_calls(
     user: dict = Depends(get_current_user),
     limit: int = 50,
@@ -981,6 +1003,7 @@ async def list_calls(
     return items
 
 
+@router.get('/calls/missed')
 async def missed_calls_count(user: dict = Depends(get_current_user)):
     """Returns count of unread missed calls (for badge)."""
     hidden = set(user.get("hidden_call_ids", []) or [])
@@ -1003,6 +1026,7 @@ async def missed_calls_count(user: dict = Depends(get_current_user)):
     return {"count": count}
 
 
+@router.post('/calls/missed/seen')
 async def mark_missed_as_seen(user: dict = Depends(get_current_user)):
     """Mark all currently missed calls as seen (clears the badge)."""
     cursor = db.calls.find(
@@ -1022,6 +1046,7 @@ async def mark_missed_as_seen(user: dict = Depends(get_current_user)):
     return {"marked": len(ids)}
 
 
+@router.get('/calls/{call_id}')
 async def get_call(call_id: str, user: dict = Depends(get_current_user)):
     """Return one call history entry for the current user."""
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})
@@ -1032,6 +1057,7 @@ async def get_call(call_id: str, user: dict = Depends(get_current_user)):
     return await enrich_call_for_user(call, user["id"])
 
 
+@router.delete('/calls/{call_id}')
 async def delete_call_entry(call_id: str, user: dict = Depends(get_current_user)):
     """Hide one call from this user's history (does not affect peer)."""
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})
@@ -1046,6 +1072,7 @@ async def delete_call_entry(call_id: str, user: dict = Depends(get_current_user)
     return {"deleted": True}
 
 
+@router.delete('/calls')
 async def clear_call_history(user: dict = Depends(get_current_user)):
     """Hide ALL calls from this user's history."""
     cursor = db.calls.find({"member_ids": user["id"]}, {"id": 1, "_id": 0})

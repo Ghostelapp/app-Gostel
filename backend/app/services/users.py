@@ -167,3 +167,102 @@ async def user_can_signal_target(user_id: str, target_id: str, data: dict) -> bo
             return True
 
     return False
+
+
+async def delete_user_account_data(user_id: str) -> bool:
+    """Delete a user account and remove or anonymize related personal data."""
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        return False
+
+    now = now_utc().isoformat()
+    email = user.get("email")
+
+    conv_docs = await db.conversations.find(
+        {"member_ids": user_id}, {"_id": 0, "id": 1, "member_ids": 1}
+    ).to_list(5000)
+    conv_ids = [c["id"] for c in conv_docs if c.get("id")]
+
+    await db.contact_invitations.delete_many(
+        {"$or": [{"from_user_id": user_id}, {"to_user_id": user_id}]}
+    )
+    await db.users.update_many(
+        {},
+        {
+            "$pull": {
+                "contact_ids": user_id,
+                "blocked_user_ids": user_id,
+            },
+            "$unset": {f"muted_users.{user_id}": ""},
+        },
+    )
+    await db.conversations.update_many(
+        {"member_ids": user_id},
+        {"$pull": {"member_ids": user_id, "admin_ids": user_id}},
+    )
+
+    if conv_ids:
+        empty_docs = await db.conversations.find(
+            {"id": {"$in": conv_ids}, "member_ids": {"$size": 0}},
+            {"_id": 0, "id": 1},
+        ).to_list(5000)
+        empty_conv_ids = [c["id"] for c in empty_docs if c.get("id")]
+        if empty_conv_ids:
+            await db.messages.delete_many({"conversation_id": {"$in": empty_conv_ids}})
+            await db.conversations.delete_many({"id": {"$in": empty_conv_ids}})
+
+    await db.messages.update_many(
+        {"sender_id": user_id},
+        {
+            "$set": {
+                "sender_id": "deleted-user",
+                "sender_name": "Deleted account",
+                "content": "",
+                "deleted": True,
+                "deleted_at": now,
+            },
+            "$unset": {
+                "attachment_id": "",
+                "e2ee": "",
+                "e2ee_attachment": "",
+                "reply_to": "",
+            },
+        },
+    )
+
+    async for msg in db.messages.find(
+        {"reactions": {"$exists": True}}, {"_id": 0, "id": 1, "reactions": 1}
+    ):
+        reactions = msg.get("reactions") or {}
+        if not isinstance(reactions, dict):
+            continue
+        changed = False
+        cleaned: dict = {}
+        for emoji, ids in reactions.items():
+            if not isinstance(ids, list):
+                cleaned[emoji] = ids
+                continue
+            next_ids = [uid for uid in ids if uid != user_id]
+            if len(next_ids) != len(ids):
+                changed = True
+            if next_ids:
+                cleaned[emoji] = next_ids
+        if changed and msg.get("id"):
+            await db.messages.update_one(
+                {"id": msg["id"]}, {"$set": {"reactions": cleaned}}
+            )
+
+    await db.attachments.delete_many({"owner_id": user_id})
+    await db.calls.delete_many(
+        {
+            "$or": [
+                {"member_ids": user_id},
+                {"caller_id": user_id},
+                {"callee_ids": user_id},
+            ]
+        }
+    )
+    if email:
+        await db.login_attempts.delete_many({"identifier": email.lower()})
+    await db.users.delete_one({"id": user_id})
+    return True

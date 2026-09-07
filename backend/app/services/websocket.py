@@ -1,12 +1,14 @@
 import json
 import asyncio
 from typing import Dict, List, Optional
-from fastapi import Depends, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException
 
 from app.core.config import logger
 from app.core.database import db
 from app.core.utils import now_utc
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, create_ws_ticket
+
+router = APIRouter()
 
 
 class WSManager:
@@ -42,6 +44,7 @@ async def broadcast_to_members(member_ids, payload, exclude: Optional[str] = Non
         await ws_manager.send_to(uid, payload)
 
 
+@router.post("/ws-ticket")
 async def issue_ws_ticket(user: dict = Depends(get_current_user)):
     ticket, jti, expires_at = create_ws_ticket(user["id"], user.get("_auth_sid"))
     await db.ws_tickets.insert_one(
