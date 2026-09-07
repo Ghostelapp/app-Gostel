@@ -114,3 +114,14 @@ IOS/GhostelIOS/.metro-cache/
 .codex_ghostel_vps*
 artifacts/
 website-GhostelAPPweb/
+
+# Build artifacts (large binaries)
+*.apk
+*.aab
+*.ipa
+DEPLOY_PACKAGE_*/
+deploy_*/
+android-*.aab
+frontend/app-release-*.apk
+QUICK-VPS-COMMANDS.txt
+VPS-DEPLOY-INSTRUCTIONS.md
