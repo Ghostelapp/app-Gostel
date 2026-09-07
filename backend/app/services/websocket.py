@@ -1,11 +1,12 @@
 import json
 import asyncio
 from typing import Dict, List, Optional
-from fastapi import WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import Depends, WebSocket, WebSocketDisconnect, HTTPException
 
 from app.core.config import logger
 from app.core.database import db
 from app.core.utils import now_utc
+from app.core.auth import get_current_user
 
 
 class WSManager:

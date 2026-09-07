@@ -1,14 +1,17 @@
+import asyncio
+import uuid
 from fastapi import APIRouter, Request, Depends, HTTPException
 
 from app.core.config import logger
 from app.core.database import db
 from app.core.utils import api_error, now_utc, client_ip, enforce_rate_limit
 from app.core.auth import get_current_user
-from app.services.users import public_user, ensure_not_blocked_between
-from app.services.push import _send_simple_push
+from app.services.users import public_user, ensure_not_blocked_between, normalize_username
+from app.services.push import _send_simple_push, _send_push_to_user, _send_invite_push
+from app.services.websocket import broadcast_to_members
 from app.models import ContactInviteIn
 
-router = APIRouter(prefix="/contacts")
+router = APIRouter()
 
 
 def _public_invitation(inv: dict, users_by_id: dict) -> dict:
@@ -24,6 +27,7 @@ def _public_invitation(inv: dict, users_by_id: dict) -> dict:
     }
 
 
+@router.get('/contacts')
 async def list_contacts(user: dict = Depends(get_current_user)):
     contact_ids = user.get("contact_ids") or []
     if not contact_ids:
@@ -35,6 +39,7 @@ async def list_contacts(user: dict = Depends(get_current_user)):
     return contacts
 
 
+@router.get('/contacts/invitations')
 async def list_invitations(user: dict = Depends(get_current_user)):
     incoming_docs = await db.contact_invitations.find(
         {"to_user_id": user["id"], "status": "pending"}, {"_id": 0}
@@ -53,6 +58,7 @@ async def list_invitations(user: dict = Depends(get_current_user)):
     }
 
 
+@router.post('/contacts/invite')
 async def invite_contact(payload: ContactInviteIn, user: dict = Depends(get_current_user)):
     await enforce_rate_limit(
         "contact-invite-user", user["id"], limit=40, window_seconds=60 * 60
@@ -117,6 +123,7 @@ async def invite_contact(payload: ContactInviteIn, user: dict = Depends(get_curr
     return payload_data
 
 
+@router.post('/contacts/invitations/{inv_id}/accept')
 async def accept_invitation(inv_id: str, user: dict = Depends(get_current_user)):
     inv = await db.contact_invitations.find_one(
         {"id": inv_id, "to_user_id": user["id"], "status": "pending"}, {"_id": 0}
@@ -165,6 +172,7 @@ async def accept_invitation(inv_id: str, user: dict = Depends(get_current_user))
     return {"contact": public_user(other) if other else None}
 
 
+@router.post('/contacts/invitations/{inv_id}/reject')
 async def reject_invitation(inv_id: str, user: dict = Depends(get_current_user)):
     inv = await db.contact_invitations.find_one(
         {"id": inv_id, "to_user_id": user["id"], "status": "pending"}, {"_id": 0}
@@ -182,6 +190,7 @@ async def reject_invitation(inv_id: str, user: dict = Depends(get_current_user))
     return {"ok": True}
 
 
+@router.delete('/contacts/invitations/{inv_id}')
 async def cancel_invitation(inv_id: str, user: dict = Depends(get_current_user)):
     inv = await db.contact_invitations.find_one(
         {"id": inv_id, "from_user_id": user["id"], "status": "pending"}, {"_id": 0}
@@ -196,6 +205,7 @@ async def cancel_invitation(inv_id: str, user: dict = Depends(get_current_user))
     return {"ok": True}
 
 
+@router.delete('/contacts/{user_id}')
 async def remove_contact(user_id: str, user: dict = Depends(get_current_user)):
     if user_id not in (user.get("contact_ids") or []):
         raise HTTPException(status_code=404, detail="Not in your contacts")

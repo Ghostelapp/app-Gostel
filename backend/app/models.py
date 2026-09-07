@@ -2,6 +2,8 @@ from datetime import datetime
 from typing import Optional, Literal, List, Dict
 from pydantic import BaseModel, Field, EmailStr
 
+from app.core.config import MAX_ENCRYPTED_ATTACHMENT_SIZE, VOICE_MESSAGE_MAX_DURATION_MS
+
 
 class RegisterIn(BaseModel):
     email: EmailStr

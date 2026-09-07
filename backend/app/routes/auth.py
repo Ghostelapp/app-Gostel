@@ -1,23 +1,29 @@
+import uuid
+from datetime import timedelta
+
+import pyotp
 from fastapi import APIRouter, Request, Depends, HTTPException
 
 from app.core.config import APP_NAME, logger
 from app.core.database import db
-from app.core.utils import api_error, client_ip, now_utc, enforce_rate_limit
+from app.core.utils import api_error, client_ip, now_utc, enforce_rate_limit, _USERNAME_RE
 from app.core.auth import (
     hash_password, verify_password, create_access_token, create_ws_ticket,
     persist_user_session, revoke_access_token_jti, revoke_user_session,
-    get_current_user, require_admin,
+    public_session, get_current_user, require_admin,
 )
 from app.services.users import (
     public_user, normalize_username, is_username_taken, generate_unique_username,
 )
+from app.services.push import remove_push_tokens_for_session
 from app.models import (
     RegisterIn, LoginIn, TwoFASetupIn, TwoFAVerifyIn, E2EEKeyIn,
 )
 
-router = APIRouter(prefix="/auth")
+router = APIRouter()
 
 
+@router.post('/auth/register')
 async def register(payload: RegisterIn, request: Request):
     email = payload.email.lower().strip()
     await enforce_rate_limit(
@@ -76,6 +82,7 @@ async def register(payload: RegisterIn, request: Request):
     }
 
 
+@router.post('/auth/login')
 async def login(payload: LoginIn, request: Request):
     identifier = (payload.identifier or payload.email or "").lower().strip().lstrip("@")
     if not identifier:
@@ -135,6 +142,7 @@ async def login(payload: LoginIn, request: Request):
     }
 
 
+@router.get('/auth/username-available')
 async def username_available(username: str):
     normalized = normalize_username(username)
     valid = bool(_USERNAME_RE.match(normalized))
@@ -145,6 +153,7 @@ async def username_available(username: str):
     }
 
 
+@router.get('/auth/me')
 async def me(user: dict = Depends(get_current_user)):
     data = public_user(user)
     # Expose private fields needed by the client (only to the user themselves):
@@ -156,6 +165,7 @@ async def me(user: dict = Depends(get_current_user)):
     return data
 
 
+@router.post('/auth/logout')
 async def logout(request: Request, user: dict = Depends(get_current_user)):
     jti = user.get("_auth_jti")
     session_id = user.get("_auth_sid")
@@ -172,6 +182,7 @@ async def logout(request: Request, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+@router.get('/auth/sessions')
 async def list_sessions(user: dict = Depends(get_current_user)):
     sessions = await db.user_sessions.find(
         {"user_id": user["id"]},
@@ -184,6 +195,7 @@ async def list_sessions(user: dict = Depends(get_current_user)):
     }
 
 
+@router.delete('/auth/sessions/{session_id}')
 async def revoke_session(session_id: str, user: dict = Depends(get_current_user)):
     revoked = await revoke_user_session(session_id, user["id"], reason="user_revoke")
     if not revoked:
@@ -196,6 +208,7 @@ async def revoke_session(session_id: str, user: dict = Depends(get_current_user)
     }
 
 
+@router.post('/e2ee/keys')
 async def register_e2ee_key(payload: E2EEKeyIn, user: dict = Depends(get_current_user)):
     public_key = payload.public_key.strip()
     updated_at = now_utc().isoformat()
@@ -217,6 +230,7 @@ async def register_e2ee_key(payload: E2EEKeyIn, user: dict = Depends(get_current
     }
 
 
+@router.get('/e2ee/users/{user_id}/key')
 async def get_e2ee_key(user_id: str, user: dict = Depends(get_current_user)):
     if user_id != user["id"] and user_id not in set(user.get("contact_ids") or []):
         shared = await db.conversations.find_one(
@@ -240,6 +254,7 @@ async def get_e2ee_key(user_id: str, user: dict = Depends(get_current_user)):
     }
 
 
+@router.post('/auth/2fa/setup')
 async def two_factor_setup(
     payload: TwoFASetupIn, user: dict = Depends(get_current_user)
 ):
@@ -254,6 +269,7 @@ async def two_factor_setup(
     return {"secret": secret, "otpauth_uri": uri}
 
 
+@router.post('/auth/2fa/enable')
 async def two_factor_enable(payload: TwoFAVerifyIn, user: dict = Depends(get_current_user)):
     secret = user.get("totp_secret")
     if not secret:
@@ -267,6 +283,7 @@ async def two_factor_enable(payload: TwoFAVerifyIn, user: dict = Depends(get_cur
     return {"two_factor_enabled": True}
 
 
+@router.post('/auth/2fa/disable')
 async def two_factor_disable(payload: TwoFAVerifyIn, user: dict = Depends(get_current_user)):
     if not user.get("two_factor_enabled"):
         return {"two_factor_enabled": False}

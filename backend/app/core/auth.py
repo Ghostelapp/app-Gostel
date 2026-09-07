@@ -3,7 +3,7 @@ import jwt
 import bcrypt
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 
 from app.core.config import JWT_SECRET, JWT_ALG, logger
 from app.core.database import db

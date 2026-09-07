@@ -1,6 +1,15 @@
-from fastapi import APIRouter, Request, Depends, HTTPException
+import asyncio
+import uuid
+from datetime import datetime, timedelta
+from typing import List, Optional
 
-from app.core.config import logger
+from fastapi import APIRouter, Request, Depends, HTTPException
+from pymongo import UpdateOne
+
+from app.core.config import (
+    logger, SUPPORTED_VOICE_ATTACHMENT_MIME_TYPES, VOICE_MESSAGE_MAX_DURATION_MS,
+    MAX_ENCRYPTED_ATTACHMENT_SIZE,
+)
 from app.core.database import db
 from app.core.utils import api_error, now_utc, client_ip, enforce_rate_limit
 from app.core.auth import get_current_user
@@ -11,7 +20,8 @@ from app.services.users import (
 from app.services.conversations import (
     _hydrate_conversation, _require_group_admin, _human_duration, _normalize_message_dates,
 )
-from app.services.push import _send_push_to_members
+from app.services.push import _send_push_to_members, _send_push_to_user
+from app.services.websocket import broadcast_to_members
 from app.models import (
     ConversationCreateIn, ConversationUpdateIn, GroupMembersIn,
     DisappearingIn, MessageSendIn, ReactionIn,
@@ -20,6 +30,7 @@ from app.models import (
 router = APIRouter()
 
 
+@router.post('/conversations')
 async def create_conversation(payload: ConversationCreateIn, user: dict = Depends(get_current_user)):
     member_ids = list(set(payload.member_ids + [user["id"]]))
     if len(member_ids) < 2:
@@ -71,6 +82,7 @@ async def create_conversation(payload: ConversationCreateIn, user: dict = Depend
     return await _hydrate_conversation(conv, user["id"])
 
 
+@router.patch('/conversations/{conv_id}')
 async def update_conversation(
     conv_id: str,
     payload: ConversationUpdateIn,
@@ -119,6 +131,7 @@ async def update_conversation(
     return hydrated
 
 
+@router.post('/conversations/{conv_id}/members')
 async def add_group_members(
     conv_id: str,
     payload: GroupMembersIn,
@@ -195,6 +208,7 @@ async def add_group_members(
     return hydrated
 
 
+@router.delete('/conversations/{conv_id}/members/{user_id}')
 async def remove_group_member(
     conv_id: str, user_id: str, user: dict = Depends(get_current_user)
 ):
@@ -252,6 +266,7 @@ async def remove_group_member(
     return {"ok": True}
 
 
+@router.post('/conversations/{conv_id}/admins/{user_id}')
 async def promote_admin(
     conv_id: str, user_id: str, user: dict = Depends(get_current_user)
 ):
@@ -286,6 +301,7 @@ async def promote_admin(
     return hydrated
 
 
+@router.delete('/conversations/{conv_id}/admins/{user_id}')
 async def demote_admin(
     conv_id: str, user_id: str, user: dict = Depends(get_current_user)
 ):
@@ -309,6 +325,7 @@ async def demote_admin(
     return hydrated
 
 
+@router.get('/conversations')
 async def list_conversations(user: dict = Depends(get_current_user)):
     cursor = db.conversations.find(
         {"member_ids": user["id"]}, {"_id": 0}
@@ -323,6 +340,7 @@ async def list_conversations(user: dict = Depends(get_current_user)):
     return hydrated
 
 
+@router.get('/conversations/{conv_id}')
 async def get_conversation(conv_id: str, user: dict = Depends(get_current_user)):
     conv = await db.conversations.find_one(
         {"id": conv_id, "member_ids": user["id"]}, {"_id": 0}
@@ -332,6 +350,7 @@ async def get_conversation(conv_id: str, user: dict = Depends(get_current_user))
     return await _hydrate_conversation(conv, user["id"])
 
 
+@router.patch('/conversations/{conv_id}/disappearing')
 async def set_disappearing(conv_id: str, payload: DisappearingIn, user: dict = Depends(get_current_user)):
     conv = await db.conversations.find_one(
         {"id": conv_id, "member_ids": user["id"]}, {"_id": 0}
@@ -377,6 +396,7 @@ async def set_disappearing(conv_id: str, payload: DisappearingIn, user: dict = D
     return await _hydrate_conversation(fresh, user["id"])
 
 
+@router.get('/conversations/{conv_id}/messages')
 async def list_messages(conv_id: str, user: dict = Depends(get_current_user)):
     conv = await db.conversations.find_one(
         {"id": conv_id, "member_ids": user["id"]}, {"_id": 0}
@@ -557,6 +577,7 @@ async def list_messages(conv_id: str, user: dict = Depends(get_current_user)):
     return [_normalize_message_dates(m) for m in visible]
 
 
+@router.post('/messages')
 async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_user)):
     await enforce_rate_limit(
         "message-send-user", user["id"], limit=180, window_seconds=60
@@ -726,6 +747,7 @@ async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_
     return msg
 
 
+@router.post('/messages/{msg_id}/open-once')
 async def open_message_once(msg_id: str, user: dict = Depends(get_current_user)):
     msg = await db.messages.find_one({"id": msg_id}, {"_id": 0})
     if not msg or msg.get("kind") != "image" or not msg.get("one_time_seconds"):
@@ -767,6 +789,7 @@ async def open_message_once(msg_id: str, user: dict = Depends(get_current_user))
     return {"expires_at": expires_at.isoformat()}
 
 
+@router.post('/messages/{msg_id}/screenshot')
 async def report_message_screenshot(msg_id: str, user: dict = Depends(get_current_user)):
     msg = await db.messages.find_one({"id": msg_id}, {"_id": 0})
     if not msg or not msg.get("one_time_seconds"):
@@ -809,6 +832,7 @@ async def report_message_screenshot(msg_id: str, user: dict = Depends(get_curren
     return {"reported": True}
 
 
+@router.post('/messages/{msg_id}/reactions')
 async def react(msg_id: str, payload: ReactionIn, user: dict = Depends(get_current_user)):
     msg = await db.messages.find_one({"id": msg_id}, {"_id": 0})
     if not msg:
@@ -834,6 +858,7 @@ async def react(msg_id: str, payload: ReactionIn, user: dict = Depends(get_curre
     return msg
 
 
+@router.delete('/messages/{msg_id}')
 async def delete_message(msg_id: str, user: dict = Depends(get_current_user)):
     msg = await db.messages.find_one({"id": msg_id}, {"_id": 0})
     if not msg:
@@ -863,6 +888,7 @@ async def delete_message(msg_id: str, user: dict = Depends(get_current_user)):
     return {"deleted": True}
 
 
+@router.delete('/conversations/{conv_id}')
 async def delete_conversation_for_me(
     conv_id: str, user: dict = Depends(get_current_user)
 ):

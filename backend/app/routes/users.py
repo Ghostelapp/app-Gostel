@@ -1,17 +1,22 @@
+from datetime import timedelta
+from typing import List, Optional
+
 from fastapi import APIRouter, Request, Depends, HTTPException
 
 from app.core.config import APP_NAME, logger
 from app.core.database import db
-from app.core.utils import api_error, now_utc, client_ip, enforce_rate_limit
+from app.core.utils import api_error, now_utc, client_ip, enforce_rate_limit, _USERNAME_RE
 from app.core.auth import get_current_user
-from app.services.users import public_user, ensure_not_blocked_between
+from app.services.users import public_user, ensure_not_blocked_between, normalize_username, is_username_taken
+from app.services.websocket import broadcast_to_members
 from app.models import (
     ProfileUpdateIn, AvatarUpdateIn, StatusUpdateIn, MuteUserIn,
 )
 
-router = APIRouter(prefix="/users")
+router = APIRouter()
 
 
+@router.get('/users')
 async def list_users(q: Optional[str] = None, user: dict = Depends(get_current_user)):
     """Returns the user's contacts (legacy endpoint kept for compatibility).
     For finding new people use /users/search."""
@@ -30,6 +35,7 @@ async def list_users(q: Optional[str] = None, user: dict = Depends(get_current_u
     return [public_user(u) async for u in cursor]
 
 
+@router.get('/users/search')
 async def search_users(
     q: str = "", user: dict = Depends(get_current_user)
 ):
@@ -73,6 +79,7 @@ async def search_users(
     return [public_user(u) async for u in cursor]
 
 
+@router.patch('/users/me')
 async def update_profile(payload: ProfileUpdateIn, user: dict = Depends(get_current_user)):
     updates: dict = {}
     if payload.name is not None:
@@ -97,6 +104,7 @@ async def update_profile(payload: ProfileUpdateIn, user: dict = Depends(get_curr
     return public_user(fresh)
 
 
+@router.patch('/users/me/avatar')
 async def update_avatar(payload: AvatarUpdateIn, user: dict = Depends(get_current_user)):
     """Set or remove the user's profile photo. Stored as base64 data URI (PNG/JPEG)."""
     av = (payload.avatar or "").strip()
@@ -126,6 +134,7 @@ async def update_avatar(payload: AvatarUpdateIn, user: dict = Depends(get_curren
     return public_user(fresh)
 
 
+@router.post('/users/me/heartbeat')
 async def heartbeat(user: dict = Depends(get_current_user)):
     """Marks the user as actively online. Frontend should ping every ~60s while in
     foreground. Used to compute 'online' vs 'last seen' for other users."""
@@ -137,6 +146,7 @@ async def heartbeat(user: dict = Depends(get_current_user)):
     return {"ok": True, "last_active": now}
 
 
+@router.get('/users/me/export')
 async def export_user_data(user: dict = Depends(get_current_user)):
     """GDPR export. Returns a JSON dump of profile, contacts, blocked users, all
     conversations the user is part of, every message they sent or received, and
@@ -346,6 +356,7 @@ async def delete_user_account_data(user_id: str) -> bool:
     return True
 
 
+@router.delete('/users/me')
 async def delete_my_account(user: dict = Depends(get_current_user)):
     deleted = await delete_user_account_data(user["id"])
     if not deleted:
@@ -353,6 +364,7 @@ async def delete_my_account(user: dict = Depends(get_current_user)):
     return {"deleted": True}
 
 
+@router.patch('/users/me/status')
 async def update_status(payload: StatusUpdateIn, user: dict = Depends(get_current_user)):
     await db.users.update_one(
         {"id": user["id"]},
@@ -366,6 +378,7 @@ async def update_status(payload: StatusUpdateIn, user: dict = Depends(get_curren
     return public_user(fresh)
 
 
+@router.get('/users/{user_id}')
 async def get_user_profile(user_id: str, user: dict = Depends(get_current_user)):
     """Return public profile of any user (no role restriction). Excludes secrets."""
     other = await db.users.find_one({"id": user_id}, {"_id": 0})
@@ -386,6 +399,7 @@ async def get_user_profile(user_id: str, user: dict = Depends(get_current_user))
     return result
 
 
+@router.post('/users/me/mute_user/{target_id}')
 async def mute_user(
     target_id: str,
     payload: MuteUserIn,
@@ -409,6 +423,7 @@ async def mute_user(
     return {"muted": True, "until": until_iso}
 
 
+@router.delete('/users/me/mute_user/{target_id}')
 async def unmute_user(target_id: str, user: dict = Depends(get_current_user)):
     await db.users.update_one(
         {"id": user["id"]},

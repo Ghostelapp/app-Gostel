@@ -1,7 +1,11 @@
 import hashlib
+import re as _re
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import Request
+
+
+_USERNAME_RE = _re.compile(r"^[a-z0-9_]{3,20}$")
 
 
 def api_error(code: str, message: str) -> dict:
