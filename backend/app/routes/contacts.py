@@ -8,7 +8,7 @@ from app.core.utils import api_error, now_utc, client_ip, enforce_rate_limit
 from app.core.auth import get_current_user
 from app.services.users import public_user, ensure_not_blocked_between, normalize_username
 from app.services.push import _send_simple_push, _send_push_to_user, _send_invite_push
-from app.services.websocket import broadcast_to_members
+from app.services.ws_manager import broadcast_to_members
 from app.models import ContactInviteIn
 
 router = APIRouter()

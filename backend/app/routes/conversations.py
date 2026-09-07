@@ -21,7 +21,7 @@ from app.services.conversations import (
     _hydrate_conversation, _require_group_admin, _human_duration, _normalize_message_dates,
 )
 from app.services.push import _send_push_to_members, _send_push_to_user
-from app.services.websocket import broadcast_to_members
+from app.services.ws_manager import broadcast_to_members
 from app.models import (
     ConversationCreateIn, ConversationUpdateIn, GroupMembersIn,
     DisappearingIn, MessageSendIn, ReactionIn,

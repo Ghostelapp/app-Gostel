@@ -9,7 +9,7 @@ from app.core.database import db
 from app.core.utils import now_utc, _USERNAME_RE
 from app.core.auth import get_current_user
 from app.services.users import public_user, normalize_username, is_username_taken
-from app.services.websocket import broadcast_to_members
+from app.services.ws_manager import broadcast_to_members
 from app.models import (
     ProfileUpdateIn, AvatarUpdateIn, StatusUpdateIn, MuteUserIn,
 )
