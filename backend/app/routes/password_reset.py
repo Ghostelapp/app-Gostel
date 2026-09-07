@@ -9,7 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
-from pymongo.errors import ReturnDocument
+from pymongo import ReturnDocument
 
 from app.core.auth import hash_password, get_current_user, require_admin
 from app.core.config import APP_NAME, JWT_SECRET, logger

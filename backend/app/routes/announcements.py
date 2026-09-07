@@ -5,7 +5,7 @@ from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from pymongo.errors import ReturnDocument
+from pymongo import ReturnDocument
 
 from app.core.auth import get_current_user, require_admin
 from app.core.config import logger
