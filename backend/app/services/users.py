@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from app.core.config import REMOVED_ASSISTANT_USER_ID, logger
 from app.core.database import db
 from app.core.utils import now_utc
+from app.services.push import user_has_push_token
 
 
 def public_user(u: dict) -> dict:
