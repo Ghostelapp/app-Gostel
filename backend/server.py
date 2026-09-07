@@ -27,37 +27,18 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
-from pydantic import BaseModel, Field, EmailStr, ValidationError
+from pydantic import ValidationError
 
-# ----------------- Setup -----------------
-mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
+# ----------------- Modular imports -----------------
+from app.core.config import JWT_SECRET, JWT_ALG, APP_NAME, ALLOW_LEGACY_WS_TOKEN, REMOVED_ASSISTANT_USER_ID, MAX_ENCRYPTED_ATTACHMENT_SIZE, VOICE_MESSAGE_MAX_DURATION_MS, SUPPORTED_VOICE_ATTACHMENT_MIME_TYPES, logger
+from app.core.database import db
+from app.models import *
+
 
 app = FastAPI(title="ghostel.app Enterprise API")
 api = APIRouter(prefix="/api")
 
-JWT_SECRET = os.environ["JWT_SECRET"]
-JWT_ALG = "HS256"
-APP_NAME = os.environ.get("APP_NAME", "ghostel.app")
-ALLOW_LEGACY_WS_TOKEN = os.environ.get("ALLOW_LEGACY_WS_TOKEN", "false").lower() == "true"
-REMOVED_ASSISTANT_USER_ID = "ghost-ai-bot"
-MAX_ENCRYPTED_ATTACHMENT_SIZE = int(
-    os.environ.get("MAX_ENCRYPTED_ATTACHMENT_SIZE", str(10 * 1024 * 1024))
-)
-VOICE_MESSAGE_MAX_DURATION_MS = int(os.environ.get("VOICE_MESSAGE_MAX_DURATION_MS", "60000"))
-SUPPORTED_VOICE_ATTACHMENT_MIME_TYPES = {
-    "audio/aac",
-    "audio/m4a",
-    "audio/mp4",
-    "audio/ogg",
-    "audio/opus",
-    "audio/webm",
-    "audio/x-m4a",
-}
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger("ghostel")
 
 # ----------------- Helpers -----------------
 def api_error(code: str, message: str) -> dict:
@@ -714,167 +695,6 @@ async def get_current_user(request: Request) -> dict:
     user["_auth_jti"] = jti
     user["_auth_sid"] = session_id
     return user
-
-
-# ----------------- Models -----------------
-class RegisterIn(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
-    name: str = Field(min_length=1, max_length=80)
-    title: Optional[str] = ""
-    username: Optional[str] = None
-
-
-class LoginIn(BaseModel):
-    email: Optional[str] = None
-    identifier: Optional[str] = None
-    password: str
-    totp_code: Optional[str] = None
-
-
-class TwoFAVerifyIn(BaseModel):
-    code: str
-
-
-class TwoFASetupIn(BaseModel):
-    password: str = Field(min_length=1, max_length=128)
-
-
-class StatusUpdateIn(BaseModel):
-    status: Literal["online", "busy", "away", "offline"]
-    custom_status: Optional[str] = ""
-
-
-class ProfileUpdateIn(BaseModel):
-    name: Optional[str] = None
-    title: Optional[str] = None
-    bio: Optional[str] = None
-    username: Optional[str] = None
-
-
-class AvatarUpdateIn(BaseModel):
-    avatar: Optional[str] = None  # base64 data URI, set None/empty to remove. Max ~250KB.
-
-
-class ContactInviteIn(BaseModel):
-    username: str = Field(min_length=1, max_length=30)
-
-
-class ConversationCreateIn(BaseModel):
-    type: Literal["direct", "group"]
-    member_ids: List[str]
-    name: Optional[str] = None
-    avatar: Optional[str] = None  # base64 data URI (small, <128KB)
-
-
-class ConversationUpdateIn(BaseModel):
-    name: Optional[str] = None
-    avatar: Optional[str] = None  # base64 data URI; set "" to clear
-
-
-class GroupMembersIn(BaseModel):
-    member_ids: List[str] = Field(min_length=1, max_length=20)
-
-
-class E2EERecipientPayload(BaseModel):
-    nonce: str = Field(min_length=16, max_length=128)
-    ciphertext: str = Field(min_length=16, max_length=20000)
-
-
-class E2EEMessagePayload(BaseModel):
-    version: Literal[1] = 1
-    algorithm: Literal["nacl-box-v1"] = "nacl-box-v1"
-    sender_public_key: str = Field(min_length=32, max_length=128)
-    recipients: Dict[str, E2EERecipientPayload] = Field(default_factory=dict)
-
-
-class E2EEAttachmentPayload(BaseModel):
-    version: Literal[1] = 1
-    algorithm: Literal["nacl-secretbox-v1"] = "nacl-secretbox-v1"
-    nonce: str = Field(min_length=16, max_length=128)
-    mime: str = Field(min_length=1, max_length=120)
-    size: Optional[int] = Field(default=None, ge=0, le=MAX_ENCRYPTED_ATTACHMENT_SIZE)
-    key_recipients: Dict[str, E2EERecipientPayload] = Field(default_factory=dict)
-
-
-class E2EEKeyIn(BaseModel):
-    public_key: str = Field(min_length=32, max_length=128)
-    algorithm: Literal["nacl-box-v1"] = "nacl-box-v1"
-
-
-class MessageSendIn(BaseModel):
-    conversation_id: str
-    content: str = Field(min_length=0, max_length=10000, default="")
-    kind: Literal["text", "voice", "file", "image", "system"] = "text"
-    reply_to: Optional[str] = None
-    attachment_id: Optional[str] = None
-    duration_ms: Optional[int] = None  # for voice
-    encrypted: bool = False
-    e2ee: Optional[E2EEMessagePayload] = None
-    e2ee_attachment: Optional[E2EEAttachmentPayload] = None
-    one_time_seconds: Optional[Literal[5]] = None
-
-
-class ReactionIn(BaseModel):
-    emoji: str = Field(min_length=1, max_length=8)
-
-
-class UploadIn(BaseModel):
-    filename: str = Field(min_length=1, max_length=200)
-    mime: str = Field(min_length=1, max_length=120)
-    data: str = Field(min_length=1)  # base64 string (no data: prefix)
-    size: int = Field(ge=0, le=MAX_ENCRYPTED_ATTACHMENT_SIZE)
-
-
-class PushTokenIn(BaseModel):
-    token: str = Field(min_length=4, max_length=500)
-    platform: Literal["ios", "android", "web"] = "web"
-    # Accepts both raw Expo-style names ('android'/'ios') and explicit names
-    # ('fcm'/'apns'). 'expo' kept for legacy ExpoPushToken[...] tokens.
-    token_type: Literal["fcm", "apns", "expo", "voip", "android", "ios"] = "fcm"
-    device_id: Optional[str] = Field(default=None, min_length=8, max_length=80)
-    device_model: Optional[str] = None
-    os_version: Optional[str] = None
-    source: Optional[str] = None
-
-
-class PushUnregisterIn(BaseModel):
-    token: Optional[str] = Field(default=None, min_length=4, max_length=500)
-    device_id: Optional[str] = Field(default=None, min_length=8, max_length=80)
-
-
-class SupportReportIn(BaseModel):
-    category: Literal["call", "push", "device", "account", "bug", "other"] = "bug"
-    subject: str = Field(min_length=4, max_length=160)
-    message: str = Field(min_length=10, max_length=5000)
-    platform: Literal["ios", "android", "web", "desktop", "unknown"] = "unknown"
-    app_version: Optional[str] = Field(default="", max_length=40)
-    diagnostics: Optional[dict] = None
-
-
-class CallStartIn(BaseModel):
-    conversation_id: str
-    mode: Literal["audio", "video"] = "audio"
-    call_id: Optional[str] = Field(default=None, min_length=8, max_length=80)
-
-
-class CallStateUpdateIn(BaseModel):
-    status: Optional[Literal["connecting", "active", "reconnecting", "failed"]] = None
-    peer_connection_state: Optional[str] = Field(default=None, max_length=40)
-    local_audio_enabled: Optional[bool] = None
-    remote_audio_connected: Optional[bool] = None
-
-
-class DisappearingIn(BaseModel):
-    seconds: Optional[int] = Field(default=None, ge=0, le=60 * 60 * 24 * 30)  # max 30 days
-
-
-class PrivacyUpdateIn(BaseModel):
-    save_call_history: Optional[bool] = None
-
-
-class MuteUpdateIn(BaseModel):
-    muted: bool
 
 
 # ----------------- Auth Routes -----------------
@@ -2853,9 +2673,6 @@ async def delete_conversation_for_me(
 
 
 # ----------------- User mute (per-user notification mute) -----------------
-class MuteUserIn(BaseModel):
-    # Duration in seconds (max 30 days). `None` or 0 means "forever".
-    duration_seconds: Optional[int] = None
 
 
 @api.get("/users/{user_id}")
@@ -2946,8 +2763,6 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
-class RoleUpdateIn(BaseModel):
-    role: Literal["admin", "moderator", "user", "guest"]
 
 
 def _parse_admin_chart_datetime(value):
