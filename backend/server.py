@@ -31,7 +31,7 @@ from pydantic import ValidationError
 
 # ----------------- Modular imports -----------------
 from app.core.config import JWT_SECRET, JWT_ALG, APP_NAME, ALLOW_LEGACY_WS_TOKEN, REMOVED_ASSISTANT_USER_ID, MAX_ENCRYPTED_ATTACHMENT_SIZE, VOICE_MESSAGE_MAX_DURATION_MS, SUPPORTED_VOICE_ATTACHMENT_MIME_TYPES, logger
-from app.core.utils import api_error, now_utc, ensure_utc, client_ip, request_client_meta
+from app.core.utils import api_error, now_utc, ensure_utc, client_ip, request_client_meta, enforce_rate_limit
 from app.core.auth import hash_password, verify_password, create_access_token, create_ws_ticket, persist_user_session, revoke_access_token_jti, revoke_user_session, public_session, get_current_user, require_admin
 from app.services.push import (
     normalize_call_signal_envelope, _configured_turn_servers,
@@ -74,43 +74,6 @@ api = APIRouter(prefix="/api")
 
 
 
-async def enforce_rate_limit(
-    scope: str,
-    identifier: str,
-    *,
-    limit: int,
-    window_seconds: int,
-) -> None:
-    now = now_utc()
-    bucket = int(now.timestamp()) // window_seconds
-    digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()
-    key = f"{scope}:{digest}:{bucket}"
-    try:
-        row = await db.rate_limits.find_one_and_update(
-            {"key": key},
-            {
-                "$inc": {"count": 1},
-                "$setOnInsert": {
-                    "key": key,
-                    "scope": scope,
-                    "expires_at": now + timedelta(seconds=window_seconds * 2),
-                },
-            },
-            upsert=True,
-            return_document=ReturnDocument.AFTER,
-        )
-    except DuplicateKeyError:
-        row = await db.rate_limits.find_one_and_update(
-            {"key": key},
-            {"$inc": {"count": 1}},
-            return_document=ReturnDocument.AFTER,
-        )
-    if row and row.get("count", 0) > limit:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many requests. Try again later.",
-            headers={"Retry-After": str(window_seconds)},
-        )
 
 
 

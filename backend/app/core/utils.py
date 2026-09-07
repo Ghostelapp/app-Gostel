@@ -38,3 +38,42 @@ def request_client_meta(request: Request) -> dict:
         "user_agent": user_agent[:500],
         "device_label": device_label,
     }
+
+
+async def enforce_rate_limit(
+    scope: str,
+    identifier: str,
+    *,
+    limit: int,
+    window_seconds: int,
+) -> None:
+    now = now_utc()
+    bucket = int(now.timestamp()) // window_seconds
+    digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()
+    key = f"{scope}:{digest}:{bucket}"
+    try:
+        row = await db.rate_limits.find_one_and_update(
+            {"key": key},
+            {
+                "$inc": {"count": 1},
+                "$setOnInsert": {
+                    "key": key,
+                    "scope": scope,
+                    "expires_at": now + timedelta(seconds=window_seconds * 2),
+                },
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        row = await db.rate_limits.find_one_and_update(
+            {"key": key},
+            {"$inc": {"count": 1}},
+            return_document=ReturnDocument.AFTER,
+        )
+    if row and row.get("count", 0) > limit:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Try again later.",
+            headers={"Retry-After": str(window_seconds)},
+        )
