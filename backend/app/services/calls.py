@@ -23,7 +23,7 @@ from app.services.users import (
     require_conversation_e2ee_ready,
     user_can_signal_target,
 )
-from app.services.websocket import broadcast_to_members, ws_manager
+from app.services.ws_manager import broadcast_to_members, ws_manager
 from app.services.push import _send_push_to_members, _send_call_control_push, sanitize_diag_value
 
 router = APIRouter()
