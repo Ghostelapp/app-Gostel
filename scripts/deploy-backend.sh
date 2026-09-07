@@ -8,8 +8,8 @@ SERVICE_NAME="ghostel-app.service"
 echo "==> Pulling latest code..."
 cd "$APP_DIR"
 git fetch origin
-git checkout deploy-1.4.54
-git pull origin deploy-1.4.54
+git checkout integrate-reset-announcements
+git pull origin integrate-reset-announcements
 
 echo "==> Installing backend dependencies..."
 cd "$BACKEND_DIR"
