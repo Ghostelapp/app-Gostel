@@ -2683,7 +2683,7 @@ async def websocket_endpoint(
 # ----------------- Health -----------------
 
 
-ANDROID_APK_VERSION = "1.4.54"
+ANDROID_APK_VERSION = "1.4.55"
 
 
 @app.get("/app-release.apk")
