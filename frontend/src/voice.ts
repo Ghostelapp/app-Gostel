@@ -152,10 +152,11 @@ class NativeVoiceRecorder implements VoiceRecorder {
   async stop(): Promise<VoiceCaptureResult | null> {
     if (!this.recorder) return null;
     const durationMs = Date.now() - this.startedAt;
-    let uri: string | null = null;
+    // Capture URI before stopping; some native implementations clear it after stop().
+    let uri = this.recorder.uri || null;
     try {
       await this.recorder.stop();
-      uri = this.recorder.uri || null;
+      uri = uri || this.recorder.uri || null;
     } catch (e: any) {
       throw new Error(`Stop failed: ${e?.message || e}`);
     }

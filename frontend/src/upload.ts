@@ -82,26 +82,27 @@ async function uriToBase64(uri: string): Promise<string> {
   // Native: use the new File API from expo-file-system (SDK 54+). Falls back
   // to the legacy `readAsStringAsync` if the new API isn't available.
   const FileSystem: any = require('expo-file-system');
+  const errors: string[] = [];
   if (FileSystem?.File) {
     try {
       const file = new FileSystem.File(uri);
       // File.base64() returns a base64 string (no data: prefix).
       const b64 = await file.base64();
       if (typeof b64 === 'string' && b64.length > 0) return b64;
-    } catch {
-      /* fall through to legacy */
+    } catch (e: any) {
+      errors.push(`File API: ${e?.message || e}`);
     }
   }
   try {
     const Legacy = require('expo-file-system/legacy');
     return await Legacy.readAsStringAsync(uri, { encoding: 'base64' });
-  } catch {
-    /* one more fallback path below */
+  } catch (e: any) {
+    errors.push(`Legacy API: ${e?.message || e}`);
   }
   if (FileSystem?.readAsStringAsync) {
     return await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
   }
-  throw new Error('Could not read file');
+  throw new Error(`Could not read file: ${errors.join('; ')}`);
 }
 
 export async function pickImageForUpload(): Promise<UploadCandidate | null> {
