@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException
 
 from app.core.config import APP_NAME, logger
 from app.core.database import db
-from app.core.utils import api_error, client_ip, now_utc, enforce_rate_limit, _USERNAME_RE
+from app.core.utils import api_error, client_ip, now_utc, enforce_rate_limit, _USERNAME_RE, validate_new_password
 from app.core.auth import (
     hash_password, verify_password, create_access_token, create_ws_ticket,
     persist_user_session, revoke_access_token_jti, revoke_user_session,
@@ -26,6 +26,7 @@ router = APIRouter()
 @router.post('/auth/register')
 async def register(payload: RegisterIn, request: Request):
     email = payload.email.lower().strip()
+    validate_new_password(payload.password, email)
     await enforce_rate_limit(
         "auth-register-ip", client_ip(request), limit=10, window_seconds=60 * 60
     )
@@ -60,13 +61,17 @@ async def register(payload: RegisterIn, request: Request):
         "role": "user",
         "two_factor_enabled": False,
         "totp_secret": None,
+        "auth_epoch": 0,
+        "email_verified": False,
         "avatar_color": colors[hash(email) % len(colors)],
         "contact_ids": [],
         "created_at": now_utc().isoformat(),
         "last_seen": now_utc().isoformat(),
     }
     await db.users.insert_one(user_doc)
-    token, jti, expires_at, session_id = create_access_token(user_id, email)
+    token, jti, expires_at, session_id = create_access_token(
+        user_id, email, auth_epoch=user_doc.get("auth_epoch", 0)
+    )
     await persist_user_session(
         user_doc,
         request,
@@ -126,7 +131,9 @@ async def login(payload: LoginIn, request: Request):
         {"$set": {"last_seen": now_utc().isoformat(), "status": "online"}},
     )
     await db.login_attempts.delete_many({"identifier": identifier})
-    token, jti, expires_at, session_id = create_access_token(user["id"], user["email"])
+    token, jti, expires_at, session_id = create_access_token(
+        user["id"], user["email"], auth_epoch=user.get("auth_epoch", 0)
+    )
     await persist_user_session(
         user,
         request,

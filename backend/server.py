@@ -46,8 +46,11 @@ from app.routes import uploads as uploads_routes
 from app.routes import push as push_routes
 from app.routes import support as support_routes
 from app.routes import root as root_routes
+from app.routes import password_reset as password_reset_routes
+from app.routes import announcements as announcements_routes
 from app.services import calls as calls_routes
 from app.services import websocket as websocket_routes
+from app.services.announcements import announcement_dispatch_loop
 
 api.include_router(auth_routes.router)
 api.include_router(users_routes.router)
@@ -58,6 +61,8 @@ api.include_router(uploads_routes.router)
 api.include_router(push_routes.router)
 api.include_router(support_routes.router)
 api.include_router(root_routes.router)
+api.include_router(password_reset_routes.router)
+api.include_router(announcements_routes.router)
 api.include_router(calls_routes.router)
 api.include_router(websocket_routes.router)
 
@@ -2678,7 +2683,7 @@ async def websocket_endpoint(
 # ----------------- Health -----------------
 
 
-ANDROID_APK_VERSION = "1.4.43"
+ANDROID_APK_VERSION = "1.4.54"
 
 
 @app.get("/app-release.apk")
@@ -2768,6 +2773,11 @@ async def _ensure_indexes() -> None:
         ("calls", "conversation_id", {}),
         ("login_attempts", "at", {}),
         ("login_attempts", "expires_at", {"expireAfterSeconds": 0}),
+        ("password_resets", "id", {"unique": True}),
+        ("password_resets", [("email", 1), ("created_at", -1)], {}),
+        ("password_resets", "expires_at", {"expireAfterSeconds": 0}),
+        ("security_events", "user_id", {}),
+        ("security_events", "expires_at", {"expireAfterSeconds": 0}),
         ("rate_limits", "key", {"unique": True}),
         ("rate_limits", "expires_at", {"expireAfterSeconds": 0}),
         ("revoked_tokens", "jti", {"unique": True}),
@@ -2788,6 +2798,10 @@ async def _ensure_indexes() -> None:
         ("support_reports", "id", {"unique": True}),
         ("support_reports", "user_id", {}),
         ("support_reports", "created_at", {}),
+        ("announcements", "id", {"unique": True}),
+        ("announcements", [("status", 1), ("starts_at", 1), ("ends_at", 1)], {}),
+        ("announcement_receipts", [("announcement_id", 1), ("user_id", 1)], {"unique": True}),
+        ("announcement_receipts", "user_id", {}),
     ]
     for collection_name, keys, opts in index_specs:
         try:
@@ -2817,9 +2831,15 @@ async def _seed_user_safely(filter_q: dict, doc_on_insert: dict, label: str) -> 
         logger.warning(f"{label} seed encountered (ignored): {e!r}")
 
 
+_announcement_dispatch_task: Optional[asyncio.Task] = None
+
+
 @app.on_event("startup")
 async def on_startup():
+    global _announcement_dispatch_task
     await _ensure_indexes()
+    if _announcement_dispatch_task is None or _announcement_dispatch_task.done():
+        _announcement_dispatch_task = asyncio.create_task(announcement_dispatch_loop())
 
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@ghostel.app").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD")
@@ -3002,4 +3022,8 @@ async def _migrate_usernames_and_contacts():
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    global _announcement_dispatch_task
+    if _announcement_dispatch_task:
+        _announcement_dispatch_task.cancel()
+        _announcement_dispatch_task = None
     client.close()

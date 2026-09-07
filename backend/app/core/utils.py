@@ -1,11 +1,30 @@
 import hashlib
 import re as _re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
-from fastapi import Request
+from fastapi import HTTPException, Request
+
+from app.core.database import db
+from pymongo.errors import DuplicateKeyError
 
 
 _USERNAME_RE = _re.compile(r"^[a-z0-9_]{3,20}$")
+
+
+_COMMON_PASSWORDS = {
+    "password", "password1", "password123", "qwerty123", "12345678",
+    "admin123", "letmein123", "ghostel123",
+}
+
+
+def validate_new_password(password: str, email: str = "") -> None:
+    if len(password) < 8 or len(password) > 128:
+        raise HTTPException(status_code=400, detail="Password must be 8-128 characters")
+    if password.lower() in _COMMON_PASSWORDS:
+        raise HTTPException(status_code=400, detail="Choose a less common password")
+    local_part = email.partition("@")[0].lower().strip()
+    if len(local_part) >= 4 and local_part in password.lower():
+        raise HTTPException(status_code=400, detail="Password must not contain your email name")
 
 
 def api_error(code: str, message: str) -> dict:

@@ -26,6 +26,7 @@ def create_access_token(
     email: str,
     *,
     session_id: Optional[str] = None,
+    auth_epoch: int = 0,
 ) -> tuple[str, str, datetime, str]:
     jti = str(uuid.uuid4())
     expires_at = now_utc() + timedelta(days=7)
@@ -37,6 +38,7 @@ def create_access_token(
         "type": "access",
         "jti": jti,
         "sid": sid,
+        "ae": int(auth_epoch or 0),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG), jti, expires_at, sid
 
@@ -176,6 +178,8 @@ async def get_current_user(request: Request) -> dict:
     user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if int(payload.get("ae") or 0) != int(user.get("auth_epoch") or 0):
+        raise HTTPException(status_code=401, detail="Session revoked")
     user["_auth_jti"] = jti
     user["_auth_sid"] = session_id
     return user
