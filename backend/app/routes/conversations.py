@@ -3,19 +3,17 @@ import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from fastapi import APIRouter, Request, Depends, HTTPException
-from pymongo import UpdateOne
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.config import (
     logger, SUPPORTED_VOICE_ATTACHMENT_MIME_TYPES, VOICE_MESSAGE_MAX_DURATION_MS,
     MAX_ENCRYPTED_ATTACHMENT_SIZE,
 )
 from app.core.database import db
-from app.core.utils import api_error, now_utc, client_ip, enforce_rate_limit
+from app.core.utils import api_error, now_utc, enforce_rate_limit
 from app.core.auth import get_current_user
 from app.services.users import (
-    public_user, ensure_not_blocked_between, ensure_direct_conversation_not_blocked,
-    require_conversation_e2ee_ready, conversation_e2ee_ready, user_can_signal_target,
+    ensure_not_blocked_between, ensure_direct_conversation_not_blocked,
 )
 from app.services.conversations import (
     _hydrate_conversation, _require_group_admin, _human_duration, _normalize_message_dates,
@@ -88,7 +86,7 @@ async def update_conversation(
     payload: ConversationUpdateIn,
     user: dict = Depends(get_current_user),
 ):
-    conv = await _require_group_admin(conv_id, user["id"])
+    await _require_group_admin(conv_id, user["id"])
     updates: dict = {}
     if payload.name is not None:
         updates["name"] = payload.name.strip()[:80]

@@ -1,13 +1,12 @@
 import asyncio
 import uuid
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.config import logger
 from app.core.database import db
-from app.core.utils import api_error, now_utc, client_ip, enforce_rate_limit
+from app.core.utils import now_utc, enforce_rate_limit
 from app.core.auth import get_current_user
-from app.services.users import public_user, ensure_not_blocked_between, normalize_username
-from app.services.push import _send_simple_push, _send_push_to_user, _send_invite_push
+from app.services.users import public_user, normalize_username
+from app.services.push import _send_push_to_user, _send_invite_push
 from app.services.ws_manager import broadcast_to_members
 from app.models import ContactInviteIn
 

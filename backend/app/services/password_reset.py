@@ -14,12 +14,8 @@ import os
 import secrets
 import smtplib
 import ssl
-from datetime import datetime, timedelta
 from email.message import EmailMessage
-from typing import Optional
 from urllib.parse import quote
-
-from app.core.config import logger
 
 RESET_TTL_MINUTES = max(5, min(int(os.environ.get("PASSWORD_RESET_TTL_MINUTES", "15")), 60))
 RESET_MAX_ATTEMPTS = max(3, min(int(os.environ.get("PASSWORD_RESET_MAX_ATTEMPTS", "5")), 10))

@@ -4,13 +4,13 @@ from datetime import timedelta
 import pyotp
 from fastapi import APIRouter, Request, Depends, HTTPException
 
-from app.core.config import APP_NAME, logger
+from app.core.config import APP_NAME
 from app.core.database import db
-from app.core.utils import api_error, client_ip, now_utc, enforce_rate_limit, _USERNAME_RE, validate_new_password
+from app.core.utils import client_ip, now_utc, enforce_rate_limit, _USERNAME_RE, validate_new_password
 from app.core.auth import (
-    hash_password, verify_password, create_access_token, create_ws_ticket,
+    hash_password, verify_password, create_access_token,
     persist_user_session, revoke_access_token_jti, revoke_user_session,
-    public_session, get_current_user, require_admin,
+    public_session, get_current_user,
 )
 from app.services.users import (
     public_user, normalize_username, is_username_taken, generate_unique_username,

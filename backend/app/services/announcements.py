@@ -8,7 +8,7 @@ import httpx
 from pydantic import BaseModel, Field
 from typing import Literal
 
-from app.core.config import APP_NAME, EXPO_PUSH_URL, logger
+from app.core.config import EXPO_PUSH_URL, logger
 from app.core.database import db
 from app.core.utils import ensure_utc, now_utc
 from app.services.push import (

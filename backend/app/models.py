@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Literal, List, Dict
 from pydantic import BaseModel, Field, EmailStr
 
-from app.core.config import MAX_ENCRYPTED_ATTACHMENT_SIZE, VOICE_MESSAGE_MAX_DURATION_MS, logger
+from app.core.config import MAX_ENCRYPTED_ATTACHMENT_SIZE, logger
 from app.core.database import db
 from app.core.utils import ensure_utc, now_utc
 

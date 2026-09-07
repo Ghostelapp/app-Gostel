@@ -11,8 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 from pymongo import ReturnDocument
 
-from app.core.auth import hash_password, get_current_user, require_admin
-from app.core.config import APP_NAME, JWT_SECRET, logger
+from app.core.auth import hash_password, require_admin
+from app.core.config import JWT_SECRET, logger
 from app.core.database import db
 from app.core.utils import client_ip, enforce_rate_limit, now_utc, validate_new_password
 from app.services.password_reset import (

@@ -1,11 +1,11 @@
 import uuid
 import jwt
 import bcrypt
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request
 
-from app.core.config import JWT_SECRET, JWT_ALG, logger
+from app.core.config import JWT_SECRET, JWT_ALG
 from app.core.database import db
 from app.core.utils import now_utc, ensure_utc, request_client_meta
 
