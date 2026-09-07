@@ -31,6 +31,8 @@ from pydantic import ValidationError
 
 # ----------------- Modular imports -----------------
 from app.core.config import JWT_SECRET, JWT_ALG, APP_NAME, ALLOW_LEGACY_WS_TOKEN, REMOVED_ASSISTANT_USER_ID, MAX_ENCRYPTED_ATTACHMENT_SIZE, VOICE_MESSAGE_MAX_DURATION_MS, SUPPORTED_VOICE_ATTACHMENT_MIME_TYPES, logger
+from app.core.utils import api_error, now_utc, ensure_utc, client_ip, request_client_meta
+from app.core.auth import hash_password, verify_password, create_access_token, create_ws_ticket, persist_user_session, revoke_access_token_jti, revoke_user_session, public_session, get_current_user, require_admin
 from app.core.database import db
 from app.models import *
 
@@ -41,29 +43,12 @@ api = APIRouter(prefix="/api")
 
 
 # ----------------- Helpers -----------------
-def api_error(code: str, message: str) -> dict:
-    return {"code": code, "message": message, "msg": message}
 
 
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
 
 
-def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
-    if not isinstance(dt, datetime):
-        return dt
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
-def client_ip(request: Request) -> str:
-    peer = request.client.host if request.client else ""
-    if peer in {"127.0.0.1", "::1"}:
-        forwarded = request.headers.get("x-forwarded-for", "")
-        if forwarded:
-            return forwarded.split(",", 1)[0].strip()
-    return peer or "unknown"
 
 
 async def enforce_rate_limit(
@@ -105,148 +90,22 @@ async def enforce_rate_limit(
         )
 
 
-def hash_password(pw: str) -> str:
-    return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
-def verify_password(pw: str, hashed: str) -> bool:
-    try:
-        return bcrypt.checkpw(pw.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
-        return False
 
 
-def create_access_token(
-    user_id: str,
-    email: str,
-    *,
-    session_id: Optional[str] = None,
-) -> tuple[str, str, datetime, str]:
-    jti = str(uuid.uuid4())
-    expires_at = now_utc() + timedelta(days=7)
-    sid = session_id or str(uuid.uuid4())
-    payload = {
-        "sub": user_id,
-        "email": email,
-        "exp": expires_at,
-        "type": "access",
-        "jti": jti,
-        "sid": sid,
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG), jti, expires_at, sid
 
 
-def create_ws_ticket(user_id: str, session_id: Optional[str] = None) -> tuple[str, str, datetime]:
-    jti = str(uuid.uuid4())
-    expires_at = now_utc() + timedelta(seconds=60)
-    payload = {
-        "sub": user_id,
-        "exp": expires_at,
-        "type": "ws",
-        "jti": jti,
-    }
-    if session_id:
-        payload["sid"] = session_id
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
-    return token, jti, expires_at
 
 
-def request_client_meta(request: Request) -> dict:
-    user_agent = (request.headers.get("user-agent") or "").strip()
-    forwarded = request.headers.get("x-device-name") or request.headers.get("x-device-id") or ""
-    device_label = (forwarded or user_agent or "Unknown device").strip()[:160]
-    return {
-        "ip_hash": hashlib.sha256(client_ip(request).encode("utf-8")).hexdigest(),
-        "user_agent": user_agent[:500],
-        "device_label": device_label,
-    }
 
 
-async def persist_user_session(
-    user: dict,
-    request: Request,
-    *,
-    session_id: str,
-    token_jti: str,
-    expires_at: datetime,
-) -> None:
-    meta = request_client_meta(request)
-    now_iso = now_utc().isoformat()
-    await db.user_sessions.update_one(
-        {"id": session_id},
-        {
-            "$set": {
-                "id": session_id,
-                "user_id": user["id"],
-                "email": user.get("email"),
-                "token_jti": token_jti,
-                "device_label": meta["device_label"],
-                "user_agent": meta["user_agent"],
-                "ip_hash": meta["ip_hash"],
-                "created_at": now_iso,
-                "last_seen_at": now_iso,
-                "expires_at": expires_at,
-                "revoked_at": None,
-                "revoked_reason": None,
-            }
-        },
-        upsert=True,
-    )
 
 
-async def revoke_access_token_jti(jti: Optional[str], user_id: str, expires_at: Optional[datetime]) -> None:
-    if not jti or not expires_at:
-        return
-    await db.revoked_tokens.update_one(
-        {"jti": jti},
-        {
-            "$set": {
-                "jti": jti,
-                "user_id": user_id,
-                "expires_at": expires_at,
-            }
-        },
-        upsert=True,
-    )
 
 
-async def revoke_user_session(session_id: str, user_id: str, *, reason: str) -> bool:
-    session = await db.user_sessions.find_one({"id": session_id, "user_id": user_id}, {"_id": 0})
-    if not session:
-        return False
-    now_iso = now_utc().isoformat()
-    await db.user_sessions.update_one(
-        {"id": session_id, "user_id": user_id},
-        {
-            "$set": {
-                "revoked_at": now_iso,
-                "revoked_reason": reason[:80],
-                "last_seen_at": now_iso,
-            }
-        },
-    )
-    expires_at = session.get("expires_at")
-    if isinstance(expires_at, str):
-        try:
-            expires_at = datetime.fromisoformat(expires_at)
-        except ValueError:
-            expires_at = None
-    expires_at = ensure_utc(expires_at)
-    await revoke_access_token_jti(session.get("token_jti"), user_id, expires_at)
-    return True
 
 
-def public_session(doc: dict, current_session_id: Optional[str]) -> dict:
-    return {
-        "id": doc["id"],
-        "current": doc["id"] == current_session_id,
-        "device_label": doc.get("device_label") or "Unknown device",
-        "created_at": doc.get("created_at"),
-        "last_seen_at": doc.get("last_seen_at"),
-        "expires_at": doc.get("expires_at").isoformat() if isinstance(doc.get("expires_at"), datetime) else doc.get("expires_at"),
-        "revoked_at": doc.get("revoked_at"),
-        "revoked_reason": doc.get("revoked_reason"),
-    }
 
 
 def user_has_push_token(u: dict) -> bool:
@@ -659,42 +518,6 @@ async def user_can_signal_target(user_id: str, target_id: str, data: dict) -> bo
     return False
 
 
-async def get_current_user(request: Request) -> dict:
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = auth[7:]
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-        if payload.get("type") != "access":
-            raise HTTPException(status_code=401, detail="Invalid token type")
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    jti = payload.get("jti")
-    session_id = payload.get("sid")
-    if jti and await db.revoked_tokens.find_one({"jti": jti}, {"_id": 1}):
-        raise HTTPException(status_code=401, detail="Token revoked")
-    if session_id:
-        session = await db.user_sessions.find_one(
-            {"id": session_id, "user_id": payload["sub"]},
-            {"_id": 0, "revoked_at": 1, "expires_at": 1},
-        )
-        if not session:
-            raise HTTPException(status_code=401, detail="Session not found")
-        if session.get("revoked_at"):
-            raise HTTPException(status_code=401, detail="Session revoked")
-        expires_at = ensure_utc(session.get("expires_at"))
-        if isinstance(expires_at, datetime) and expires_at <= now_utc():
-            raise HTTPException(status_code=401, detail="Session expired")
-    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    user["_auth_jti"] = jti
-    user["_auth_sid"] = session_id
-    return user
 
 
 # ----------------- Auth Routes -----------------
@@ -2757,10 +2580,6 @@ def admin_user(u: dict) -> dict:
     }
 
 
-async def require_admin(user: dict = Depends(get_current_user)) -> dict:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return user
 
 
 
