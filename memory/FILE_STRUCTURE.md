@@ -5,7 +5,12 @@
 ```
 app-Gostel/
 ├── backend/                 # FastAPI backend
-│   ├── server.py           # Główny plik aplikacji (~6k linii)
+│   ├── server.py           # Główny plik aplikacji (setup, startup, include_router)
+│   ├── app/                # Modułowa aplikacja FastAPI
+│   │   ├── core/           # config, database, utils, auth
+│   │   ├── models.py       # Modele Pydantic
+│   │   ├── services/       # logika biznesowa
+│   │   └── routes/         # endpointy FastAPI
 │   ├── fcm.py              # Firebase Cloud Messaging
 │   ├── apns.py             # Apple Push Notification (VoIP)
 │   ├── requirements.txt    # Zależności Python
@@ -21,14 +26,10 @@ app-Gostel/
 │   ├── scripts/            # Skrypty postinstall/patch
 │   ├── plugins/            # Własne pluginy Expo
 │   ├── public/             # Statyczne pliki web
-│   ├── app.json            # Konfiguracja Expo (wersja 1.4.54)
-│   ├── package.json        # Wersja 1.4.53 (NIESPÓJNOŚĆ!)
+│   ├── app.json            # Konfiguracja Expo (wersja 1.4.54, build iOS 66 / Android 61)
+│   ├── package.json        # Wersja 1.4.54
 │   └── .env.example
-├── IOS/GhostelIOS/         # Osobny projekt iOS z natywnymi plikami Xcode
-│   ├── app/                # Screens (subset frontend/app)
-│   ├── ios/                # Natywne pliki iOS
-│   ├── src/                # Współdzielone moduły
-│   └── package.json        # Wersja 1.4.0 (starsza)
+├── IOS/                    # (usunięty duplikat GhostelIOS/; iOS buildowany z frontend/)
 ├── memory/                 # Pamięć projektu (dokumentacja agenta)
 ├── docs/                   # Dokumentacja użytkowa/testerska
 ├── tests/                  # Wspólne testy (puste __init__.py)
@@ -39,7 +40,19 @@ app-Gostel/
 
 ## Backend
 
-- `server.py` — monolit zawierający wszystkie endpointy, modele, logikę
+- `server.py` — konfiguracja FastAPI, startup/shutdown, include_router dla wszystkich tras
+- `app/core/config.py` — stałe i zmienne środowiskowe
+- `app/core/database.py` — klient MongoDB
+- `app/core/utils.py` — helpery ogólne
+- `app/core/auth.py` — autentykacja JWT, sesje, role
+- `app/models.py` — modele Pydantic (wejścia API)
+- `app/services/push.py` — FCM/APNs, tokeny, powiadomienia
+- `app/services/calls.py` — WebRTC, ICE/TURN, sygnalizacja połączeń
+- `app/services/websocket.py` — WSManager, WebSocket, ws-ticket
+- `app/services/users.py` — użytkownicy, kontakty, blokowanie
+- `app/services/admin.py` — helpery panelu admina
+- `app/services/conversations.py` — konwersacje i wiadomości
+- `app/routes/*.py` — grupy endpointów FastAPI
 - `fcm.py` — inicjalizacja Firebase, wysyłka powiadomień
 - `apns.py` — inicjalizacja APNs, VoIP push
 - `tests/` — 8 plików testowych pytest
@@ -67,15 +80,9 @@ app-Gostel/
 - `i18n/` — tłumaczenia
 - `tokenStorage.ts`, `pinLock.tsx`, `theme.ts` — utils
 
-## IOS/GhostelIOS
+## iOS
 
-Osobny projekt iOS. `app/` zawiera te same screens co `frontend/app/` minus 4 nowsze ekrany ustawień:
-- `settings/call-diagnostics.tsx`
-- `settings/permissions.tsx`
-- `settings/push-devices.tsx`
-- `settings/report-problem.tsx`
-
-`ios/` zawiera natywne pliki Xcode wymagane do buildów iOS z CallKit/VoIP.
+Buildy iOS są robione z głównego projektu `frontend/` (EAS). Natywne pliki iOS znajdują się w `frontend/ios/` i zawierają konfigurację CallKit/VoIP.
 
 ## Nieśpójności do uporządkowania
 

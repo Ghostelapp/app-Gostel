@@ -2,23 +2,21 @@
 
 ## Dług techniczny
 
-### 1. Monolityczny backend
+### 1. Monolityczny backend — CZĘŚCIOWO ROZWIĄZANY
 
-- `backend/server.py` zawiera wszystko: modele, endpointy, logikę biznesową, WebSocket, push.
-- **Koszt:** Wysoki. Każda zmiana wymaga analizy dużego pliku.
-- **Plan:** Podzielić na:
+- `backend/server.py` został podzielony na `backend/app/`:
   - `routes/` — endpointy pogrupowane per domena
   - `services/` — logika biznesowa
-  - `models/` — Pydantic models
-  - `repositories/` — dostęp do MongoDB
-  - `middleware/` — auth, rate limiting, CORS
-  - `core/` — konfiguracja, logging
+  - `models.py` — modele Pydantic
+  - `core/` — konfiguracja, database, utils, auth
+- **Pozostałość:** W `server.py` nadal znajdują się duplikaty helperów i modeli, które powinny być usunięte po pełnym przejściu na importy z `app/`.
+- **Plan:** Oczyszczenie `server.py` z nieużywanych definicji.
 
-### 2. Duplikacja kodu iOS
+### 2. Duplikacja kodu iOS — ROZWIĄZANE
 
-- `IOS/GhostelIOS/` vs `frontend/` — duplikacja screens i src.
-- **Koszt:** Średni. Każda zmiana w UI może wymagać synchronizacji.
-- **Plan:** Zintegrować natywne pliki iOS z głównym frontendem lub usunąć jeśli nieużywane.
+- `IOS/GhostelIOS/` został usunięty.
+- Buildy iOS są robione z głównego projektu `frontend/`.
+- **Status:** rozwiązane
 
 ### 3. Brak modularnego zarządzania błędami
 
@@ -38,11 +36,11 @@
 - **Koszt:** Niski/średni.
 - **Plan:** Dodać więcej unit testów z mockami.
 
-### 6. Frontend package.json vs app.json wersja
+### 6. Frontend package.json vs app.json wersja — ROZWIĄZANE
 
-- Niespójność wersji.
-- **Koszt:** Niski.
-- **Plan:** Ujednolicić i ewentualnie zautomatyzować bumpowanie.
+- Wersje zsynchronizowane do `1.4.54`.
+- `app.json`: iOS build 66, Android versionCode 61.
+- **Status:** rozwiązane
 
 ### 7. Brak CI/CD
 

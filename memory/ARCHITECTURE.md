@@ -25,7 +25,7 @@
         ┌─────▼─────┐ ┌────▼────┐ ┌────▼─────┐
         │  FastAPI  │ │ MongoDB │ │   S3     │
         │  backend  │ │         │ │ uploads  │
-        │  server.py│ │         │ │          │
+        │  app/     │ │         │ │          │
         └─────┬─────┘ └─────────┘ └──────────┘
               │
         ┌─────▼──────────────────────┐
@@ -39,13 +39,36 @@ Jeden plik `backend/server.py` (~6k linii, 171 funkcji, 29 klas Pydantic + WSMan
 
 ### Główne komponenty
 
-- **FastAPI app** + `APIRouter(prefix="/api")`
+- **FastAPI app** + `APIRouter(prefix="/api")` w `backend/server.py`
 - **MongoDB** via `AsyncIOMotorClient`
 - **Auth**: JWT access tokens, refresh sessions, TOTP 2FA, bcrypt
 - **WebSocket Manager**: `/api/ws` — realtime messages, presence, call signaling
 - **Push**: FCM (Android), APNs VoIP (iOS)
 - **Uploads**: S3 pre-signed URLs
 - **Admin**: stats, users, health, restart
+
+### Struktura modułowa backend (`backend/app/`)
+
+```
+backend/app/
+├── core/           # konfiguracja, baza danych, utils, auth
+├── models.py       # modele Pydantic
+├── services/       # logika biznesowa (push, calls, websocket, users, admin)
+└── routes/         # endpointy FastAPI (auth, users, contacts, conversations,
+                    #  admin, uploads, push, support, root)
+```
+
+- `app.core.config` — stałe i konfiguracja środowiskowa
+- `app.core.database` — klient MongoDB i referencja `db`
+- `app.core.utils` — helpery ogólne (`now_utc`, `api_error`, `enforce_rate_limit`)
+- `app.core.auth` — JWT, bcrypt, sesje, `get_current_user`, `require_admin`
+- `app.services.push` — FCM/APNs, rejestracja tokenów, wysyłka powiadomień
+- `app.services.calls` — WebRTC, ICE/TURN, sygnalizacja połączeń
+- `app.services.websocket` — `WSManager`, `/api/ws`, `/api/ws-ticket`
+- `app.services.users` — użytkownicy, kontakty, blokowanie
+- `app.services.admin` — helpery panelu administracyjnego
+- `app.services.conversations` — konwersacje i wiadomości
+- `app.routes.*` — grupy tras FastAPI podłączane w `server.py`
 
 ### Pliki pomocnicze backend
 

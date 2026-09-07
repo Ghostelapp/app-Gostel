@@ -1,6 +1,6 @@
 # API.md
 
-## Endpointy backendu (96 total)
+## Endpointy backendu (94 tras API + WebSocket `/ws`)
 
 ### Auth
 

@@ -8,28 +8,27 @@ Brak krytycznych problemów bezpieczeństwa wykrytych podczas audytu.
 
 ### 🟠 HIGH
 
-#### 1. Niespójność wersji frontend
+#### 1. Niespójność wersji frontend — NAPRAWIONE
 
-- `frontend/package.json`: `1.4.53`
-- `frontend/app.json`: `1.4.54`
-- **Wpływ:** Może prowadzić do pomyłek przy buildach i wersjonowaniu.
-- **Rozwiązanie:** Ujednolicić wersję do `1.4.54` (lub nowszej).
-- **Status:** do naprawy
+- `frontend/package.json`: `1.4.54`
+- `frontend/app.json`: `1.4.54` (iOS build 66, Android versionCode 61)
+- **Status:** naprawione
 
-#### 2. Duplikacja projektu iOS
+#### 2. Duplikacja projektu iOS — USUNIĘTE
 
-- `IOS/GhostelIOS/` zawiera osobny projekt iOS, który jest subsetem `frontend/`.
-- Brak 4 nowszych ekranów ustawień.
-- **Wpływ:** Ryzyko, że buildy iOS używają starszego kodu. Trudność w utrzymaniu dwóch kopii.
-- **Rozwiązanie:** Zdecydować czy IOS/GhostelIOS jest nadal potrzebny, czy można go usunąć/zintegrować.
-- **Status:** do zweryfikowania
+- `IOS/GhostelIOS/` został usunięty.
+- Buildy iOS są robione z głównego projektu `frontend/`.
+- **Status:** rozwiązane
 
-#### 3. Backend jako monolit
+#### 3. Backend jako monolit — ZMODULARYZOWANY
 
-- `backend/server.py` ma ~6k linii, 171 funkcji.
-- **Wpływ:** Trudny w utrzymaniu, testowaniu i debugowaniu. Wysokie ryzyko regresji przy zmianach.
-- **Rozwiązanie:** Podzielić na moduły (routes, services, models).
-- **Status:** do zaplanowania
+- `backend/server.py` został podzielony na `backend/app/`:
+  - `core/` — config, database, utils, auth
+  - `models.py` — modele Pydantic
+  - `services/` — push, calls, websocket, users, conversations, admin
+  - `routes/` — auth, users, contacts, conversations, admin, uploads, push, support, root
+- Wszystkie 94 trasy API są rejestrowane przez `include_router`.
+- **Status:** rozwiązane (pozostało uporządkowanie duplikatów w server.py)
 
 ### 🟡 MEDIUM
 
@@ -43,7 +42,7 @@ Brak krytycznych problemów bezpieczeństwa wykrytych podczas audytu.
 #### 5. Brak `frontend/ios/`
 
 - Główny frontend nie ma katalogu `ios/`, co może utrudniać lokalne debugowanie iOS.
-- **Rozwiązanie:** Wygenerować prebuild iOS lub używać `IOS/GhostelIOS/`.
+- **Rozwiązanie:** Wygenerować prebuild iOS (`npx expo prebuild --platform ios`).
 - **Status:** do zweryfikowania
 
 #### 6. Testy backendu mogą zawierać hardcoded credentials
@@ -55,20 +54,17 @@ Brak krytycznych problemów bezpieczeństwa wykrytych podczas audytu.
 
 ### ⚪ LOW
 
-#### 7. Wiele plików testowych w root
+#### 7. Wiele plików testowych w root — CZĘŚCIOWO ROZWIĄZANE
 
-- `backend_test_*.py` w root projektu.
-- **Rozwiązanie:** Przenieść do `backend/tests/` lub `scripts/`.
-- **Status:** do posprzątania
+- Pliki smoke-test przeniesiono do `scripts/smoke-tests/`.
+- **Status:** częściowo rozwiązane
 
-#### 8. Stare dokumentacje w root
+#### 8. Stare dokumentacje w root — CZĘŚCIOWO ROZWIĄZANE
 
-- `VPS-DEPLOY-INSTRUCTIONS.md`, `QUICK-VPS-COMMANDS.txt`, `DEPLOY_PACKAGE_v1.4.54/`
-- **Rozwiązanie:** Przenieść do `docs/` lub `memory/`.
-- **Status:** do posprzątania
+- Dokumentacje deploy przeniesiono do `docs/deployment/`.
+- **Status:** częściowo rozwiązane
 
-#### 9. `IOS/GhostelIOS/package.json` wersja 1.4.0
+#### 9. `IOS/GhostelIOS/package.json` wersja 1.4.0 — USUNIĘTE
 
-- Starsza wersja niż frontend.
-- **Rozwiązanie:** Zaktualizować lub usunąć projekt.
-- **Status:** do zweryfikowania
+- Projekt `IOS/GhostelIOS/` został usunięty.
+- **Status:** rozwiązane
