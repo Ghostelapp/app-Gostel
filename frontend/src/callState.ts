@@ -92,14 +92,14 @@ export async function getActiveCallState(): Promise<LocalCallState | null> {
     const state = JSON.parse(raw) as LocalCallState;
     if (!state?.activeCallId || !state?.lastSyncedAt) return null;
     if (isTerminalCallStatus(state.callStatus)) {
-      await clearActiveCallState(state.activeCallId);
+      await AsyncStorage.removeItem(ACTIVE_CALL_STATE_KEY);
       return null;
     }
     const staleStateMs = ['INCOMING_RINGING', 'OUTGOING_RINGING'].includes(state.callStatus)
       ? RINGING_STALE_STATE_MS
       : ACTIVE_STALE_STATE_MS;
     if (Date.now() - Number(state.lastSyncedAt) > staleStateMs) {
-      await clearActiveCallState(state.activeCallId);
+      await AsyncStorage.removeItem(ACTIVE_CALL_STATE_KEY);
       return null;
     }
     return state;
@@ -114,8 +114,14 @@ export async function clearActiveCallState(callId?: string): Promise<void> {
     await AsyncStorage.removeItem(ACTIVE_CALL_STATE_KEY);
     return;
   }
-  const current = await getActiveCallState();
-  if (!current || current.activeCallId === callId) {
+  const raw = await AsyncStorage.getItem(ACTIVE_CALL_STATE_KEY);
+  if (!raw) return;
+  try {
+    const current = JSON.parse(raw);
+    if (!current?.activeCallId || current.activeCallId === callId) {
+      await AsyncStorage.removeItem(ACTIVE_CALL_STATE_KEY);
+    }
+  } catch {
     await AsyncStorage.removeItem(ACTIVE_CALL_STATE_KEY);
   }
 }

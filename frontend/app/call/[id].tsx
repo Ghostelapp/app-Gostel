@@ -24,17 +24,17 @@ import { useAuth } from '../../src/auth';
 import { api, formatApiErrorDetail } from '../../src/api';
 import { useWebSocket } from '../../src/ws';
 import { theme } from '../../src/theme';
+import { waitForWebRtcAudioSession } from '../../src/webrtcAudioSession';
 import { getInCallManager } from '../../src/incall';
 import {
   clearPendingAnsweredCall,
   markCallActive,
+  startOutgoingCallNative,
+  setNativeCallMuted,
+  setNativeCallSpeaker,
   endIncomingCallNative,
   subscribeToCallKeepActions,
 } from '../../src/callkeep';
-import {
-  activateWebRtcAudioSession,
-  deactivateWebRtcAudioSession,
-} from '../../src/webrtcAudioSession';
 import {
   cancelFullScreenIncomingCallNotification,
   startActiveCallService,
@@ -47,7 +47,7 @@ import {
   syncConversationKeyTrust,
   type E2EECallSignalPayload,
 } from '../../src/e2ee';
-import { logCallEvent } from '../../src/callState';
+import { logCallEvent, cacheTerminatedCallId, clearActiveCallState } from '../../src/callState';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -223,7 +223,7 @@ export default function CallScreen() {
   );
   const [status, setStatus] = useState<CallStatus>('init');
   const [muted, setMuted] = useState(false);
-  const [speakerOn, setSpeakerOn] = useState(true);
+  const [speakerOn, setSpeakerOn] = useState(Platform.OS === 'web');
   const [elapsedSec, setElapsedSec] = useState(0);
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [remoteStreamUrl, setRemoteStreamUrl] = useState<string | null>(null);
@@ -231,6 +231,7 @@ export default function CallScreen() {
   const [debugLine, setDebugLine] = useState<string>('');
 
   // ---------- refs ----------
+  const mutedRef = useRef(false);
   const pcRef = useRef<any>(null);
   const localStreamRef = useRef<any>(null);
   const remoteStreamRef = useRef<any>(null);
@@ -462,7 +463,8 @@ export default function CallScreen() {
 
   const startNativeCallAudio = useCallback(
     (forceSpeaker = true) => {
-      if (Platform.OS === 'web') return;
+      // CallKit alone owns AVAudioSession on iOS; InCallManager would reactivate it.
+      if (Platform.OS !== 'android') return;
       try {
         if (!inCallStartedRef.current) {
           InCall.start({ media: 'audio', auto: true });
@@ -471,10 +473,6 @@ export default function CallScreen() {
         }
         InCall.setForceSpeakerphoneOn(forceSpeaker);
         InCall.setSpeakerphoneOn(forceSpeaker);
-        // InCallManager rewrites AVAudioSession while routing audio. Notify
-        // react-native-webrtc after that rewrite so WebRTC binds to the final
-        // active iOS audio session.
-        activateWebRtcAudioSession();
       } catch {
         /* native audio routing is best-effort */
       }
@@ -603,7 +601,7 @@ export default function CallScreen() {
       } catch {
         /* ignore */
       }
-      deactivateWebRtcAudioSession();
+
     }
     try {
       Vibration.cancel();
@@ -627,7 +625,7 @@ export default function CallScreen() {
     async (reason?: string) => {
       if (endedRef.current) return;
       endedRef.current = true;
-      await reportCallDiag('end_call', { end_reason: reason || '' });
+      void reportCallDiag('end_call', { end_reason: reason || '' });
       setStatus('ended');
       if (reason) setErrMsg(reason);
 
@@ -640,10 +638,12 @@ export default function CallScreen() {
         /* ignore */
       }
 
-      // notify backend (best effort)
-      try {
-        await api.post(`/calls/${id}/end`);
-      } catch {}
+      // Stop microphone/audio immediately, even when signaling is offline.
+      await cleanup();
+      void cacheTerminatedCallId(id, 'ENDED').catch(() => {});
+      void clearActiveCallState(id).catch(() => {});
+      void clearPendingAnsweredCall(id).catch(() => {});
+      void api.post(`/calls/${id}/end`, undefined, { timeout: 5000 }).catch(() => {});
 
       // notify peer over WS (best effort)
       if (peerIdRef.current) {
@@ -657,7 +657,6 @@ export default function CallScreen() {
         } catch {}
       }
 
-      await cleanup();
       setTimeout(returnToChat, 800);
     },
     [id, cleanup, conversationIdParam, reportCallDiag, returnToChat]
@@ -667,7 +666,7 @@ export default function CallScreen() {
     async (reason?: string) => {
       if (endedRef.current) return;
       endedRef.current = true;
-      await reportCallDiag('peer_end', { end_reason: reason || '' });
+      void reportCallDiag('peer_end', { end_reason: reason || '' });
       setStatus('ended');
       if (reason) setErrMsg(reason);
 
@@ -678,6 +677,9 @@ export default function CallScreen() {
       }
 
       await cleanup();
+      void cacheTerminatedCallId(id, 'ENDED').catch(() => {});
+      void clearActiveCallState(id).catch(() => {});
+      void clearPendingAnsweredCall(id).catch(() => {});
       logCallEvent(isCaller ? 'CALLER_CLEANUP_AFTER_DECLINE' : 'CALLEE_CLEANUP_AFTER_DECLINE', {
         callId: id,
         reason: reason || '',
@@ -728,7 +730,7 @@ export default function CallScreen() {
       const { getWebRTC } = require('../../src/webrtc');
       const WebRTC = getWebRTC();
       if (!WebRTC) {
-        setErrMsg('Native WebRTC not loaded. Requires APK build.');
+        setErrMsg('Native WebRTC not loaded. Install a native Ghostel build.');
         return null;
       }
       const stream = await WebRTC.mediaDevices.getUserMedia({ audio: audioConstraints });
@@ -1239,7 +1241,7 @@ export default function CallScreen() {
   // ---------------------------------------------------------------------------
   const onWs = useCallback(
     async (msg: any) => {
-      if (!msg || !msg.type) return;
+      if (endedRef.current || !msg || !msg.type) return;
       // Only process messages for THIS call
       if (msg.call_id && msg.call_id !== id) {
         // not for us, but call:incoming has no call_id check — skip silently
@@ -1326,12 +1328,7 @@ export default function CallScreen() {
         if (from && !peerIdRef.current) peerIdRef.current = from;
         if (!pc) return; // PC not ready — caller will give up on no-answer timeout
         
-        // Cancel timeout - we got the offer, signaling is working
-        if (timeoutTimerRef.current) {
-          clearTimeout(timeoutTimerRef.current);
-          timeoutTimerRef.current = null;
-        }
-        
+        // Keep the connection deadline until ICE actually connects.
         try {
           const signal = await decryptPeerSignal(msg);
           if (!signal?.sdp) throw new Error('Encrypted offer unavailable');
@@ -1535,7 +1532,13 @@ export default function CallScreen() {
 
   useEffect(() => {
     if (isCaller || !id) return;
-    api.post(`/calls/${id}/accept`).catch(() => {});
+    api.post(`/calls/${id}/accept`, undefined, { timeout: 5000 }).then(({ data }) => {
+      if (data?.accepted === false) void closeCallFromPeer('Call no longer available');
+    }).catch((error) => {
+      if ([403, 404, 409].includes(error?.response?.status)) void closeCallFromPeer('Call no longer available');
+    });
+    // The acceptance attempt belongs to this call, not to changing diagnostics callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, isCaller]);
 
   useEffect(() => {
@@ -1706,8 +1709,15 @@ export default function CallScreen() {
 
   useEffect(() => {
     if (Platform.OS !== 'ios') return;
-    return subscribeToCallKeepActions(({ callId, action }) => {
-      if (callId === id && action === 'end') {
+    return subscribeToCallKeepActions(({ callId, action, muted: nativeMuted, speaker: nativeSpeaker }) => {
+      if (callId.toLowerCase() === id.toLowerCase() && action === 'audioRoute') setSpeakerOn(Boolean(nativeSpeaker));
+      if (callId.toLowerCase() === id.toLowerCase() && action === 'mute') {
+        const value = Boolean(nativeMuted);
+        mutedRef.current = value;
+        setMuted(value);
+        localStreamRef.current?.getAudioTracks?.().forEach((track: any) => { track.enabled = !value; });
+      }
+      if (callId.toLowerCase() === id.toLowerCase() && action === 'end') {
         closeCallFromPeer('Call ended');
       }
     });
@@ -1720,7 +1730,7 @@ export default function CallScreen() {
     let cancelled = false;
 
     const sendReadyWithRetry = async (attempt = 0) => {
-      if (endedRef.current || cancelled) return;
+      if (endedRef.current || cancelled || connectedRef.current) return;
       const target = peerIdRef.current; // for callee = caller_id from URL
       if (target) {
         const createdAt = new Date().toISOString();
@@ -1820,9 +1830,23 @@ export default function CallScreen() {
       reportCallDiag('e2ee_ready').catch(() => {});
       if (cancelled || endedRef.current) return;
 
-      // 2b. Native audio session must be active before microphone/WebRTC setup,
-      // especially on iOS when the call was answered from CallKit.
-      startNativeCallAudio(true);
+      if (isCaller && Platform.OS === 'ios') {
+        const started = await startOutgoingCallNative({
+          callId: id, conversationId: conversationIdParam || '',
+          callerId: peerIdRef.current || '', callerName: callerNameRef.current,
+        });
+        if (!started) { void endCall('System call unavailable'); return; }
+        if (cancelled || endedRef.current) { endIncomingCallNative(id); return; }
+      }
+
+      // CallKit must actually activate audio before iOS opens the microphone.
+      if (Platform.OS === 'ios') {
+        const audioReady = await waitForWebRtcAudioSession();
+        if (cancelled || endedRef.current) return;
+        if (!audioReady) { void endCall('Audio session unavailable'); return; }
+      }
+      // Android owns its audio mode through InCallManager.
+      startNativeCallAudio(Platform.OS === 'web');
 
       // 3. Get microphone access
       const stream = await ensureMedia();
@@ -1832,7 +1856,11 @@ export default function CallScreen() {
         setTimeout(() => endCall('No microphone'), 1500);
         return;
       }
-      if (cancelled || endedRef.current) return;
+      if (cancelled || endedRef.current) {
+        stream.getTracks?.().forEach((track: any) => track.stop());
+        return;
+      }
+      stream.getAudioTracks?.().forEach((track: any) => { track.enabled = !mutedRef.current; });
       localStreamRef.current = stream;
       reportCallDiag('local_media_ready').catch(() => {});
 
@@ -1903,26 +1931,28 @@ export default function CallScreen() {
         }
       }
 
-      // 6. Safety timeout: must never stay in ringing/connecting forever.
-      timeoutTimerRef.current = setTimeout(() => {
-        if (endedRef.current || connectedRef.current) return;
-        logCallEvent(isCaller ? 'CALLER_CONNECTING_TIMEOUT_ENFORCED' : 'CALLEE_CONNECTING_TIMEOUT_ENFORCED', {
-          callId: id,
-          status: statusRef.current,
-          peerReady: peerReadyRef.current,
-          offerSent: offerSentRef.current,
-          answerSent: answerSentRef.current,
-        });
-        endCall(isCaller ? 'No answer' : 'Call setup failed');
-      }, CALL_TIMEOUT_MS);
-
       // 7. Callee: notify caller we're ready (will retry)
       if (!isCaller) {
         sendReadyWithRetry().catch(() => {});
       }
     };
 
-    bootstrap();
+    // 6. Safety timeout: must never stay in ringing/connecting forever.
+    timeoutTimerRef.current = setTimeout(() => {
+      if (endedRef.current || connectedRef.current) return;
+      logCallEvent(isCaller ? 'CALLER_CONNECTING_TIMEOUT_ENFORCED' : 'CALLEE_CONNECTING_TIMEOUT_ENFORCED', {
+        callId: id,
+        status: statusRef.current,
+        peerReady: peerReadyRef.current,
+        offerSent: offerSentRef.current,
+        answerSent: answerSentRef.current,
+      });
+      endCall(isCaller ? 'No answer' : 'Call setup failed');
+    }, CALL_TIMEOUT_MS);
+
+    bootstrap().catch(() => {
+      if (!cancelled && !endedRef.current) void endCall('Call setup failed');
+    });
 
     return () => {
       cancelled = true;
@@ -1937,11 +1967,13 @@ export default function CallScreen() {
   const toggleMute = () => {
     setMuted((m) => {
       const next = !m;
+      mutedRef.current = next;
       try {
         localStreamRef.current?.getAudioTracks?.().forEach((t: any) => {
           t.enabled = !next;
         });
-        if (Platform.OS !== 'web') InCall.setMicrophoneMute(next);
+        if (Platform.OS === 'ios') setNativeCallMuted(id, next);
+        else if (Platform.OS === 'android') InCall.setMicrophoneMute(next);
       } catch {}
       return next;
     });
@@ -1951,7 +1983,9 @@ export default function CallScreen() {
     setSpeakerOn((s) => {
       const next = !s;
       try {
-        if (Platform.OS !== 'web') {
+        if (Platform.OS === 'ios') {
+          void setNativeCallSpeaker(id, next).catch(() => setSpeakerOn(s));
+        } else if (Platform.OS === 'android') {
           InCall.setForceSpeakerphoneOn(next);
           InCall.setSpeakerphoneOn(next);
         }

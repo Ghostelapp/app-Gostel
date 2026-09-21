@@ -67,6 +67,11 @@
       "env": {
         "EXPO_PUBLIC_BACKEND_URL": "https://api.ghostel.app"
       }
+    },
+    "ios-testflight": {
+      "extends": "ios-production-firebase",
+      "distribution": "store",
+      "autoIncrement": true
     }
   },
   "submit": {
@@ -76,6 +81,11 @@
       }
     },
     "ios-production-firebase": {
+      "ios": {
+        "ascAppId": "6781015398"
+      }
+    },
+    "ios-testflight": {
       "ios": {
         "ascAppId": "6781015398"
       }

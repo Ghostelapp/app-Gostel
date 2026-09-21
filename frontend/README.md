@@ -39,3 +39,7 @@ yarn lint
 npx expo start
 npx expo export --platform web --output-dir dist-local --clear --dev
 ```
+
+## iOS / TestFlight
+
+Instrukcja budowania i testowania: [IOS.md](./IOS.md).

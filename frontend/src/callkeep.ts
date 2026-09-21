@@ -21,13 +21,23 @@ import {
 let initialized = false;
 let setupPromise: Promise<boolean> | null = null;
 const activeCalls = new Map<string, IncomingCallInfo>();
+const outgoingCalls = new Set<string>();
 const displayedCalls = new Set<string>();
 const answeredCalls = new Set<string>();
 const appHandledAnswers = new Set<string>();
 const suppressedEndEvents = new Set<string>();
 const routedAnsweredCalls = new Map<string, number>();
 const actionListeners = new Set<(action: CallKeepAction) => void>();
-const audioActivationAnswerRecovery = new Set<string>();
+let nativeActionQueue: Promise<void> = Promise.resolve();
+const handledAnswers = new Set<string>();
+const handledEnds = new Set<string>();
+
+function enqueueNativeAction(action: () => Promise<void>): Promise<void> {
+  nativeActionQueue = nativeActionQueue.then(action).catch((error) => {
+    console.warn("[callkeep] native action failed", error);
+  });
+  return nativeActionQueue;
+}
 
 const ACTIVE_CALL_PREFIX = 'ghostel_active_call_v1:';
 const PENDING_ANSWERED_CALL_KEY = 'ghostel_pending_answered_call_v1';
@@ -35,16 +45,11 @@ const PENDING_ANSWERED_CALL_KEY = 'ghostel_pending_answered_call_v1';
 type RouterLike = { push: (href: any) => void; replace?: (href: any) => void };
 let router: RouterLike | null = null;
 let wsSend: ((msg: any) => void) | null = null;
-let lastBecameActiveAt = AppState.currentState === 'active' ? Date.now() : 0;
 
-const ACTIVE_TRANSITION_END_GUARD_MS = 12_000;
-const INACTIVE_END_DEFER_MS = 2_500;
 const ANSWER_ROUTE_RETRY_MS = [100, 250, 500, 1000, 2000, 4000, 8000, 12000, 20000, 30000];
 const ANSWER_ROUTE_DEDUPE_MS = 750;
 const ANSWER_ROUTE_MAX_AGE_MS = 90_000;
 const SUPPRESSED_NATIVE_END_TTL_MS = 30_000;
-
-const ACTIVE_BACKEND_STATUSES = new Set(['CONNECTING', 'ACTIVE', 'RECONNECTING']);
 
 export type IncomingCallInfo = {
   callId: string;
@@ -52,16 +57,20 @@ export type IncomingCallInfo = {
   callerId: string;
   callerName: string;
   callerAvatar?: string | null;
+  outgoing?: boolean;
 };
 
 export type CallKeepAction = {
   callId: string;
-  action: 'answer' | 'end';
+  action: 'answer' | 'end' | 'mute' | 'audioRoute';
+  speaker?: boolean;
+  muted?: boolean;
 };
 
 const callKeepOptions = {
   ios: {
     appName: 'ghostel.app',
+    handleType: 'generic',
     supportsVideo: false,
     includesCallsInRecents: false,
     maximumCallGroups: '1',
@@ -113,10 +122,6 @@ function emitCallKeepAction(action: CallKeepAction): void {
       /* one consumer must not block the others */
     }
   }
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeCallId(callId: string): string {
@@ -203,7 +208,7 @@ async function getIncomingCallInfoWithFallback(
 
   try {
     const { api } = require('./api');
-    const { data } = await api.get(`/calls/${callUUID}/status`);
+    const { data } = await api.get(`/calls/${callUUID}/status`, { timeout: 3000 });
     const callId = String(data?.call_id || data?.id || callUUID);
     const conversationId = String(data?.conversation_id || data?.conversationId || '');
     const callerId = String(data?.caller_id || data?.callerId || '');
@@ -244,6 +249,8 @@ function extractCallKeepUuid(event: any): string {
 
 async function replayCallKeepEvent(event: any): Promise<void> {
   const name = String(event?.name || event?.type || '');
+  if (name.includes('DidActivateAudioSession')) { activateWebRtcAudioSession(); return; }
+  if (name.includes('DidDeactivateAudioSession')) { deactivateWebRtcAudioSession(); return; }
   const callUUID = extractCallKeepUuid(event);
   if (name.includes('DidDisplayIncomingCall')) {
     await hydrateFromCallKeepDisplay(event?.data || event);
@@ -257,28 +264,11 @@ async function replayCallKeepEvent(event: any): Promise<void> {
   }
 }
 
-async function recoverAnswerFromAudioActivation(): Promise<void> {
-  if (answeredCalls.size > 0) return;
-  const callId = Array.from(displayedCalls)[0];
-  if (!callId || audioActivationAnswerRecovery.has(callId)) return;
-  const info = await getIncomingCallInfo(callId);
-  if (!info) return;
-  audioActivationAnswerRecovery.add(callId);
-  logCallEvent('IOS_CALLKIT_ANSWER_RECOVERED_FROM_AUDIO_SESSION', {
-    callId,
-    appState: AppState.currentState,
-  });
-  try {
-    await handleAnswerCall(callId);
-  } finally {
-    setTimeout(() => audioActivationAnswerRecovery.delete(callId), 5_000);
-  }
-}
-
 async function forgetIncomingCall(callId: string): Promise<void> {
   const key = normalizeCallId(callId);
   if (!key) return;
   activeCalls.delete(key);
+  outgoingCalls.delete(key);
   displayedCalls.delete(key);
   await AsyncStorage.removeItem(activeCallKey(callId));
 }
@@ -390,7 +380,8 @@ async function routeOrDeferAnsweredCall(info: IncomingCallInfo): Promise<void> {
   await saveAcceptedCallState(info);
   await storePendingAnsweredCall(info);
   requestAppForegroundFromCallKeep();
-  const canRouteNow = router && AppState.currentState === 'active';
+  // Mount the media owner while backgrounded; answering must not wait for unlock.
+  const canRouteNow = !!router;
   const routed = canRouteNow ? navigateToAnsweredCall(href, info.callId, true) : false;
   reportCallKeepDiag(info, routed ? 'callkit_answer_route_attempted' : 'callkit_answer_route_deferred', {
     app_state: AppState.currentState,
@@ -433,8 +424,11 @@ async function flushPendingAnsweredCall(): Promise<void> {
     await AsyncStorage.removeItem(PENDING_ANSWERED_CALL_KEY);
     return;
   }
-  if (AppState.currentState !== 'active') return;
   if (callId) {
+    if (handledEnds.has(normalizeCallId(callId)) || await getCachedTerminatedCallStatus(callId)) {
+      await clearPendingAnsweredCall(callId);
+      return;
+    }
     const backendStatus = await getBackendCallStatus(callId);
     const mappedStatus = mapBackendCallStatus(backendStatus?.status);
     if (
@@ -463,7 +457,8 @@ async function flushPendingAnsweredCall(): Promise<void> {
 
 async function handleAnswerCall(callUUID: string): Promise<void> {
   const key = normalizeCallId(callUUID);
-  if (!key) return;
+  if (!key || handledAnswers.has(key) || handledEnds.has(key)) return;
+  handledAnswers.add(key);
   logCallEvent('IOS_CALLKIT_ANSWER_ACTION_START', {
     callId: callUUID,
     appState: AppState.currentState,
@@ -509,13 +504,6 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   logCallEvent('IOS_WEBRTC_START_AFTER_CALLKIT_ANSWER', {
     callId: info.callId,
   });
-  logCallEvent('IOS_AUDIO_SESSION_ACTIVATION_START', {
-    callId: info.callId,
-  });
-  activateWebRtcAudioSession();
-  logCallEvent('IOS_AUDIO_SESSION_ACTIVATED', {
-    callId: info.callId,
-  });
   emitCallKeepAction({ callId: info.callId, action: 'answer' });
 
   // answerIncomingCall() also emits answerCall. The in-app answer button owns
@@ -546,15 +534,16 @@ async function handleAnswerCall(callUUID: string): Promise<void> {
   }
   try {
     const { api } = require('./api');
-    api.post(`/calls/${info.callId}/accept`)
+    api.post(`/calls/${info.callId}/accept`, undefined, { timeout: 5000 })
       .then((response: any) => {
         logCallEvent('IOS_CALLKIT_ACCEPT_SENT_TO_BACKEND', {
           callId: info.callId,
           status: String(response?.data?.status || response?.data?.accepted || ''),
         });
         const status = mapBackendCallStatus(response?.data?.status);
-        if (isTerminalCallStatus(status)) {
-          cacheTerminatedCallId(info.callId, status).catch(() => {});
+        if (response?.data?.accepted === false || isTerminalCallStatus(status)) {
+          cacheTerminatedCallId(info.callId, isTerminalCallStatus(status) ? status : 'ENDED').catch(() => {});
+          emitCallKeepAction({ callId: info.callId, action: 'end' });
           endIncomingCallNative(info.callId);
         }
       })
@@ -584,7 +573,7 @@ async function consumeSuppressedNativeEnd(callId: string): Promise<boolean> {
 async function getBackendCallStatus(callId: string): Promise<any | null> {
   try {
     const { api } = require('./api');
-    const { data } = await api.get(`/calls/${callId}/status`);
+    const { data } = await api.get(`/calls/${callId}/status`, { timeout: 3000 });
     return data || null;
   } catch {
     return null;
@@ -678,79 +667,23 @@ async function handleEndCall(
     return;
   }
 
-  const info = await getIncomingCallInfoWithFallback(callUUID, 'end');
+  // UUID and local state are sufficient to terminate; never wait for an HTTP lookup.
+  const info = await getIncomingCallInfo(callUUID);
   if (info) {
     logCallEvent('IOS_CALLKIT_END_CALL_ID_FOUND', {
       callId: info.callId,
       nativeUuid: callUUID,
     });
   }
-  const wasAnswered = answeredCalls.has(key);
+  // A native end action is an explicit user intent, even immediately after unlock.
+  const wasAnswered = answeredCalls.has(key) || outgoingCalls.has(key) || info?.outgoing === true ||
+    (activeStateAtEnd?.activeCallId === callUUID &&
+      ['CONNECTING', 'ACTIVE', 'RECONNECTING'].includes(activeStateAtEnd.callStatus));
   const terminalStatus = wasAnswered ? 'ENDED' : 'DECLINED';
-  const backendStatus = info ? await getBackendCallStatus(info.callId) : null;
-  const mappedBackendStatus = mapBackendCallStatus(backendStatus?.status);
-  const backendIsActive =
-    !!backendStatus &&
-    !backendStatus?.ended_at &&
-    !backendStatus?.endedAt &&
-    ACTIVE_BACKEND_STATUSES.has(mappedBackendStatus);
-
-  if (
-    info &&
-    !wasAnswered &&
-    !fromInitialEvent &&
-    AppState.currentState !== 'active'
-  ) {
-    await wait(INACTIVE_END_DEFER_MS);
-    if (String(AppState.currentState) === 'active') {
-      reportCallKeepDiag(info, 'callkeep_end_honored_after_unlock_deferred', {
-        deferred_ms: INACTIVE_END_DEFER_MS,
-        native_displayed: displayedCalls.has(key),
-        answered: wasAnswered,
-      });
-    }
-  }
-
-  if (info && !wasAnswered && !fromInitialEvent && backendIsActive) {
-    reportCallKeepDiag(info, 'callkeep_end_ignored_backend_active_after_accept', {
-      backend_status: String(backendStatus?.status || ''),
-      backend_direction: String(backendStatus?.direction || ''),
-      active_transition_age_ms: Date.now() - lastBecameActiveAt,
-      native_displayed: displayedCalls.has(key),
-    });
-    await forgetIncomingCall(info.callId);
-    await clearPendingIncomingCall(info.callId).catch(() => {});
-    if (String(backendStatus?.direction || '') === 'incoming') {
-      await clearActiveCallState(info.callId).catch(() => {});
-    }
-    return;
-  }
-
-  // During iOS lockscreen -> passcode -> app transitions CallKit can emit a
-  // live end action while the server-side call is still ringing. Treating it
-  // as a user decline is what made the caller receive call:reject immediately
-  // after the callee unlocked the phone. A real lockscreen decline arrives
-  // while the app is background/inactive; an initial queued action is also
-  // always honored.
-  const activeTransitionAge = Date.now() - lastBecameActiveAt;
-  const isTransientUnlockEnd =
-    !!info &&
-    !fromInitialEvent &&
-    AppState.currentState === 'active' &&
-    activeTransitionAge >= 0 &&
-    activeTransitionAge <= ACTIVE_TRANSITION_END_GUARD_MS;
-
-  if (info && isTransientUnlockEnd && wasAnswered) {
-    reportCallKeepDiag(info, 'callkeep_end_ignored_after_unlock', {
-      answered: wasAnswered,
-      active_transition_age_ms: activeTransitionAge,
-      native_displayed: displayedCalls.has(key),
-    });
-    await routeOrDeferAnsweredCall(info);
-    activateWebRtcAudioSession();
-    return;
-  }
-
+  if (handledEnds.has(key)) return;
+  handledEnds.add(key);
+  await clearPendingAnsweredCall(callUUID).catch(() => {});
+  emitCallKeepAction({ callId: callUUID, action: 'end' });
   answeredCalls.delete(key);
   appHandledAnswers.delete(key);
   routedAnsweredCalls.delete(key);
@@ -761,7 +694,7 @@ async function handleEndCall(
   if (!info) {
     try {
       const { api } = require('./api');
-      await api.post(`/calls/${callUUID}/decline`);
+      await api.post(`/calls/${callUUID}/${wasAnswered ? "end" : "decline"}`, undefined, { timeout: 5000 });
     } catch {
       /* backend may not know this UUID */
     }
@@ -770,11 +703,10 @@ async function handleEndCall(
   await clearPendingIncomingCall(info.callId).catch(() => {});
   await clearActiveCallState(info.callId).catch(() => {});
   await cacheTerminatedCallId(info.callId, terminalStatus).catch(() => {});
-  emitCallKeepAction({ callId: info.callId, action: 'end' });
   reportCallKeepDiag(info, 'callkeep_end_honored', {
     answered: wasAnswered,
     from_initial_event: fromInitialEvent,
-    active_transition_age_ms: activeTransitionAge,
+
   });
   logCallEvent('IOS_CALLKIT_END_ACTION_FULFILLED', {
     callId: info.callId,
@@ -794,12 +726,12 @@ async function handleEndCall(
   try {
     const { api } = require('./api');
     if (wasAnswered) {
-      await api.post(`/calls/${info.callId}/end`);
+      void api.post(`/calls/${info.callId}/end`, undefined, { timeout: 5000 }).catch(() => {});
       logCallEvent('IOS_END_SENT_TO_BACKEND', {
         callId: info.callId,
       });
     } else {
-      await api.post(`/calls/${info.callId}/decline`);
+      void api.post(`/calls/${info.callId}/decline`, undefined, { timeout: 5000 }).catch(() => {});
       logCallEvent('IOS_DECLINE_SENT_TO_BACKEND', {
         callId: info.callId,
       });
@@ -818,26 +750,19 @@ export async function setupCallKeep(): Promise<boolean> {
     try {
       const RNCallKeep = require('react-native-callkeep').default;
       await RNCallKeep.setup(callKeepOptions);
-      logCallEvent('IOS_CALLKIT_RINGTONE_CONFIG_CHECK', {
-        ringtoneSound: callKeepOptions.ios.ringtoneSound,
-      });
-      logCallEvent('IOS_CALLKIT_CUSTOM_RINGTONE_FOUND', {
-        ringtoneSound: callKeepOptions.ios.ringtoneSound,
-      });
-      logCallEvent('IOS_CALLKIT_SYSTEM_RINGTONE_USED', {
-        ringtoneSound: callKeepOptions.ios.ringtoneSound,
-      });
+      // No custom ringtone is configured; CallKit uses the system ringtone.
+      logCallEvent('IOS_CALLKIT_SYSTEM_RINGTONE_USED');
 
       RNCallKeep.addEventListener(
         'answerCall',
         ({ callUUID }: { callUUID: string }) => {
-          handleAnswerCall(callUUID).catch(() => {});
+          enqueueNativeAction(() => handleAnswerCall(callUUID));
         },
       );
       RNCallKeep.addEventListener(
         'endCall',
         ({ callUUID }: { callUUID: string }) => {
-          handleEndCall(callUUID).catch(() => {});
+          enqueueNativeAction(() => handleEndCall(callUUID));
         },
       );
       RNCallKeep.addEventListener('didDisplayIncomingCall', (event: any) => {
@@ -845,6 +770,19 @@ export async function setupCallKeep(): Promise<boolean> {
           callId: event?.callUUID || event?.payload?.call_id || '',
         });
         hydrateFromCallKeepDisplay(event).catch(() => {});
+      });
+      RNCallKeep.addEventListener('didPerformSetMutedCallAction', (event: { callUUID: string; muted: boolean }) => {
+        emitCallKeepAction({ callId: event.callUUID, action: 'mute', muted: event.muted });
+      });
+      RNCallKeep.addEventListener('didChangeAudioRoute', (event: { output: string; callUUID?: string }) => {
+        const ids = event.callUUID ? [event.callUUID] : [...activeCalls.keys()];
+        for (const callId of ids) emitCallKeepAction({ callId, action: 'audioRoute', speaker: event.output === 'Speaker' });
+      });
+      RNCallKeep.addEventListener('didResetProvider', () => {
+        for (const callId of activeCalls.keys()) {
+          enqueueNativeAction(() => handleEndCall(callId));
+        }
+        deactivateWebRtcAudioSession();
       });
       RNCallKeep.addEventListener('didActivateAudioSession', () => {
         logCallEvent('IOS_CALLKIT_DID_ACTIVATE_AUDIO_SESSION');
@@ -857,7 +795,7 @@ export async function setupCallKeep(): Promise<boolean> {
         } catch {
           logCallEvent('IOS_AUDIO_SESSION_ACTIVATED_FAILED');
         }
-        recoverAnswerFromAudioActivation().catch(() => {});
+
       });
       RNCallKeep.addEventListener('didDeactivateAudioSession', () => {
         logCallEvent('IOS_CALLKIT_DID_DEACTIVATE_AUDIO_SESSION');
@@ -865,13 +803,13 @@ export async function setupCallKeep(): Promise<boolean> {
       });
       RNCallKeep.addEventListener('didLoadWithEvents', (events: any[]) => {
         for (const event of Array.isArray(events) ? events : []) {
-          replayCallKeepEvent(event).catch(() => {});
+          enqueueNativeAction(() => replayCallKeepEvent(event));
         }
       });
 
       AppState.addEventListener('change', async (state) => {
         if (state !== 'active') return;
-        lastBecameActiveAt = Date.now();
+
         logCallEvent('APP_RESUME_CALL_SYNC_START');
         try {
           const activeState = await getActiveCallState();
@@ -898,7 +836,7 @@ export async function setupCallKeep(): Promise<boolean> {
           }
         } catch {}
         flushPendingAnsweredCall().catch(() => {});
-        if (answeredCalls.size > 0) activateWebRtcAudioSession();
+
       });
 
       initialized = true;
@@ -907,7 +845,7 @@ export async function setupCallKeep(): Promise<boolean> {
       try {
         const events = await RNCallKeep.getInitialEvents?.();
         for (const event of Array.isArray(events) ? events : []) {
-          await replayCallKeepEvent(event);
+          await enqueueNativeAction(() => replayCallKeepEvent(event));
         }
         RNCallKeep.clearInitialEvents?.();
       } catch {
@@ -982,7 +920,10 @@ export function endIncomingCallNative(callId: string): void {
     const RNCallKeep = require('react-native-callkeep').default;
     suppressedEndEvents.add(key);
     markSuppressedNativeEnd(callId).catch(() => {});
-    RNCallKeep.endCall(callId);
+    // Report termination; requesting an end transaction would emit a user action.
+    RNCallKeep.reportEndCallWithUUID(callId, 2);
+    handledEnds.add(key);
+    clearPendingAnsweredCall(callId).catch(() => {});
     forgetIncomingCall(callId).catch(() => {});
     answeredCalls.delete(key);
     appHandledAnswers.delete(key);
@@ -997,5 +938,39 @@ export function markCallActive(callId: string): void {
   if (Platform.OS !== 'ios') return;
   const key = normalizeCallId(callId);
   if (key) answeredCalls.add(key);
-  activateWebRtcAudioSession();
+  if (outgoingCalls.has(key)) {
+    try { require('react-native-callkeep').default.reportConnectedOutgoingCallWithUUID(callId); } catch {}
+  }
+}
+
+export async function startOutgoingCallNative(info: IncomingCallInfo): Promise<boolean> {
+  if (Platform.OS !== 'ios') return false;
+  const key = normalizeCallId(info.callId);
+  if (outgoingCalls.has(key)) return true;
+  if (!(await setupCallKeep())) return false;
+  await rememberIncomingCall({ ...info, outgoing: true });
+  outgoingCalls.add(key);
+  try {
+    const native = require('react-native-callkeep').default;
+    native.startCall(info.callId, info.callerId, info.callerName, 'generic', false);
+    native.reportConnectingOutgoingCallWithUUID(info.callId);
+    return true;
+  } catch {
+    await forgetIncomingCall(info.callId);
+    return false;
+  }
+}
+
+export function setNativeCallMuted(callId: string, muted: boolean): void {
+  if (Platform.OS !== 'ios') return;
+  try { require('react-native-callkeep').default.setMutedCall(callId, muted); } catch {}
+}
+
+export async function setNativeCallSpeaker(callId: string, speaker: boolean): Promise<void> {
+  if (Platform.OS !== 'ios') return;
+  const native = require('react-native-callkeep').default;
+  const routes = await native.getAudioRoutes();
+  const route = routes.find((item: { type: string; name: string }) => speaker ? item.name === 'Speaker' : item.type === 'Phone');
+  if (!route) throw new Error('Audio route unavailable');
+  await native.setAudioRoute(callId, route.name);
 }

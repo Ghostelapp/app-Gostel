@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 
 export const TOKEN_KEY = 'silentel_token';
 
+let migratedLockedAccess = false;
 const canUseSecureStore = Platform.OS !== 'web';
 
 export async function getStoredToken(): Promise<string | null> {
@@ -13,11 +14,17 @@ export async function getStoredToken(): Promise<string | null> {
 
   try {
     const secureToken = await SecureStore.getItemAsync(TOKEN_KEY);
-    if (secureToken) return secureToken;
+    if (secureToken) {
+      if (Platform.OS === 'ios' && !migratedLockedAccess) {
+        await SecureStore.setItemAsync(TOKEN_KEY, secureToken, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
+        migratedLockedAccess = true;
+      }
+      return secureToken;
+    }
 
     const legacyToken = await AsyncStorage.getItem(TOKEN_KEY);
     if (legacyToken) {
-      await SecureStore.setItemAsync(TOKEN_KEY, legacyToken);
+      await SecureStore.setItemAsync(TOKEN_KEY, legacyToken, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
       await AsyncStorage.removeItem(TOKEN_KEY);
     }
     return legacyToken;
@@ -33,7 +40,7 @@ export async function setStoredToken(token: string): Promise<void> {
   }
 
   try {
-    await SecureStore.setItemAsync(TOKEN_KEY, token);
+    await SecureStore.setItemAsync(TOKEN_KEY, token, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
     await AsyncStorage.removeItem(TOKEN_KEY);
   } catch (error) {
     throw new Error(`Secure token storage unavailable: ${String(error)}`);

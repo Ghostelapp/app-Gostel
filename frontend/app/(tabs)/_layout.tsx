@@ -1,4 +1,6 @@
 import React, { useEffect } from 'react';
+import { Platform } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { Tabs, useRouter } from 'expo-router';
 import { MessageCircle, Users, PhoneCall, User, Shield } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,6 +31,7 @@ export default function TabsLayout() {
   if (!user) return null;
   const isAdmin = user.role === 'admin';
 
+  const isIOS = Platform.OS === 'ios';
   const bottomInset = Math.max(insets.bottom, 0);
 
   // Common badge styling — small red circle with white text
@@ -46,16 +49,23 @@ export default function TabsLayout() {
 
   return (
     <Tabs
+      screenListeners={{
+        tabPress: () => {
+          if (isIOS) void Haptics.selectionAsync().catch(() => {});
+        },
+      }}
       screenOptions={{
         headerShown: false,
         tabBarStyle: {
           backgroundColor: theme.colors.surface,
           borderTopColor: theme.colors.border,
           borderTopWidth: 1,
-          height: 64 + bottomInset,
-          paddingBottom: 10 + bottomInset,
-          paddingTop: 8,
+          height: (isIOS ? 49 : 64) + bottomInset,
+          paddingBottom: (isIOS ? 0 : 10) + bottomInset,
+          paddingTop: isIOS ? 4 : 8,
         },
+        tabBarHideOnKeyboard: isIOS,
+        tabBarLabelPosition: isIOS ? 'below-icon' : undefined,
         tabBarActiveTintColor: theme.colors.primary,
         tabBarInactiveTintColor: theme.colors.textSecondary,
         tabBarLabelStyle: { fontSize: 11, fontWeight: '600', letterSpacing: 0.3 },

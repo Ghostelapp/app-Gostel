@@ -146,11 +146,13 @@ function _isCallControlPayload(data?: Record<string, string>): boolean {
 async function _handleCallControlPayload(data: Record<string, string>): Promise<void> {
   const callId = data.call_id || '';
   if (!callId) return;
-  const action = data.call_control_action || data.status || data.type;
+  const action = String(data.call_control_action || data.status || data.type).toLowerCase().replace(/^call:/, '');
+  const { wasCallLocallyAccepted } = require('./incomingCallStore');
+  const acceptedElsewhere = action === 'accepted' && !(await wasCallLocallyAccepted(callId));
   try {
-    if (action !== 'accepted') {
+    if (action !== 'accepted' || acceptedElsewhere) {
       const { cacheTerminatedCallId } = require('./callState');
-      await cacheTerminatedCallId(callId, action || 'ENDED');
+      await cacheTerminatedCallId(callId, acceptedElsewhere ? 'ENDED' : action || 'ENDED');
     }
     const {
       clearPendingIncomingCall,
@@ -176,8 +178,10 @@ async function _handleCallControlPayload(data: Record<string, string>): Promise<
   }
   try {
     const { endIncomingCallNative } = require('./callkeep');
-    if (action !== 'accepted') {
+    if (action !== 'accepted' || acceptedElsewhere) {
       endIncomingCallNative(callId);
+      const { clearActiveCallState } = require('./callState');
+      await clearActiveCallState(callId);
     }
   } catch {
     /* native iOS cleanup is best-effort */

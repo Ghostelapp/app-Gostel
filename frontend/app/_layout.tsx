@@ -57,7 +57,7 @@ export default function RootLayout() {
                         screenOptions={{
                           headerShown: false,
                           contentStyle: { backgroundColor: '#0f1419' },
-                          animation: 'fade',
+                          animation: Platform.OS === 'ios' ? 'slide_from_right' : 'fade',
                         }}
                       />
                     </IncomingCallProvider>

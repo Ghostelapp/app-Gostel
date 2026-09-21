@@ -43,7 +43,7 @@ async function handleVoipNotification(notification: any): Promise<void> {
   const controlAction = String(
     notification?.call_control_action || notification?.status || '',
   );
-  if (notification?.type === 'call_control' || controlAction) {
+  if (notification?.type === 'call_control' || notification?.call_control_action) {
     if (!controlCallId) return;
     const normalizedAction = controlAction.toLowerCase();
     const locallyAccepted =

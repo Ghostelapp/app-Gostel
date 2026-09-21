@@ -76,6 +76,7 @@ export type E2EEMessageLike = {
   e2ee_decrypted?: boolean;
 };
 
+const migratedLockedKeys = new Set<string>();
 const canUseSecureStore = Platform.OS !== 'web';
 const b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
@@ -101,6 +102,10 @@ async function getStoredIdentity(userId: string): Promise<E2EEIdentity | null> {
   if (canUseSecureStore) {
     try {
       raw = await SecureStore.getItemAsync(key);
+      if (raw && Platform.OS === 'ios' && !migratedLockedKeys.has(key)) {
+        await SecureStore.setItemAsync(key, raw, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
+        migratedLockedKeys.add(key);
+      }
     } catch (error) {
       throw new Error(`Secure E2EE identity storage unavailable: ${String(error)}`);
     }
@@ -111,7 +116,7 @@ async function getStoredIdentity(userId: string): Promise<E2EEIdentity | null> {
     const legacy = currentAsync || await AsyncStorage.getItem(legacyKey);
     if (legacy && canUseSecureStore) {
       try {
-        await SecureStore.setItemAsync(key, legacy);
+        await SecureStore.setItemAsync(key, legacy, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
         await AsyncStorage.multiRemove([key, legacyKey]);
       } catch (error) {
         throw new Error(`Secure E2EE identity storage unavailable: ${String(error)}`);
@@ -140,7 +145,7 @@ async function setStoredIdentity(userId: string, identity: E2EEIdentity): Promis
   const raw = JSON.stringify(identity);
   if (canUseSecureStore) {
     try {
-      await SecureStore.setItemAsync(key, raw);
+      await SecureStore.setItemAsync(key, raw, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
       await AsyncStorage.multiRemove([key, legacyIdentityKey(userId)]);
       return;
     } catch (error) {
@@ -156,6 +161,10 @@ async function getTrustedPublicKeys(userId: string): Promise<Record<string, stri
   if (canUseSecureStore) {
     try {
       raw = await SecureStore.getItemAsync(key);
+      if (raw && Platform.OS === 'ios' && !migratedLockedKeys.has(key)) {
+        await SecureStore.setItemAsync(key, raw, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
+        migratedLockedKeys.add(key);
+      }
     } catch (error) {
       throw new Error(`Secure E2EE trust storage unavailable: ${String(error)}`);
     }
@@ -165,7 +174,7 @@ async function getTrustedPublicKeys(userId: string): Promise<Record<string, stri
     const legacy = currentAsync || await AsyncStorage.getItem(legacyTrustedKeysKey(userId));
     if (legacy && canUseSecureStore) {
       try {
-        await SecureStore.setItemAsync(key, legacy);
+        await SecureStore.setItemAsync(key, legacy, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
         await AsyncStorage.multiRemove([key, legacyTrustedKeysKey(userId)]);
       } catch (error) {
         throw new Error(`Secure E2EE trust storage unavailable: ${String(error)}`);
@@ -191,7 +200,7 @@ async function setTrustedPublicKeys(
   const raw = JSON.stringify(keys);
   if (canUseSecureStore) {
     try {
-      await SecureStore.setItemAsync(key, raw);
+      await SecureStore.setItemAsync(key, raw, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
       await AsyncStorage.multiRemove([key, legacyTrustedKeysKey(userId)]);
       return;
     } catch (error) {

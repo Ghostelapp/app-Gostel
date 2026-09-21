@@ -27,3 +27,8 @@ frontend/android/app/build/
 .env
 .env.*
 !.env.example
+
+# Regenerate iOS in EAS; omit local export artifacts.
+frontend/ios/
+frontend/.tmp-*-export/
+frontend/tests/

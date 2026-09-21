@@ -8,9 +8,9 @@ if (__DEV__) {
   ]);
 }
 
-// Android must register Firebase Messaging before Expo Router mounts so Headless
+// Native clients must register Firebase Messaging before Expo Router mounts so Headless
 // JS can handle data-only call pushes without rendering app/_layout.tsx.
-if (Platform.OS === 'android') {
+if (Platform.OS !== 'web') {
   try {
     registerFcmHandlers();
   } catch (error) {

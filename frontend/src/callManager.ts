@@ -1,4 +1,5 @@
 import { AppState, Platform } from 'react-native';
+import { randomUUID } from 'expo-crypto';
 import { api } from './api';
 import {
   cacheTerminatedCallId,
@@ -92,7 +93,7 @@ class GhostelCallManager {
   }
 
   async startOutgoingCall(conversationId: string, mode: 'audio' | 'video' = 'audio'): Promise<ManagedCallState | null> {
-    const callId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const callId = randomUUID();
     const { data } = await api.post('/calls/start', {
       conversation_id: conversationId,
       mode,
@@ -289,7 +290,7 @@ class GhostelCallManager {
       reason,
       callId: targetCallId,
     });
-    this.state = null;
+    if (!targetCallId || this.state?.activeCallId === targetCallId) this.state = null;
   }
 
   async acceptCall(callId: string): Promise<void> {

@@ -105,7 +105,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   }, [incoming]);
 
   const guardCallActionsAfterUnlock = useCallback(() => {
-    if (Platform.OS === 'web') return;
+    if (Platform.OS !== 'android') return;
     const guardUntil = Date.now() + MOBILE_UNLOCK_ACTION_GUARD_MS;
     actionGuardUntilRef.current = guardUntil;
     setCallActionsGuarded(true);
@@ -239,8 +239,10 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       await clearPendingIncomingCall(call.id).catch(() => {});
       await clearActiveCallState(call.id).catch(() => {});
       await cancelFullScreenIncomingCallNotification(call.id).catch(() => {});
-      locallyAcceptedCallIdsRef.current.add(call.id);
-      await markCallLocallyAccepted(call.id).catch(() => {});
+      if (call.action === 'answer') {
+        locallyAcceptedCallIdsRef.current.add(call.id);
+        await markCallLocallyAccepted(call.id).catch(() => {});
+      }
       setIncoming((current) => (current?.id === call.id ? null : current));
       stopVibration();
       import('./sounds').then((s) => s.stopRingtone()).catch(() => {});
@@ -423,6 +425,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     if (!user) return;
     bindCallKeepBridge({ router, wsSend });
     return subscribeToCallKeepActions(({ callId, action }) => {
+      if (action !== 'answer' && action !== 'end') return;
       if (action === 'answer') {
         locallyAcceptedCallIdsRef.current.add(callId);
         markCallLocallyAccepted(callId).catch(() => {});
@@ -694,6 +697,10 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
     stopVibration();
     if (Platform.OS === 'ios') {
       // Keep CallKit and its AVAudioSession alive through device unlock.
+      if (!isIncomingCallNativeDisplayed(call.id)) {
+        await displayIncomingCallNative({ callId: call.id, conversationId: call.conversation_id,
+          callerId: call.caller_id, callerName: call.caller_name });
+      }
       await answerIncomingCallNative(call.id).catch(() => false);
     } else {
       try {
@@ -703,7 +710,7 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
       }
     }
     try {
-      await callManager.acceptCall(call.id);
+      void callManager.acceptCall(call.id).catch(() => {});
     } catch {
       /* ignore */
     }
@@ -713,17 +720,6 @@ export default function IncomingCallProvider({ children }: { children: React.Rea
   const reject = async (source: 'button' | 'modal_request_close' = 'button') => {
     if (!incoming) return;
     const call = incoming;
-    const guardRemainingMs = actionGuardUntilRef.current - Date.now();
-    if (Platform.OS !== 'web' && source === 'button' && guardRemainingMs > 0) {
-      api.post(`/calls/${call.id}/diag`, {
-        reason: 'incoming_call_action_ignored_after_unlock',
-        status: 'ringing',
-        source,
-        app_state: AppState.currentState,
-        guard_remaining_ms: guardRemainingMs,
-      }).catch(() => {});
-      return;
-    }
     api.post(`/calls/${call.id}/diag`, {
       reason: 'incoming_call_reject_requested',
       status: 'ringing',

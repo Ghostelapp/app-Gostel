@@ -80,6 +80,8 @@ function insertAfterImports(source, importLine) {
 
 function patchAppDelegate(source) {
   let output = insertAfterImports(source, 'import PushKit');
+  // Remove the old reference to a ringtone that was never bundled.
+  output = output.replace(/^\s*"ringtoneSound": "Ringtone\.caf",\r?\n/gm, '');
   if (!output.includes('RNVoipPushNotificationManager.voipRegistration()')) {
     const launchMethod = /(func\s+application\([^)]*didFinishLaunchingWithOptions[^)]*\)[^{]*\{\s*\n)/;
     if (!launchMethod.test(output)) {
@@ -93,7 +95,6 @@ function patchAppDelegate(source) {
         `      "includesCallsInRecents": false,\n` +
         `      "maximumCallGroups": 1,\n` +
         `      "maximumCallsPerCallGroup": 1,\n` +
-        `      "ringtoneSound": "Ringtone.caf",\n` +
         `      "audioSession": [\n` +
         `        "categoryOptions": 4,\n` +
         `        "mode": "AVAudioSessionModeVoiceChat"\n` +
@@ -101,6 +102,9 @@ function patchAppDelegate(source) {
         `    ])\n` +
         `    RNVoipPushNotificationManager.voipRegistration()\n`,
     );
+  }
+  if (!output.includes('"handleType": "generic"')) {
+    output = output.replace('"supportsVideo": false,', '"supportsVideo": false,\n      "handleType": "generic",');
   }
   if (!output.includes(PLUGIN_MARKER)) {
     output = output.trimEnd() + VOIP_EXTENSION;

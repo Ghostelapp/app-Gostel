@@ -1,27 +1,47 @@
 import { Platform } from 'react-native';
 
+let active = false;
+const activationWaiters = new Set<(ready: boolean) => void>();
+
+/** Call only for CallKit's real didActivateAudioSession event (including replay). */
 export function activateWebRtcAudioSession(): void {
-  if (Platform.OS !== 'ios') return;
+  if (Platform.OS !== 'ios' || active) return;
   try {
-    // react-native-webrtc requires this when CallKit owns AVAudioSession.
-    // Without it, WebRTC tracks can stay live while iOS routes no audible audio.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getWebRTC } = require('./webrtc');
     const WebRTC = getWebRTC();
-    WebRTC?.RTCAudioSession?.audioSessionDidActivate?.();
+    if (!WebRTC?.RTCAudioSession?.audioSessionDidActivate) return;
+    WebRTC.RTCAudioSession.audioSessionDidActivate();
+    active = true;
+    for (const resolve of activationWaiters) resolve(true);
+    activationWaiters.clear();
   } catch {
-    /* best-effort iOS audio bridge */
+    /* waiters time out if the native bridge is unavailable */
   }
 }
 
+export function waitForWebRtcAudioSession(timeoutMs = 10_000): Promise<boolean> {
+  if (Platform.OS !== 'ios' || active) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = (ready: boolean) => {
+      clearTimeout(timer);
+      activationWaiters.delete(finish);
+      resolve(ready);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    activationWaiters.add(finish);
+  });
+}
+
+/** Call only when CallKit deactivates the session. */
 export function deactivateWebRtcAudioSession(): void {
-  if (Platform.OS !== 'ios') return;
+  if (Platform.OS !== 'ios' || !active) return;
+  active = false;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getWebRTC } = require('./webrtc');
-    const WebRTC = getWebRTC();
-    WebRTC?.RTCAudioSession?.audioSessionDidDeactivate?.();
+    getWebRTC()?.RTCAudioSession?.audioSessionDidDeactivate?.();
   } catch {
-    /* best-effort iOS audio bridge */
+    /* best-effort native teardown */
   }
 }

@@ -114,3 +114,6 @@ IOS/GhostelIOS/.metro-cache/
 .codex_ghostel_vps*
 artifacts/
 website-GhostelAPPweb/
+
+# Generated Expo iOS project
+frontend/ios/

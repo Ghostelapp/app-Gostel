@@ -4168,8 +4168,8 @@ async def _send_call_control_push(
     WebSocket remains the primary real-time path while the app is active, but
     locked/background devices can be showing a native call UI without a live WS.
     This silent control payload only carries enough state to cancel ringing or
-    clear active-call UI. iOS receives it directly over APNs VoIP when possible;
-    FCM remains the Android path and a fallback for registered FCM/APNs tokens.
+    clear active-call UI. Both platforms use FCM data messages (APNs background
+    on iOS). PushKit is reserved for new incoming calls.
     """
     try:
         from fcm import is_configured as fcm_is_configured, send_fcm
@@ -4203,17 +4203,12 @@ async def _send_call_control_push(
         ).to_list(1000)
 
         targets: list[dict] = []
-        voip_targets: list[dict] = []
         for user_doc in users:
             for target in user_push_targets(user_doc):
                 token_type = (target.get("token_type") or "fcm").lower()
-                platform = (target.get("platform") or "").lower()
-                if token_type == "voip":
-                    voip_targets.append({**target, "user_id": user_doc.get("id")})
-                elif token_type in {"fcm", "apns"} and platform != "ios":
+                if token_type == "fcm":
                     targets.append({**target, "user_id": user_doc.get("id")})
         targets = compact_push_targets(targets)
-        voip_targets = compact_push_targets(voip_targets)
         if action == "accepted":
             # Signal-style split:
             # - call.accepted for the caller is delivered through signaling
@@ -4223,9 +4218,6 @@ async def _send_call_control_push(
             #   iOS device can make CallKit emit a local end action and wrongly
             #   terminate an already accepted call.
             targets = [target for target in targets if target.get("user_id") == actor_id]
-            voip_targets = [
-                target for target in voip_targets if target.get("user_id") == actor_id
-            ]
             if actor_session_id:
                 targets = [
                     target
@@ -4235,15 +4227,7 @@ async def _send_call_control_push(
                         and (target.get("session_id") or "") == actor_session_id
                     )
                 ]
-                voip_targets = [
-                    target
-                    for target in voip_targets
-                    if not (
-                        target.get("user_id") == actor_id
-                        and (target.get("session_id") or "") == actor_session_id
-                    )
-                ]
-        if not targets and not voip_targets:
+        if not targets:
             return
 
         data = {
@@ -4256,43 +4240,6 @@ async def _send_call_control_push(
             "ended_by": actor_id if action != "accepted" else "",
             "status": action,
         }
-
-        voip_ok = voip_err = 0
-        if voip_targets:
-            from apns import is_configured as apns_is_configured, send_voip_push
-
-            if apns_is_configured():
-                async with httpx.AsyncClient(http2=True, timeout=10) as apns_client:
-                    for target in voip_targets:
-                        token = target["token"]
-                        result = await send_voip_push(
-                            apns_client,
-                            token=token,
-                            data=data,
-                        )
-                        if result.get("ok"):
-                            voip_ok += 1
-                        else:
-                            voip_err += 1
-                            reason = result.get("error", "unknown")
-                            logger.warning(
-                                f"APNs VoIP call control failed action={action} reason={reason}"
-                            )
-                            if reason in (
-                                "BadDeviceToken",
-                                "DeviceTokenNotForTopic",
-                                "Unregistered",
-                            ):
-                                await remove_push_token_from_users(token)
-                logger.info(
-                    "APNs VoIP call control "
-                    f"action={action} call={str(call.get('id', ''))[:8]} "
-                    f"ok={voip_ok} err={voip_err}"
-                )
-            else:
-                logger.warning(
-                    f"APNs VoIP not configured - skipped {len(voip_targets)} call control recipients"
-                )
 
         ok = err = 0
         if targets and fcm_configured:
@@ -4326,7 +4273,7 @@ async def _send_call_control_push(
         logger.info(
             "Call control push "
             f"action={action} call={str(call.get('id', ''))[:8]} "
-            f"fcm_ok={ok} fcm_err={err} voip_ok={voip_ok} voip_err={voip_err}"
+            f"fcm_ok={ok} fcm_err={err}"
         )
     except Exception as exc:
         logger.warning(f"_send_call_control_push failed: {exc}")
@@ -4548,6 +4495,11 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
     callee_ids = [member_id for member_id in conv["member_ids"] if member_id != user["id"]]
     requested_call_id = (payload.call_id or "").strip()
     if requested_call_id:
+        # Legacy clients used timestamp IDs; CallKit/PushKit require a UUID.
+        try:
+            requested_call_id = str(uuid.UUID(requested_call_id))
+        except ValueError:
+            requested_call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ghostel:{user['id']}:{requested_call_id}"))
         existing = await db.calls.find_one(
             {"id": requested_call_id, "member_ids": user["id"]},
             {"_id": 0},
@@ -4814,7 +4766,7 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
     )
     call = await db.calls.find_one({"id": call_id}, {"_id": 0})
     if not call:
-        return {"accepted": True, "ephemeral": True}
+        raise HTTPException(status_code=404, detail="Call not found")
     if user["id"] not in call.get("member_ids", []):
         raise HTTPException(status_code=403, detail="Not a participant")
     if user["id"] == call.get("caller_id"):
@@ -4833,9 +4785,16 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
             "idempotent": True,
         }
 
-    answered_at = call.get("answered_at") or now_utc().isoformat()
+    # Do not resurrect a call after its ringing deadline or accept it twice.
+    if not call.get("answered_at") and call.get("expires_at") and call["expires_at"] <= now_utc().isoformat():
+        return {"accepted": False, "status": "timeout"}
+    if call.get("answered_at"):
+        if call.get("calleeDeviceId") and user.get("_auth_sid") and call["calleeDeviceId"] != user["_auth_sid"]:
+            return {"accepted": False, "status": "answered", "reason": "answered_elsewhere"}
+        return {"accepted": True, "status": current_status, "answered_at": call["answered_at"], "idempotent": True}
+    answered_at = now_utc().isoformat()
     if not call.get("answered_at"):
-        await db.calls.update_one(
+        result = await db.calls.update_one(
             {"id": call_id, "answered_at": None, "ended_at": None},
             {
                 "$set": {
@@ -4845,9 +4804,19 @@ async def accept_call(call_id: str, user: dict = Depends(get_current_user)):
                     "last_updated_at": answered_at,
                     "lastUpdatedAt": answered_at,
                     "lastKnownClientState.accepted_by": user["id"],
+                    "calleeDeviceId": user.get("_auth_sid") or "",
                 }
             },
         )
+        if not result.matched_count:
+            current = await db.calls.find_one({"id": call_id}, {"_id": 0})
+            return {
+                "accepted": bool(current and current.get("answered_at") and not current.get("ended_at")
+                                 and (not current.get("calleeDeviceId") or not user.get("_auth_sid")
+                                      or current["calleeDeviceId"] == user["_auth_sid"])),
+                "status": (current or {}).get("status", "ended"),
+                "idempotent": True,
+            }
         logger.info(f"BACKEND_RING_TIMEOUT_CANCELLED call={call_id[:8]}")
         logger.info(f"BACKEND_RING_TIMEOUT_CANCELLED_AFTER_ACCEPT call={call_id[:8]}")
 
@@ -5134,7 +5103,12 @@ async def _finish_call(call_id: str, user: dict, action: str):
         # Never answered. If the caller ends it, it is a cancellation; if the
         # callee ends it, it is an explicit decline rather than a missed call.
         update_doc["status"] = "cancelled" if user["id"] == call.get("caller_id") else "declined"
-    await db.calls.update_one({"id": call_id}, {"$set": update_doc})
+    result = await db.calls.update_one(
+        {"id": call_id, "ended_at": None, "answered_at": call.get("answered_at")},
+        {"$set": update_doc},
+    )
+    if not result.matched_count:
+        return await _finish_call(call_id, user, action)
     ended_event = {
         "type": "call:ended",
         "event": f"call.{update_doc.get('status', 'ended')}",

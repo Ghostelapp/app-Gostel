@@ -47,6 +47,8 @@ export function normalizeIncomingCallPayload(data: any): IncomingCallPayload | n
 export async function savePendingIncomingCall(data: any): Promise<IncomingCallPayload | null> {
   const call = normalizeIncomingCallPayload(data);
   if (!call) return null;
+  // A delayed duplicate invite must not turn an accepted call back into ringing.
+  if (await wasCallLocallyAccepted(call.id)) return null;
   const terminalStatus = await getCachedTerminatedCallStatus(call.id);
   if (terminalStatus) {
     logCallEvent('STALE_PUSH_IGNORED', {
