@@ -1,0 +1,20 @@
+✔ terminal and expired persisted calls are removed without recursive reads (98.954781ms)
+✔ cleanup for an older call leaves a different active call intact (11.95838ms)
+✔ duplicate push cannot downgrade an answered call to ringing (33.032674ms)
+✔ CallKit audio activation never answers a ringing call (87.839728ms)
+✔ background answer routes media without unlocking, duplicate answer signals once (129.893038ms)
+✔ hangup immediately after answer and unlock is honored once (97.459127ms)
+✔ remote termination reports an ended call, never a local reject transaction (75.625633ms)
+✔ cold-start answer/end events replay in order and cannot reopen ended call (68.676377ms)
+✔ cold-start audio activation is replayed even without a call UUID (38.065782ms)
+✔ system mute reaches the active media consumer (35.720489ms)
+✔ hanging diagnostics and HTTP cannot delay microphone cleanup on hangup (31.589636ms)
+✔ audio setup waits for a real native activation and survives interruption (11.839821ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1058.641008

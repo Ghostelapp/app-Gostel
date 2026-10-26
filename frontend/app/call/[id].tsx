@@ -7,6 +7,7 @@ import {
   Platform,
   AppState,
   Vibration,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -34,6 +35,7 @@ import {
   setNativeCallSpeaker,
   endIncomingCallNative,
   subscribeToCallKeepActions,
+  registerMountedCallScreen,
 } from '../../src/callkeep';
 import {
   cancelFullScreenIncomingCallNotification,
@@ -201,6 +203,17 @@ const summarizeAudioStats = (report: any) => {
 // Component
 // ---------------------------------------------------------------------------
 export default function CallScreen() {
+  const { loading } = useAuth();
+  // A PushKit cold start can navigate here before /auth/me has restored the
+  // session. Mount the media owner only afterwards: its one-shot bootstrap
+  // and native callbacks must not capture the initial null user.
+  if (loading) {
+    return <SafeAreaView style={styles.safe}><ActivityIndicator /></SafeAreaView>;
+  }
+  return <AuthenticatedCallScreen />;
+}
+
+function AuthenticatedCallScreen() {
   const params = useLocalSearchParams<{
     id: string;
     role?: string;
@@ -279,6 +292,7 @@ export default function CallScreen() {
   const { startRingback, stopRingback } = useCallRingback(
     RINGBACK,
     isCaller && Platform.OS !== 'web',
+    id,
   );
 
   useEffect(() => {
@@ -338,7 +352,7 @@ export default function CallScreen() {
       if (!trust.trusted) {
         setErrMsg(
           trust.changedMemberIds.includes(peerId)
-            ? 'Contact E2EE key changed. Verify it in chat before calling.'
+            ? 'Contact E2EE key is unverified or changed. Verify it in chat before calling.'
             : 'Call E2EE trust verification failed',
         );
         return false;
@@ -1329,6 +1343,7 @@ export default function CallScreen() {
         if (!pc) return; // PC not ready — caller will give up on no-answer timeout
         
         // Keep the connection deadline until ICE actually connects.
+        let answerStage = 'decrypt_offer';
         try {
           const signal = await decryptPeerSignal(msg);
           if (!signal?.sdp) throw new Error('Encrypted offer unavailable');
@@ -1339,6 +1354,7 @@ export default function CallScreen() {
             remoteSetRef.current = false;
           }
           setStatus('connecting');
+          answerStage = 'set_remote_description';
           await pc.setRemoteDescription({ type: 'offer', sdp: String(signal.sdp) });
           logCallEvent('WEBRTC_REMOTE_DESCRIPTION_SET', {
             callId: id,
@@ -1351,11 +1367,13 @@ export default function CallScreen() {
           });
           remoteSetRef.current = true;
           await drainPendingIce();
+          answerStage = 'create_answer';
           const answer = await pc.createAnswer();
           logCallEvent('WEBRTC_ANSWER_CREATED', {
             callId: id,
             platform: Platform.OS,
           });
+          answerStage = 'set_local_description';
           await pc.setLocalDescription(answer);
           logCallEvent('WEBRTC_LOCAL_DESCRIPTION_SET', {
             callId: id,
@@ -1363,6 +1381,7 @@ export default function CallScreen() {
             signalingState: String(pc.signalingState || ''),
           });
           if (peerIdRef.current) {
+            answerStage = 'send_answer';
             const sent = await sendEncryptedSignal('call:answer', peerIdRef.current, {
               sdp: answer.sdp,
               sdp_type: answer.type || 'answer',
@@ -1376,6 +1395,12 @@ export default function CallScreen() {
           }
         } catch (e: any) {
           answerSentRef.current = false;
+          void reportCallDiag('answer_failed', {
+            answer_stage: answerStage,
+            error_code: String(e?.code || e?.name || 'unknown').slice(0, 80),
+            storage_unavailable: String(e?.message || '').includes('storage unavailable'),
+            app_state: AppState.currentState,
+          });
           setErrMsg(`Answer failed: ${e?.message || e}`);
           setStatus('failed');
           setTimeout(() => endCall('Answer failed'), 1500);
@@ -1548,7 +1573,9 @@ export default function CallScreen() {
 
   useEffect(() => {
     if (Platform.OS !== 'ios' || !id) return;
+    const unregister = registerMountedCallScreen(id);
     clearPendingAnsweredCall(id).catch(() => {});
+    return unregister;
   }, [id]);
 
   useEffect(() => {

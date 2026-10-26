@@ -22,4 +22,4 @@ fi
 
 printf 'ghostel.app backend: http://127.0.0.1:8000/api/\n'
 . .venv/bin/activate
-exec python -m uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+exec python -m uvicorn server:app --host 0.0.0.0 --port 8000 --ws-max-size 65536 --ws-max-queue 8 --reload

@@ -1,0 +1,15 @@
+{
+  "date": "2026-09-24",
+  "app": "ghostel.app",
+  "bundleIdentifier": "app.ghostel",
+  "version": "1.4.56",
+  "build": "70",
+  "appStoreConnectAppId": "6781015398",
+  "buildId": "8dd6f037-df4c-4cb1-afff-d907f3599a81",
+  "processingState": "VALID",
+  "internalBuildState": "IN_BETA_TESTING",
+  "externalBuildState": "READY_FOR_BETA_SUBMISSION",
+  "ipa": "artifacts/testflight/Ghostel-1.4.56-70.ipa",
+  "sha256": "451de837f49290f534352af909469d78e2cf3e7872ef414db5d2b8793e12dee9",
+  "upload": "EXPORT SUCCEEDED"
+}

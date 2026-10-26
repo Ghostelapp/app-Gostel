@@ -1,0 +1,98 @@
+MLS runtime source and WASM checksums match
+Executing <Task pending name='Task-1' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106a5bbe0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.391 seconds
+.Executing <Task pending name='Task-3' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106a01fa0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.399 seconds
+.Executing <Task pending name='Task-5' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x1069c7f40>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.576 seconds
+.Executing <Task pending name='Task-7' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x107187fa0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.974 seconds
+.Executing <Task pending name='Task-9' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x107141eb0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 1.240 seconds
+.Executing <Task pending name='Task-11' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106fd0670>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.908 seconds
+.Executing <Task pending name='Task-13' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:102> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x10698c130>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.234 seconds
+.Executing <Task pending name='Task-20' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:102> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x107146e80>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.235 seconds
+.Executing <Task pending name='Task-27' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:102> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106fe2280>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.447 seconds
+.Executing <Task pending name='Task-34' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:102> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106a21d00>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.212 seconds
+.Executing <Task pending name='Task-45' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:102> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106c15310>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.217 seconds
+...Executing <Task pending name='Task-62' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x10688eb20>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.180 seconds
+...............Executing <Task pending name='Task-97' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x1071b83d0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.227 seconds
+.Executing <Task pending name='Task-99' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106ab1d90>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.322 seconds
+.Executing <Task pending name='Task-101' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x1069a2340>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.203 seconds
+.Executing <Task pending name='Task-103' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106cb0b80>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.247 seconds
+.Executing <Task pending name='Task-105' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x10719a1c0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.178 seconds
+.Executing <Task pending name='Task-107' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106a400a0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.168 seconds
+.Executing <Task pending name='Task-109' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106ae0fd0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.200 seconds
+.Executing <Task pending name='Task-111' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106f30160>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.130 seconds
+.Executing <Task pending name='Task-113' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x107073fa0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.142 seconds
+.Executing <Task pending name='Task-115' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x106c7b610>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.179 seconds
+.
+----------------------------------------------------------------------
+Ran 38 tests in 8.855s
+
+OK
+✔ terminal and expired persisted calls are removed without recursive reads (335.872538ms)
+✔ cleanup for an older call leaves a different active call intact (21.943359ms)
+✔ duplicate push cannot downgrade an answered call to ringing (46.573924ms)
+✔ CallKit audio activation never answers a ringing call (129.839123ms)
+✔ background answer routes media without unlocking, duplicate answer signals once (381.522651ms)
+✔ hangup immediately after answer and unlock is honored once (180.281257ms)
+✔ remote termination reports an ended call, never a local reject transaction (74.264611ms)
+✔ cold-start answer/end events replay in order and cannot reopen ended call (102.418003ms)
+✔ cold-start audio activation is replayed even without a call UUID (58.58612ms)
+✔ system mute reaches the active media consumer (53.903944ms)
+✔ hanging diagnostics and HTTP cannot delay microphone cleanup on hangup (45.388247ms)
+✔ audio setup waits for a real native activation and survives interruption (18.422798ms)
+✔ native vault commits encrypted SQLite state through its SecureStore anchor (485.471026ms)
+✔ crash before secure anchor keeps previous state; crash after anchor recovers committed outbox (509.877489ms)
+✔ restored old SQLite slot is rejected against the newer secure anchor (257.923574ms)
+✔ parallel native requests serialize without lost updates (568.447763ms)
+✔ missing secure anchor cannot silently create a new identity over existing state (205.271871ms)
+✔ desktop vault authenticates ciphertext and survives a new process instance (104.273189ms)
+✔ stale writer is rejected without overwriting the committed state (121.679855ms)
+✔ lost OS-wrapped key never silently replaces an existing identity (84.628597ms)
+✔ Linux plaintext fallback and path traversal are rejected (1.928672ms)
+✔ receiver rejects attacker key under a pinned sender ID (394.057685ms)
+✔ CONFIRMED OPEN: old ciphertext decrypts with current static key and can be relabelled/replayed (83.198464ms)
+✔ static fallback refuses parent traversal (2.390917ms)
+✔ desktop opens only http(s) external URLs (7.236032ms)
+✔ pinned legitimate sender decrypts text and attachment; changed pin rejects both (190.922827ms)
+✔ plaintext downgrade never renders server content, even as a system event (120.600111ms)
+✔ attachment without encryption metadata is rejected (87.791354ms)
+✔ new contacts and legacy TOFU pins require explicit verification (107.040877ms)
+✔ staging has separate app identifiers, scheme, backend and no production Firebase file (4.497071ms)
+✔ staging rejects missing, production and insecure remote backends (2.716112ms)
+✔ staging push requires explicit separate Firebase configuration (0.312309ms)
+✔ production config is preserved without a staging variant (0.19918ms)
+✔ native staging hook refuses to modify a normal local checkout (1.33485ms)
+ℹ tests 34
+ℹ suites 0
+ℹ pass 34
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2787.103613
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.68s
+     Running unittests src/lib.rs (crypto/ghostel-mls/target/debug/deps/ghostel_mls-d3ab87b6055f6309)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/security.rs (crypto/ghostel-mls/target/debug/deps/security-53513ba1762590ef)
+
+running 9 tests
+test sealed_state_is_bound_to_device_and_key ... ok
+test pin_replacement_and_trailing_bytes_are_rejected ... ok
+test reject_unverified_package_and_wrong_group_welcome ... ok
+test tampering_does_not_consume_receive_key ... ok
+test old_epoch_keys_are_not_retained ... ok
+test authenticated_exchange_replay_and_restart ... ok
+test rejected_membership_commit_rolls_back_automatically ... ok
+test update_rotates_epoch_and_survives_restart ... ok
+test removed_device_cannot_read_future_epoch ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.23s
+
+   Doc-tests ghostel_mls
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

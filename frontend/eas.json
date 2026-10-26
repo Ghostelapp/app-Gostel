@@ -71,7 +71,39 @@
     "ios-testflight": {
       "extends": "ios-production-firebase",
       "distribution": "store",
-      "autoIncrement": true
+      "autoIncrement": true,
+      "environment": "production",
+      "env": {
+        "APP_VARIANT": "production",
+        "EXPO_PUBLIC_APP_VARIANT": "production",
+        "EXPO_PUBLIC_MLS_SELF_TEST": "0",
+        "EXPO_STAGING_NO_PUSH": "0",
+        "EXPO_SKIP_FIREBASE_IOS": "0"
+      }
+    },
+    "staging": {
+      "node": "22.13.0",
+      "distribution": "internal",
+      "environment": "preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "APP_VARIANT": "staging",
+        "EXPO_STAGING_NO_PUSH": "1",
+        "EXPO_USE_COMMUNITY_AUTOLINKING": "1",
+        "EXPO_USE_JSC_IOS": "1",
+        "EXPO_PUBLIC_APP_VARIANT": "staging"
+      }
+    },
+    "staging-simulator": {
+      "extends": "staging",
+      "ios": {
+        "simulator": true
+      },
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "http://127.0.0.1:18794"
+      }
     }
   },
   "submit": {

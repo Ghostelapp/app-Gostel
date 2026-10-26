@@ -24,6 +24,10 @@ import pyotp
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, status, Body, Response
 from fastapi.responses import FileResponse
 from starlette.middleware.cors import CORSMiddleware
+from ws_manager import WSManager
+from push_privacy import private_push
+from request_limits import RequestBodyLimit
+from mls_delivery import MLSDelivery, PROTOCOL as MLS_PROTOCOL
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
@@ -38,6 +42,8 @@ app = FastAPI(title="ghostel.app Enterprise API")
 api = APIRouter(prefix="/api")
 
 JWT_SECRET = os.environ["JWT_SECRET"]
+if len(JWT_SECRET.encode("utf-8")) < 32:
+    raise RuntimeError("JWT_SECRET must contain at least 32 bytes of random secret material")
 JWT_ALG = "HS256"
 APP_NAME = os.environ.get("APP_NAME", "ghostel.app")
 ALLOW_LEGACY_WS_TOKEN = os.environ.get("ALLOW_LEGACY_WS_TOKEN", "false").lower() == "true"
@@ -252,6 +258,7 @@ async def revoke_user_session(session_id: str, user_id: str, *, reason: str) -> 
             expires_at = None
     expires_at = ensure_utc(expires_at)
     await revoke_access_token_jti(session.get("token_jti"), user_id, expires_at)
+    await ws_manager.revoke_session(user_id, session_id)
     return True
 
 
@@ -761,6 +768,7 @@ class ContactInviteIn(BaseModel):
 
 
 class ConversationCreateIn(BaseModel):
+    force_new: bool = False
     type: Literal["direct", "group"]
     member_ids: List[str]
     name: Optional[str] = None
@@ -1114,43 +1122,55 @@ async def get_e2ee_key(user_id: str, user: dict = Depends(get_current_user)):
 async def two_factor_setup(
     payload: TwoFASetupIn, user: dict = Depends(get_current_user)
 ):
+    await enforce_rate_limit("2fa-setup", user["id"], limit=5, window_seconds=300)
+    if user.get("two_factor_enabled"):
+        raise HTTPException(status_code=409, detail="Disable existing 2FA before setting it up again")
     if not verify_password(payload.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid password")
     secret = pyotp.random_base32()
-    await db.users.update_one(
-        {"id": user["id"]},
+    result = await db.users.update_one(
+        {"id": user["id"], "two_factor_enabled": {"$ne": True}},
         {"$set": {"totp_secret": secret, "two_factor_enabled": False}},
     )
+    if not result.matched_count:
+        raise HTTPException(status_code=409, detail="2FA state changed; reload your account")
     uri = pyotp.TOTP(secret).provisioning_uri(name=user["email"], issuer_name=APP_NAME)
     return {"secret": secret, "otpauth_uri": uri}
 
 
 @api.post("/auth/2fa/enable")
 async def two_factor_enable(payload: TwoFAVerifyIn, user: dict = Depends(get_current_user)):
+    await enforce_rate_limit("2fa-enable", user["id"], limit=5, window_seconds=300)
     secret = user.get("totp_secret")
     if not secret:
         raise HTTPException(status_code=400, detail="Run 2FA setup first")
     totp = pyotp.TOTP(secret)
     if not totp.verify(payload.code, valid_window=1):
         raise HTTPException(status_code=400, detail="Invalid code")
-    await db.users.update_one(
-        {"id": user["id"]}, {"$set": {"two_factor_enabled": True}}
+    result = await db.users.update_one(
+        {"id": user["id"], "totp_secret": secret},
+        {"$set": {"two_factor_enabled": True}},
     )
+    if not result.matched_count:
+        raise HTTPException(status_code=409, detail="2FA state changed; reload your account")
     return {"two_factor_enabled": True}
 
 
 @api.post("/auth/2fa/disable")
 async def two_factor_disable(payload: TwoFAVerifyIn, user: dict = Depends(get_current_user)):
+    await enforce_rate_limit("2fa-disable", user["id"], limit=5, window_seconds=300)
     if not user.get("two_factor_enabled"):
         return {"two_factor_enabled": False}
     secret = user.get("totp_secret")
     totp = pyotp.TOTP(secret)
     if not totp.verify(payload.code, valid_window=1):
         raise HTTPException(status_code=400, detail="Invalid code")
-    await db.users.update_one(
-        {"id": user["id"]},
+    result = await db.users.update_one(
+        {"id": user["id"], "totp_secret": secret},
         {"$set": {"two_factor_enabled": False, "totp_secret": None}},
     )
+    if not result.matched_count:
+        raise HTTPException(status_code=409, detail="2FA state changed; reload your account")
     return {"two_factor_enabled": False}
 
 
@@ -1423,6 +1443,7 @@ async def delete_user_account_data(user_id: str) -> bool:
             "$unset": {f"muted_users.{user_id}": ""},
         },
     )
+    await db.mls_devices.update_many({"user_id": user_id}, {"$set": {"revoked": True}})
     await db.conversations.update_many(
         {"member_ids": user_id},
         {"$pull": {"member_ids": user_id, "admin_ids": user_id}},
@@ -1657,6 +1678,7 @@ async def _send_simple_push(
     Expo otherwise."""
     if not token:
         return
+    title, body, data = private_push(data, is_call=is_call)
     if token_type in ("fcm", "apns"):
         from fcm import is_configured as fcm_is_configured, send_fcm
 
@@ -1865,6 +1887,12 @@ async def _hydrate_conversation(conv: dict, current_user_id: str) -> dict:
         "read_by": {"$ne": current_user_id},
     })
 
+    if conv.get("e2ee_protocol") == MLS_PROTOCOL:
+        last_event = await db.mls_events.find_one({"conversation_id": conv["id"], "kind": "application"}, {"_id": 0}, sort=[("seq", -1)])
+        if last_event:
+            last_msg = {"id": last_event["id"], "conversation_id": conv["id"], "sender_id": last_event["sender_id"],
+                        "content": "[encrypted message]", "kind": "text", "encrypted": True, "e2ee_version": 2, "created_at": last_event["created_at"]}
+
     title = conv.get("name") or ""
     if conv["type"] == "direct":
         other = next((m for m in members if m["id"] != current_user_id), None)
@@ -1880,8 +1908,9 @@ async def _hydrate_conversation(conv: dict, current_user_id: str) -> dict:
         "created_at": conv.get("created_at"),
         "last_message": last_msg,
         "unread_count": unread,
-        "encrypted": e2ee_ready,
-        "e2ee_ready": e2ee_ready,
+        "encrypted": e2ee_ready or conv.get("e2ee_protocol") == MLS_PROTOCOL,
+        "e2ee_ready": e2ee_ready or conv.get("e2ee_protocol") == MLS_PROTOCOL,
+        "e2ee_protocol": conv.get("e2ee_protocol", "nacl-box-v1"),
         "disappear_seconds": conv.get("disappear_seconds"),
         "admin_ids": conv.get("admin_ids") or (
             [conv["created_by"]] if conv["type"] == "group" and conv.get("created_by") else []
@@ -1892,6 +1921,7 @@ async def _hydrate_conversation(conv: dict, current_user_id: str) -> dict:
 
 @api.post("/conversations")
 async def create_conversation(payload: ConversationCreateIn, user: dict = Depends(get_current_user)):
+    await enforce_rate_limit("conversation-create-user", user["id"], limit=60, window_seconds=3600)
     member_ids = list(set(payload.member_ids + [user["id"]]))
     if len(member_ids) < 2:
         raise HTTPException(status_code=400, detail="At least 2 members required")
@@ -1915,7 +1945,7 @@ async def create_conversation(payload: ConversationCreateIn, user: dict = Depend
             "type": "direct",
             "member_ids": {"$all": member_ids, "$size": 2},
         }, {"_id": 0})
-        if existing:
+        if existing and not payload.force_new:
             return await _hydrate_conversation(existing, user["id"])
 
     avatar = (payload.avatar or "").strip()
@@ -1940,6 +1970,15 @@ async def create_conversation(payload: ConversationCreateIn, user: dict = Depend
     )
 
     return await _hydrate_conversation(conv, user["id"])
+
+
+async def _legacy_conversation_update(conv_id: str, update: dict):
+    result = await db.conversations.update_one(
+        {"id": conv_id, "e2ee_protocol": {"$ne": MLS_PROTOCOL}}, update,
+    )
+    if not result.matched_count:
+        raise HTTPException(409, "MLS rooms have an immutable device roster; create a new room for membership changes")
+    return result
 
 
 async def _require_group_admin(conv_id: str, user_id: str) -> dict:
@@ -1971,7 +2010,7 @@ async def update_conversation(
         updates["avatar"] = av or None
     if not updates:
         raise HTTPException(status_code=400, detail="Nothing to update")
-    await db.conversations.update_one({"id": conv_id}, {"$set": updates})
+    await _legacy_conversation_update(conv_id, {'$set': updates})
     fresh = await db.conversations.find_one({"id": conv_id}, {"_id": 0})
     hydrated = await _hydrate_conversation(fresh, user["id"])
 
@@ -2030,10 +2069,7 @@ async def add_group_members(
         additions.append(mid)
     if not additions:
         raise HTTPException(status_code=400, detail="No new members to add")
-    await db.conversations.update_one(
-        {"id": conv_id},
-        {"$addToSet": {"member_ids": {"$each": additions}}},
-    )
+    await _legacy_conversation_update(conv_id, {'$addToSet': {'member_ids': {'$each': additions}}})
     # Build names of added users for system message
     added_users = await db.users.find(
         {"id": {"$in": additions}}, {"_id": 0, "id": 1, "name": 1}
@@ -2102,10 +2138,7 @@ async def remove_group_member(
     if not new_admin_ids and new_member_ids:
         # promote oldest remaining member to admin
         new_admin_ids = [new_member_ids[0]]
-    await db.conversations.update_one(
-        {"id": conv_id},
-        {"$set": {"member_ids": new_member_ids, "admin_ids": new_admin_ids}},
-    )
+    await _legacy_conversation_update(conv_id, {'$set': {'member_ids': new_member_ids, 'admin_ids': new_admin_ids}})
     target_user = await db.users.find_one({"id": user_id}, {"_id": 0, "name": 1})
     action = "left" if is_self_leave else f"was removed by {user.get('name') or 'admin'}"
     sys_msg = {
@@ -2145,9 +2178,7 @@ async def promote_admin(
     conv = await _require_group_admin(conv_id, user["id"])
     if user_id not in (conv.get("member_ids") or []):
         raise HTTPException(status_code=404, detail="User not in group")
-    await db.conversations.update_one(
-        {"id": conv_id}, {"$addToSet": {"admin_ids": user_id}}
-    )
+    await _legacy_conversation_update(conv_id, {'$addToSet': {'admin_ids': user_id}})
     fresh = await db.conversations.find_one({"id": conv_id}, {"_id": 0})
     hydrated = await _hydrate_conversation(fresh, user["id"])
     target = await db.users.find_one({"id": user_id}, {"_id": 0, "name": 1})
@@ -2186,9 +2217,7 @@ async def demote_admin(
             status_code=400,
             detail="Can't demote the last admin. Promote someone else first.",
         )
-    await db.conversations.update_one(
-        {"id": conv_id}, {"$pull": {"admin_ids": user_id}}
-    )
+    await _legacy_conversation_update(conv_id, {'$pull': {'admin_ids': user_id}})
     fresh = await db.conversations.find_one({"id": conv_id}, {"_id": 0})
     hydrated = await _hydrate_conversation(fresh, user["id"])
     await broadcast_to_members(
@@ -2231,9 +2260,7 @@ async def set_disappearing(conv_id: str, payload: DisappearingIn, user: dict = D
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     seconds = payload.seconds if payload.seconds and payload.seconds > 0 else None
-    await db.conversations.update_one(
-        {"id": conv_id}, {"$set": {"disappear_seconds": seconds}}
-    )
+    await _legacy_conversation_update(conv_id, {'$set': {'disappear_seconds': seconds}})
 
     # Post a system message announcing the change
     if seconds:
@@ -2489,6 +2516,8 @@ async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_
     )
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.get("e2ee_protocol") == MLS_PROTOCOL:
+        raise HTTPException(409, "This conversation requires the MLS delivery endpoint; downgrade is forbidden")
     await ensure_direct_conversation_not_blocked(conv, user, action="send messages to")
 
     e2ee_doc: Optional[dict] = None
@@ -2624,7 +2653,7 @@ async def send_message(payload: MessageSendIn, user: dict = Depends(get_current_
     disappear = conv.get("disappear_seconds")
     if disappear and disappear > 0:
         msg["disappear_seconds"] = int(disappear)
-    await db.messages.insert_one(msg)
+    await mls_delivery.insert_legacy_message(payload.conversation_id, msg)
     msg.pop("_id", None)
     # ISO-serialize expires_at for the response/broadcast (only present if a
     # prior read already set it — not the case for a brand new message, but
@@ -2804,13 +2833,7 @@ async def delete_conversation_for_me(
         raise HTTPException(status_code=403, detail="Not a participant")
 
     is_group = conv.get("type") == "group"
-    await db.conversations.update_one(
-        {"id": conv_id},
-        {
-            "$pull": {"member_ids": user["id"], "admin_ids": user["id"]},
-            "$unset": {f"unread_counts.{user['id']}": ""},
-        },
-    )
+    await _legacy_conversation_update(conv_id, {'$pull': {'member_ids': user['id'], 'admin_ids': user['id']}, '$unset': {f"unread_counts.{user['id']}": ''}})
     # Re-fetch to see remaining members
     fresh = await db.conversations.find_one({"id": conv_id}, {"_id": 0})
     remaining = (fresh or {}).get("member_ids") or []
@@ -3298,6 +3321,11 @@ async def get_attachment(att_id: str, user: dict = Depends(get_current_user)):
     att = await db.attachments.find_one({"id": att_id}, {"_id": 0})
     if not att:
         raise HTTPException(status_code=404, detail="Attachment not found")
+    if att.get("owner_id") != user["id"] and att.get("mls_conversation_id"):
+        conv = await db.conversations.find_one({"id": att["mls_conversation_id"], "member_ids": user["id"], "e2ee_protocol": MLS_PROTOCOL})
+        if not conv:
+            raise HTTPException(403, "Attachment not accessible")
+        return att
     if att.get("owner_id") != user["id"]:
         msg = await db.messages.find_one({"attachment_id": att_id}, {"_id": 0})
         if not msg:
@@ -3897,60 +3925,20 @@ async def _send_push_to_members(member_ids, sender_id, conv, msg):
                 )
                 return
 
-        title = conv.get("name") or "New message"
-        if conv.get("type") == "direct":
-            title = msg.get("sender_name", "New message")
-        if is_call:
-            title = f"📞 {msg.get('sender_name', 'Someone')} is calling"
-        body_preview = msg.get("content", "")
-        if is_call:
-            title = "ghostel.app call"
-            body_preview = "Incoming encrypted call"
-        elif msg.get("e2ee"):
-            body_preview = "Encrypted message"
-        elif msg.get("kind") == "voice":
-            body_preview = "🎙 Voice message"
-        elif msg.get("kind") == "file":
-            body_preview = "📎 Attachment"
-        elif msg.get("kind") == "image":
-            body_preview = "📷 Photo"
-        body_preview = (body_preview or "")[:140]
-
         sound = "ringtone" if is_call else "message"
         channel_id = "calls" if is_call else "messages"
         ttl_sec = 30 if is_call else 0
-        call_display_name = (
-            msg.get("sender_name")
-            or msg.get("caller_name")
-            or "Someone"
-        )
-        call_display_name = str(call_display_name)[:80]
-        # NOTE: FCM has a STRICT 4KB limit on the entire `data` dict for a
-        # single message. Avatars are stored as base64 PNGs (often 50-100KB)
-        # and MUST NOT be inlined here — that would exceed the limit and
-        # FCM would reject the whole push with INVALID_ARGUMENT.
-        # The native CallKeep screen will render the caller's initials when
-        # no avatar is provided, so this is purely a visual fallback.
-        common_data = {
+        title, body_preview, common_data = private_push({
             "conversation_id": conv.get("id", ""),
             "message_id": msg.get("id", ""),
             "call_id": msg.get("id", "") if is_call else "",
             "screen": "call" if is_call else "chat",
-            "kind": "call" if is_call else str(msg.get("kind") or "message"),
+            "kind": "call" if is_call else "message",
             "push_kind": "call" if is_call else "message",
-            # `incoming_call` is what the Android Headless JS handler matches on
-            # (src/fcmBackground.ts). Older clients accepted "call" too — both
-            # values are honored on the client.
             "type": "incoming_call" if is_call else "message",
-            "sender_name": call_display_name if is_call else msg.get("sender_name", ""),
-            # Caller-specific fields used by react-native-callkeep to render
-            # the native OS-level incoming-call screen on the lockscreen.
             "caller_id": msg.get("caller_id", sender_id) if is_call else "",
-            "caller_name": call_display_name if is_call else "",
-            "encryptedDisplayName": msg.get("encryptedDisplayName", "") if is_call else "",
-            # caller_avatar intentionally omitted — too big for FCM 4KB limit.
             "mode": msg.get("mode", "audio") if is_call else "",
-        }
+        }, is_call=is_call)
 
         # Split all registered devices by token type. A user may be logged in
         # on multiple phones, so never rely on the legacy single push_token.
@@ -4481,6 +4469,9 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
     )
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    member_ids = conv.get("member_ids") or []
+    if conv.get("type") != "direct" or len(member_ids) != 2 or len(set(member_ids)) != 2:
+        raise HTTPException(status_code=400, detail="Voice calls require a direct conversation")
     await ensure_direct_conversation_not_blocked(conv, user, action="call")
     members = await require_conversation_e2ee_ready(conv, action="Calls")
     member_keys = {
@@ -4508,8 +4499,10 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
             logger.info(
                 f"DUPLICATE_CALL_IGNORED call={requested_call_id[:8]} reason=idempotency_key"
             )
+            existing.pop("_active_conversation_id", None)
             return existing
 
+    await expire_stale_ringing_calls_for_user(user["id"])
     existing_active = await db.calls.find_one(
         {
             "conversation_id": conv["id"],
@@ -4528,11 +4521,13 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
         logger.info(
             f"DUPLICATE_CALL_IGNORED call={str(existing_active.get('id', ''))[:8]} reason=active_call_exists"
         )
+        existing_active.pop("_active_conversation_id", None)
         return existing_active
 
     call_id = requested_call_id or str(uuid.uuid4())
     call = {
         "id": call_id,
+        "_active_conversation_id": conv["id"],
         "callId": call_id,
         "conversation_id": conv["id"],
         "conversationId": conv["id"],
@@ -4576,8 +4571,16 @@ async def start_call(payload: CallStartIn, user: dict = Depends(get_current_user
         caller_save = True
     if not caller_save:
         call["ephemeral"] = True
-    await db.calls.insert_one(call)
+    try:
+        await db.calls.insert_one(call)
+    except DuplicateKeyError:
+        existing = await db.calls.find_one({"id": call_id}, {"_id": 0})
+        if existing and existing.get("caller_id") == user["id"]:
+            existing.pop("_active_conversation_id", None)
+            return existing
+        raise HTTPException(status_code=409, detail="A call is already active in this conversation")
     call.pop("_id", None)
+    call.pop("_active_conversation_id", None)
 
     # notify other members
     await broadcast_to_members(
@@ -4612,6 +4615,18 @@ def public_call_status(call: dict, user_id: str) -> dict:
     participants = call.get("participants") or []
     if not all(isinstance(participant, dict) for participant in participants):
         participants = []
+    client_states = call.get("lastKnownClientState") or call.get("last_known_client_state") or {}
+    if not isinstance(client_states, dict):
+        client_states = {}
+    client_state = client_states.get(user_id)
+    if not isinstance(client_state, dict):
+        client_state = {}
+    client_status = str(client_state.get("status") or "").lower()
+    status = (
+        client_status
+        if client_status in {"connecting", "active", "reconnecting"}
+        else call.get("status") or "ringing"
+    )
     return {
         "id": call.get("id"),
         "call_id": call.get("id"),
@@ -4627,7 +4642,7 @@ def public_call_status(call: dict, user_id: str) -> dict:
         "conversationId": call.get("conversation_id") or call.get("conv_id"),
         "mode": call.get("mode") or "audio",
         "callType": call.get("mode") or "audio",
-        "status": call.get("status") or "ringing",
+        "status": status,
         "direction": "outgoing" if call.get("caller_id") == user_id else "incoming",
         "created_at": call.get("created_at") or call.get("started_at"),
         "createdAt": call.get("created_at") or call.get("started_at"),
@@ -4673,7 +4688,8 @@ async def expire_stale_ringing_calls_for_user(user_id: str) -> None:
                     "ended_by": "timeout",
                     "last_updated_at": ended_iso,
                     "lastUpdatedAt": ended_iso,
-                }
+                },
+                "$unset": {"_active_conversation_id": ""},
             },
         )
         event = {
@@ -5105,7 +5121,7 @@ async def _finish_call(call_id: str, user: dict, action: str):
         update_doc["status"] = "cancelled" if user["id"] == call.get("caller_id") else "declined"
     result = await db.calls.update_one(
         {"id": call_id, "ended_at": None, "answered_at": call.get("answered_at")},
-        {"$set": update_doc},
+        {"$set": update_doc, "$unset": {"_active_conversation_id": ""}},
     )
     if not result.matched_count:
         return await _finish_call(call_id, user, action)
@@ -5160,6 +5176,7 @@ async def end_call(call_id: str, user: dict = Depends(get_current_user)):
 # ----------------- Call history -----------------
 async def enrich_call_for_user(call: dict, user_id: str) -> dict:
     """Attach lightweight participant data used by the call UI."""
+    call.pop("_active_conversation_id", None)
     call["direction"] = "outgoing" if call.get("caller_id") == user_id else "incoming"
     member_ids = [m for m in call.get("member_ids", []) if m]
     if not member_ids:
@@ -5261,7 +5278,8 @@ async def timeout_call(call_id: str, user: dict = Depends(get_current_user)):
                 "ended_by": "timeout",
                 "last_updated_at": ended_iso,
                 "lastUpdatedAt": ended_iso,
-            }
+            },
+            "$unset": {"_active_conversation_id": ""},
         },
     )
     event = {
@@ -5292,10 +5310,19 @@ async def update_call_client_state(
         raise HTTPException(status_code=403, detail="Not a participant")
     if call.get("ended_at") or str(call.get("status") or "").lower() in CALL_TERMINAL_STATUSES:
         return {"updated": False, "status": call.get("status"), "idempotent": True}
+    if payload.status and not call.get("answered_at"):
+        raise HTTPException(status_code=409, detail="Call must be accepted before reporting media state")
 
     now_iso = now_utc().isoformat()
+    client_states = call.get("lastKnownClientState") or call.get("last_known_client_state") or {}
+    if not isinstance(client_states, dict):
+        client_states = {}
+    previous_client_state = client_states.get(user["id"])
+    if not isinstance(previous_client_state, dict):
+        previous_client_state = {}
     client_state = {
         "user_id": user["id"],
+        "status": payload.status or previous_client_state.get("status"),
         "peer_connection_state": payload.peer_connection_state or "",
         "local_audio_enabled": payload.local_audio_enabled,
         "remote_audio_connected": payload.remote_audio_connected,
@@ -5306,8 +5333,6 @@ async def update_call_client_state(
         "lastUpdatedAt": now_iso,
         f"lastKnownClientState.{user['id']}": client_state,
     }
-    if payload.status:
-        update_doc["status"] = payload.status
     await db.calls.update_one({"id": call_id}, {"$set": update_doc})
 
     event = {
@@ -5317,12 +5342,13 @@ async def update_call_client_state(
         "from": user["id"],
         "data": {
             "call_id": call_id,
-            "status": payload.status or call.get("status"),
+            "status": call.get("status"),
+            "client_status": client_state["status"],
             "updated_at": now_iso,
         },
     }
     await broadcast_to_members(call.get("member_ids", []), event)
-    return {"updated": True, "status": payload.status or call.get("status")}
+    return {"updated": True, "status": call.get("status"), "client_status": client_state["status"]}
 
 
 @api.get("/calls")
@@ -5529,33 +5555,27 @@ async def toggle_mute_conversation(
 
 
 # ----------------- WebSocket (signaling + live messages) -----------------
-class WSManager:
-    def __init__(self):
-        self.sockets: dict[str, set[WebSocket]] = {}
-        self._lock = asyncio.Lock()
-
-    async def connect(self, user_id: str, ws: WebSocket):
-        async with self._lock:
-            self.sockets.setdefault(user_id, set()).add(ws)
-
-    async def disconnect(self, user_id: str, ws: WebSocket):
-        async with self._lock:
-            if user_id in self.sockets:
-                self.sockets[user_id].discard(ws)
-                if not self.sockets[user_id]:
-                    self.sockets.pop(user_id, None)
-
-    async def send_to(self, user_id: str, payload: dict):
-        async with self._lock:
-            sockets = list(self.sockets.get(user_id, []))
-        for ws in sockets:
-            try:
-                await ws.send_text(json.dumps(payload))
-            except Exception:
-                pass
+async def websocket_session_active(user_id: str, session_id: str) -> bool:
+    session = await db.user_sessions.find_one(
+        {"id": session_id, "user_id": user_id},
+        {"_id": 0, "revoked_at": 1, "expires_at": 1},
+    )
+    if not session or session.get("revoked_at"):
+        return False
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    if not isinstance(expires_at, datetime) or ensure_utc(expires_at) <= now_utc():
+        return False
+    return bool(await db.users.find_one({"id": user_id}, {"_id": 0, "id": 1}))
 
 
-ws_manager = WSManager()
+ws_manager = WSManager(websocket_session_active)
+WS_SESSION_CHECK_SECONDS = 5
+WS_MAX_MESSAGE_BYTES = 64 * 1024
 
 
 async def broadcast_to_members(member_ids, payload, exclude: Optional[str] = None):
@@ -5593,13 +5613,8 @@ async def websocket_endpoint(
         if not user_id or credential_type not in ("ws", "access"):
             raise ValueError("invalid ticket")
         session_id = payload.get("sid")
-        if session_id:
-            session = await db.user_sessions.find_one(
-                {"id": session_id, "user_id": user_id},
-                {"_id": 0, "revoked_at": 1, "expires_at": 1},
-            )
-            if not session or session.get("revoked_at"):
-                raise ValueError("session revoked")
+        if not await ws_manager.is_authorized(user_id, session_id):
+            raise ValueError("session revoked or expired")
         if credential_type == "ws":
             jti = payload.get("jti")
             if not jti:
@@ -5623,7 +5638,8 @@ async def websocket_endpoint(
         await websocket.close()
         return
 
-    await ws_manager.connect(user_id, websocket)
+    if not await ws_manager.connect(user_id, websocket, session_id):
+        return
     # Mark user as online (best-effort)
     try:
         await db.users.update_one(
@@ -5636,10 +5652,35 @@ async def websocket_endpoint(
 
     try:
         while True:
-            raw = await websocket.receive_text()
+            try:
+                raw = await asyncio.wait_for(
+                    websocket.receive_text(), timeout=WS_SESSION_CHECK_SECONDS
+                )
+            except RuntimeError:
+                # A local session revocation may have already closed this socket.
+                break
+            except asyncio.TimeoutError:
+                if not await ws_manager.is_authorized(user_id, session_id):
+                    await ws_manager.close_socket(user_id, websocket)
+                    break
+                continue
+            # Validate before processing every inbound event, including ping.
+            if not await ws_manager.is_authorized(user_id, session_id):
+                await ws_manager.close_socket(user_id, websocket)
+                break
+            if len(raw.encode("utf-8")) > WS_MAX_MESSAGE_BYTES:
+                await ws_manager.close_socket(user_id, websocket, code=1009)
+                break
+            try:
+                await enforce_rate_limit("ws-events", user_id, limit=240, window_seconds=60)
+            except HTTPException:
+                await ws_manager.close_socket(user_id, websocket, code=4429)
+                break
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
                 continue
             mtype = data.get("type")
             # WebRTC signaling: forward to target user
@@ -5747,6 +5788,16 @@ async def head_android_apk():
 
 
 # Register router
+async def _notify_mls_message(conv, event):
+    asyncio.create_task(_send_push_to_members(conv["member_ids"], event["sender_id"], conv,
+        {"id": event["id"], "kind": "text", "content": "[encrypted message]", "encrypted": True}))
+
+
+mls_delivery = MLSDelivery(
+    db, get_current_user, enforce_rate_limit, ensure_direct_conversation_not_blocked,
+    broadcast_to_members, enabled=os.environ.get("MLS_ENABLED", "false").lower() == "true", notify=_notify_mls_message,
+)
+api.include_router(mls_delivery.router)
 app.include_router(api)
 
 _cors_raw = os.environ.get("CORS_ORIGINS", "").strip()
@@ -5761,6 +5812,12 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+
+app.add_middleware(
+    RequestBodyLimit,
+    max_bytes=int(os.environ.get("MAX_REQUEST_BODY_BYTES", str(16 * 1024 * 1024))),
 )
 
 
@@ -5793,6 +5850,14 @@ async def _ensure_indexes() -> None:
         ("messages", "expires_at", {"expireAfterSeconds": 0}),
         ("attachments", "id", {"unique": True}),
         ("calls", "id", {"unique": True}),
+        (
+            "calls",
+            "_active_conversation_id",
+            {
+                "unique": True,
+                "partialFilterExpression": {"_active_conversation_id": {"$exists": True}},
+            },
+        ),
         ("calls", "conversation_id", {}),
         ("login_attempts", "at", {}),
         ("login_attempts", "expires_at", {"expireAfterSeconds": 0}),
@@ -5847,6 +5912,7 @@ async def _seed_user_safely(filter_q: dict, doc_on_insert: dict, label: str) -> 
 
 @app.on_event("startup")
 async def on_startup():
+    await mls_delivery.startup()
     await _ensure_indexes()
 
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@ghostel.app").lower()

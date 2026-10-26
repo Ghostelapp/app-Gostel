@@ -1,0 +1,18 @@
+{
+  "date": "2026-09-25",
+  "version": "1.4.56",
+  "build": "71",
+  "bundleIdentifier": "app.ghostel",
+  "buildId": "3b11ba29-0e31-4a49-bd4a-cd7e54c1213e",
+  "processingState": "VALID",
+  "autoNotifyEnabled": true,
+  "internalBuildState": "IN_BETA_TESTING",
+  "externalBuildState": "READY_FOR_BETA_SUBMISSION",
+  "ipaSha256": "fe4e14b77cc0059e6706858d913b55a749ee853bc718c975ff3b5c7eccd72071",
+  "tests": {
+    "python": 38,
+    "node": 39,
+    "rust": 9
+  },
+  "physicalLockscreenRetest": "pending"
+}

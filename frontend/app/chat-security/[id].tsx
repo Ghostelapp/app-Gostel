@@ -23,12 +23,14 @@ import { api, formatApiErrorDetail } from '../../src/api';
 import { useAuth } from '../../src/auth';
 import {
   E2EEKeyTrustStatus,
+  ensureE2EEIdentity,
   isConversationE2EEReady,
   publicKeyFingerprint,
   syncConversationKeyTrust,
   trustConversationKeys,
 } from '../../src/e2ee';
 import { theme } from '../../src/theme';
+import MLSSecurityPanel from '../../src/mls/SecurityPanel';
 
 type Member = {
   id: string;
@@ -45,6 +47,8 @@ type Conversation = {
   name: string;
   members: Member[];
   e2ee_ready?: boolean;
+  e2ee_protocol?: string;
+  created_by?: string;
 };
 
 function memberDisplayName(member: Member | undefined, fallback: string): string {
@@ -69,8 +73,15 @@ export default function ChatSecurityScreen() {
       else setLoading(true);
       try {
         const { data } = await api.get(`/conversations/${id}`);
-        setConversation(data);
         if (user?.id) {
+          // The user's own fingerprint must come from this device, never the
+          // server's key directory (otherwise a malicious directory can fake
+          // both sides of an out-of-band comparison).
+          const localIdentity = await ensureE2EEIdentity(user.id);
+          data.members = (data.members || []).map((member: Member) =>
+            member.id === user.id ? { ...member, e2ee_public_key: localIdentity.publicKey } : member,
+          );
+          setConversation(data);
           const nextTrust = await syncConversationKeyTrust(data, user.id);
           setTrust(nextTrust);
         } else {
@@ -204,6 +215,7 @@ export default function ChatSecurityScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll}>
+        {user?.id && <MLSSecurityPanel user={user.id} conversation={conversation} refresh={() => { void load(true); }} />}
         <View style={styles.summary}>
           <View style={[styles.statusIcon, { borderColor: statusColor }]}>
             <StatusIcon color={statusColor} size={28} strokeWidth={2.2} />
@@ -217,7 +229,14 @@ export default function ChatSecurityScreen() {
         {hasChangedKeys ? (
           <TouchableOpacity
             testID="chat-security-trust"
-            onPress={confirmNewKeys}
+            onPress={() => Alert.alert(
+              t('chat.e2e_key_changed_title'),
+              t('chat.e2e_key_changed_body', { names: changedNames }),
+              [
+                { text: t('common.cancel'), style: 'cancel' },
+                { text: t('chat.e2e_trust_new_keys'), onPress: confirmNewKeys },
+              ],
+            )}
             disabled={trusting}
             style={styles.primaryBtn}
             activeOpacity={0.86}
@@ -293,7 +312,7 @@ export default function ChatSecurityScreen() {
                     </Text>
                   ) : null}
                   <Text style={styles.fingerprintLabel}>{t('chat.security_fingerprint')}</Text>
-                  <Text style={styles.fingerprint} numberOfLines={2}>
+                  <Text style={styles.fingerprint}>
                     {fingerprint || t('chat.security_no_fingerprint')}
                   </Text>
                 </View>

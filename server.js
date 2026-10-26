@@ -40,7 +40,8 @@ function findMatchingHtmlFile(urlPath) {
   const cleanPath = urlPath.split('?')[0].split('#')[0];
   
   // 1. Direct file check
-  const directPath = path.join(DIST_DIR, cleanPath);
+  const directPath = path.resolve(DIST_DIR, `.${cleanPath.startsWith("/") ? cleanPath : `/${cleanPath}`}`);
+  if (directPath !== DIST_DIR && !directPath.startsWith(`${DIST_DIR}${path.sep}`)) return null;
   if (fs.existsSync(directPath) && fs.statSync(directPath).isFile()) {
     return directPath;
   }

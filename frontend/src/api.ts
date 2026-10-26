@@ -1,9 +1,15 @@
+import Constants from 'expo-constants';
 import axios, { AxiosInstance } from 'axios';
 import { getStoredToken, TOKEN_KEY } from './tokenStorage';
 
 export { TOKEN_KEY };
 
-export const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://api.ghostel.app';
+const staging = process.env.EXPO_PUBLIC_APP_VARIANT === 'staging' || Constants.expoConfig?.extra?.appVariant === 'staging';
+const configuredBackend = process.env.EXPO_PUBLIC_BACKEND_URL || (staging ? Constants.expoConfig?.extra?.stagingBackendUrl : undefined);
+if (staging && (!configuredBackend || ['api.ghostel.app', 'app.ghostel.app', 'ghostel.app', 'panel-api.ghostel.app'].includes(new URL(configuredBackend).hostname.toLowerCase().replace(/\.$/, '')))) {
+  throw new Error('Staging backend is missing or points to production');
+}
+export const BASE_URL = configuredBackend || 'https://api.ghostel.app';
 
 export const api: AxiosInstance = axios.create({
   baseURL: `${BASE_URL}/api`,

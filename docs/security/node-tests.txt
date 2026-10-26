@@ -1,0 +1,13 @@
+✔ receiver rejects attacker key under a pinned sender ID (124.100295ms)
+✔ CONFIRMED OPEN: old ciphertext decrypts with current static key and can be relabelled/replayed (35.057025ms)
+✔ static fallback refuses parent traversal (1.023715ms)
+✔ desktop opens only http(s) external URLs (1.79226ms)
+✔ pinned legitimate sender decrypts text and attachment; changed pin rejects both (33.735505ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 521.248422

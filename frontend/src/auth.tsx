@@ -5,6 +5,7 @@ import { getStoredToken, removeStoredToken, setStoredToken } from './tokenStorag
 import { registerPushNotificationsAsync, unregisterCurrentPushDeviceAsync } from './push';
 import { useHeartbeat } from './presence';
 import { registerE2EEKey } from './e2ee';
+import { resetMLSSession } from './mls/client';
 
 export type User = {
   id: string;
@@ -45,6 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const userId = user?.id;
+  useEffect(() => () => { if (userId) resetMLSSession(userId); }, [userId]);
 
   const refreshUser = useCallback(async () => {
     try {

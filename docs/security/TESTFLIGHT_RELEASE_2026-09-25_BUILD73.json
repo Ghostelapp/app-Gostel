@@ -1,0 +1,23 @@
+{
+  "date": "2026-09-25",
+  "version": "1.4.56",
+  "build": "73",
+  "archiveBuild": "72",
+  "bundleId": "app.ghostel",
+  "buildId": "2174493a-0764-4abb-aabe-48e47fd72be6",
+  "processingState": "VALID",
+  "internalBuildState": "IN_BETA_TESTING",
+  "externalBuildState": "READY_FOR_BETA_SUBMISSION",
+  "ipa": "artifacts/testflight/Ghostel-1.4.56-73.ipa",
+  "sha256": "d0f51001ecd459c6329604801f41e72503b4058b226a1f068bc6c63928e20542",
+  "tests": {
+    "python": 38,
+    "node": 40,
+    "rust": 9,
+    "deployedControlRouting": 2
+  },
+  "physicalLockscreenRetest": "pending",
+  "warnings": [
+    "Missing third-party React, ReactNativeDependencies and hermes dSYM files; upload succeeded"
+  ]
+}

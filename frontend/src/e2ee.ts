@@ -4,15 +4,18 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import nacl from 'tweetnacl';
 import { api } from './api';
+import { hasMLSApproval } from './mls/client';
 
 const ALGORITHM = 'nacl-box-v1' as const;
 // SecureStore keys may contain only alphanumeric characters, ".", "-" and "_".
 const IDENTITY_PREFIX = 'ghostel_e2ee_identity_v1.';
 const LEGACY_IDENTITY_PREFIX = 'ghostel_e2ee_identity_v1:';
-const TRUST_PREFIX = 'ghostel_e2ee_trusted_keys_v2.';
+// v3 contains only explicitly confirmed keys. Never import old TOFU pins.
+const TRUST_PREFIX = 'ghostel_e2ee_verified_keys_v3.';
 const LEGACY_TRUST_PREFIX = 'ghostel_e2ee_trusted_keys_v1:';
 const PLACEHOLDER = '[encrypted message]';
 export const E2EE_UNAVAILABLE_TEXT = 'Encrypted message unavailable on this device';
+export const SERVER_EVENT_TEXT = 'Server event (not end-to-end authenticated)';
 
 type Algorithm = typeof ALGORITHM;
 
@@ -29,6 +32,8 @@ export type E2EEUser = {
 };
 
 export type E2EEConversation = {
+  id?: string;
+  e2ee_protocol?: string;
   type: 'direct' | 'group';
   members: E2EEUser[];
 };
@@ -50,7 +55,8 @@ export type E2EEPayload = {
 };
 
 export type E2EEAttachmentPayload = {
-  version: 1;
+  version: 1 | 2;
+  key?: string;
   algorithm: 'nacl-secretbox-v1';
   nonce: string;
   mime: string;
@@ -74,6 +80,7 @@ export type E2EEMessageLike = {
   e2ee?: E2EEPayload | null;
   e2ee_attachment?: E2EEAttachmentPayload | null;
   e2ee_decrypted?: boolean;
+  e2ee_version?: number | null;
 };
 
 const migratedLockedKeys = new Set<string>();
@@ -171,7 +178,7 @@ async function getTrustedPublicKeys(userId: string): Promise<Record<string, stri
   }
   if (!raw) {
     const currentAsync = await AsyncStorage.getItem(key);
-    const legacy = currentAsync || await AsyncStorage.getItem(legacyTrustedKeysKey(userId));
+    const legacy = currentAsync; // Old automatically trusted keys require user verification.
     if (legacy && canUseSecureStore) {
       try {
         await SecureStore.setItemAsync(key, legacy, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
@@ -246,7 +253,7 @@ export function publicKeyFingerprint(publicKey?: string | null): string {
   const clean = (publicKey || '').trim();
   if (!clean) return '';
   const digest = nacl.hash(base64ToBytes(clean));
-  const hex = Array.from(digest.slice(0, 8))
+  const hex = Array.from(digest.slice(0, 32))
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('')
     .toUpperCase();
@@ -281,7 +288,8 @@ function buildTrustStatus(
       continue;
     }
     fingerprints[member.id] = publicKeyFingerprint(publicKey);
-    if (trustedKeys[member.id] && trustedKeys[member.id] !== publicKey) {
+    // Existing consumers use changedMemberIds for both new and changed keys.
+    if (trustedKeys[member.id] !== publicKey) {
       changedMemberIds.push(member.id);
     }
   }
@@ -353,6 +361,7 @@ export function isConversationE2EEReady(
   conversation: E2EEConversation | null | undefined,
   currentUserId: string | null | undefined,
 ): boolean {
+  if (conversation?.e2ee_protocol === 'mls-v1') return true;
   if (!conversation || !currentUserId) return false;
   if ((conversation.members || []).length < 2) return false;
   return conversation.members.every(
@@ -364,35 +373,23 @@ export async function syncConversationKeyTrust(
   conversation: E2EEConversation | null | undefined,
   currentUserId: string | null | undefined,
 ): Promise<E2EEKeyTrustStatus> {
+  if (conversation?.e2ee_protocol === 'mls-v1' && currentUserId && conversation.id) {
+    const trusted = await hasMLSApproval(currentUserId, conversation.id);
+    return { ready: trusted, trusted, fingerprints: {}, changedMemberIds: [], missingMemberIds: trusted ? [] : conversation.members.map(m => m.id) };
+  }
   if (!conversation || !currentUserId) {
     return buildTrustStatus(conversation, currentUserId, {});
   }
 
   const trustedKeys = await getTrustedPublicKeys(currentUserId);
-  const nextTrustedKeys = { ...trustedKeys };
-  let changed = false;
-
-  for (const member of conversation.members || []) {
-    if (member.id === currentUserId) continue;
-    const publicKey = (member.e2ee_public_key || '').trim();
-    if (!publicKey) continue;
-    if (!nextTrustedKeys[member.id]) {
-      nextTrustedKeys[member.id] = publicKey;
-      changed = true;
-    }
-  }
-
-  if (changed) {
-    await setTrustedPublicKeys(currentUserId, nextTrustedKeys);
-  }
-
-  return buildTrustStatus(conversation, currentUserId, nextTrustedKeys);
+  return buildTrustStatus(conversation, currentUserId, trustedKeys);
 }
 
 export async function trustConversationKeys(
   conversation: E2EEConversation,
   currentUserId: string,
 ): Promise<E2EEKeyTrustStatus> {
+  if (conversation.e2ee_protocol === 'mls-v1') throw new Error('Verify individual MLS devices on the security screen');
   const trustedKeys = await getTrustedPublicKeys(currentUserId);
   const nextTrustedKeys = { ...trustedKeys };
 
@@ -413,7 +410,7 @@ export async function encryptTextForConversation(
   conversation: E2EEConversation,
   currentUserId: string,
 ): Promise<{ content: string; encrypted: true; e2ee: E2EEPayload } | null> {
-  if (!isConversationE2EEReady(conversation, currentUserId)) return null;
+  if (!(await syncConversationKeyTrust(conversation, currentUserId)).trusted) return null;
 
   const identity = await ensureE2EEIdentity(currentUserId);
   await api.post('/e2ee/keys', {
@@ -458,7 +455,18 @@ export async function encryptAttachmentForConversation(
   conversation: E2EEConversation,
   currentUserId: string,
 ): Promise<{ data: string; e2ee_attachment: E2EEAttachmentPayload } | null> {
-  if (!isConversationE2EEReady(conversation, currentUserId)) return null;
+  if (!(await syncConversationKeyTrust(conversation, currentUserId)).trusted) return null;
+
+  if (conversation.e2ee_protocol === 'mls-v1') {
+    const key = await Crypto.getRandomBytesAsync(32);
+    const nonce = await Crypto.getRandomBytesAsync(24);
+    const bytes = base64ToBytes(base64Data);
+    try {
+      return { data: bytesToBase64(nacl.secretbox(bytes, nonce, key)), e2ee_attachment: {
+        version: 2, algorithm: 'nacl-secretbox-v1', nonce: bytesToBase64(nonce), key: bytesToBase64(key), mime, size: bytes.length, key_recipients: {},
+      } };
+    } finally { key.fill(0); bytes.fill(0); }
+  }
 
   const identity = await ensureE2EEIdentity(currentUserId);
   await api.post('/e2ee/keys', {
@@ -502,18 +510,38 @@ export async function encryptAttachmentForConversation(
   };
 }
 
+// Enforce locally pinned identity on receive as well as on send. This does
+// not authenticate first contact or replace an audited messaging protocol.
+async function matchesPinnedSender(message: E2EEMessageLike, userId: string, identity: E2EEIdentity): Promise<boolean> {
+  if (!message.e2ee || message.e2ee.version !== 1) return false;
+  if (message.e2ee.sender_user_id && message.e2ee.sender_user_id !== message.sender_id) return false;
+  const expected = message.sender_id === userId
+    ? identity.publicKey
+    : (await getTrustedPublicKeys(userId))[message.sender_id];
+  return !!expected && expected === message.e2ee.sender_public_key;
+}
+
 export async function decryptMessageForUser<T extends E2EEMessageLike>(
   message: T,
   currentUserId: string | null | undefined,
 ): Promise<T> {
-  if (!message.e2ee) return message;
+  // Never render server-supplied plaintext as a message, including when an
+  // attacker removes the encrypted flag or changes the kind to "system".
+  if (!message.e2ee) {
+    return {
+      ...message,
+      content: message.kind === 'system' || message.sender_id === 'system'
+        ? SERVER_EVENT_TEXT : E2EE_UNAVAILABLE_TEXT,
+      e2ee_decrypted: false,
+    };
+  }
   if (!currentUserId || message.e2ee.algorithm !== ALGORITHM) {
     return { ...message, content: E2EE_UNAVAILABLE_TEXT, e2ee_decrypted: false };
   }
 
   const identity = await getStoredIdentity(currentUserId);
   const recipient = message.e2ee.recipients?.[currentUserId];
-  if (!identity || !recipient) {
+  if (!identity || !recipient || !(await matchesPinnedSender(message, currentUserId, identity))) {
     return { ...message, content: E2EE_UNAVAILABLE_TEXT, e2ee_decrypted: false };
   }
 
@@ -546,7 +574,17 @@ export async function decryptAttachmentForUser(
   message: E2EEMessageLike,
   currentUserId: string | null | undefined,
 ): Promise<{ data: string; mime: string } | null> {
-  if (!payload) return { data: base64Data, mime: '' };
+  if (payload?.version === 2) {
+    if (message.e2ee_version !== 2 || message.e2ee_decrypted !== true || !payload.key || payload.algorithm !== 'nacl-secretbox-v1') return null;
+    try {
+      const key = base64ToBytes(payload.key);
+      try {
+        const opened = nacl.secretbox.open(base64ToBytes(base64Data), base64ToBytes(payload.nonce), key);
+        return opened ? { data: bytesToBase64(opened), mime: payload.mime } : null;
+      } finally { key.fill(0); }
+    } catch { return null; }
+  }
+  if (!payload || payload.version !== 1) return null;
   if (
     !currentUserId ||
     payload.algorithm !== 'nacl-secretbox-v1' ||
@@ -558,7 +596,7 @@ export async function decryptAttachmentForUser(
 
   const identity = await getStoredIdentity(currentUserId);
   const wrappedKey = payload.key_recipients?.[currentUserId];
-  if (!identity || !wrappedKey) return null;
+  if (!identity || !wrappedKey || !(await matchesPinnedSender(message, currentUserId, identity))) return null;
 
   try {
     const fileKey = nacl.box.open(

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 from typing import Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import uuid
 
 
@@ -17,19 +17,35 @@ class HTTPException(Exception):
         self.detail = detail
 
 
+class DuplicateKeyError(Exception):
+    pass
+
+
 def handlers():
     tree = ast.parse((Path(__file__).parents[1] / "server.py").read_text())
-    names = {"accept_call", "_finish_call", "_send_call_control_push"}
+    names = {
+        "accept_call", "_finish_call", "_send_call_control_push", "start_call",
+        "update_call_client_state", "public_call_status",
+    }
     nodes = []
     for node in tree.body:
-        if isinstance(node, ast.AsyncFunctionDef) and node.name in names:
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name in names:
             node.decorator_list = []
             node.args.defaults = []
             nodes.append(node)
-    calls = SimpleNamespace(find_one=AsyncMock(), update_one=AsyncMock(), delete_one=AsyncMock())
-    db = SimpleNamespace(calls=calls, call_signals=SimpleNamespace(update_one=AsyncMock(), insert_many=AsyncMock()))
-    env = dict(Optional=Optional, db=db, HTTPException=HTTPException, enforce_rate_limit=AsyncMock(),
+    calls = SimpleNamespace(find_one=AsyncMock(), update_one=AsyncMock(), delete_one=AsyncMock(), insert_one=AsyncMock())
+    db = SimpleNamespace(calls=calls, conversations=SimpleNamespace(find_one=AsyncMock()),
+                         call_signals=SimpleNamespace(update_one=AsyncMock(), insert_many=AsyncMock()))
+    env = dict(Optional=Optional, db=db, HTTPException=HTTPException, DuplicateKeyError=DuplicateKeyError,
+               CallStartIn=object, CallStateUpdateIn=object, enforce_rate_limit=AsyncMock(),
+               ensure_direct_conversation_not_blocked=AsyncMock(),
+               expire_stale_ringing_calls_for_user=AsyncMock(),
+               require_conversation_e2ee_ready=AsyncMock(return_value=[
+                   {"id": "caller", "e2ee_public_key": "caller-key"},
+                   {"id": "callee", "e2ee_public_key": "callee-key"},
+               ]),
                now_utc=lambda: datetime.now(timezone.utc), datetime=datetime, uuid=uuid,
+               timedelta=timedelta, CALL_RING_TIMEOUT_SECONDS=45,
                logger=logging.getLogger("test.calls"), broadcast_to_members=AsyncMock(),
                _send_call_control_push=AsyncMock(), asyncio=asyncio,
                CALL_TERMINAL_STATUSES={"ended", "declined", "cancelled", "timeout", "missed", "failed"})
@@ -38,11 +54,91 @@ def handlers():
 
 
 def call(**overrides):
-    return dict(id="call", member_ids=["caller", "callee"], caller_id="caller",
-                status="ringing", ended_at=None, answered_at=None, **overrides)
+    return {
+        **dict(id="call", member_ids=["caller", "callee"], caller_id="caller",
+               status="ringing", ended_at=None, answered_at=None),
+        **overrides,
+    }
 
 
 class CallTransitions(unittest.IsolatedAsyncioTestCase):
+    async def test_public_status_is_scoped_to_the_requesting_participant(self):
+        env = handlers()
+        call_data = {
+            **call(),
+            "status": "answered",
+            "lastKnownClientState": {
+                "caller": {"status": "active"},
+                "callee": {"status": "reconnecting"},
+            },
+        }
+        self.assertEqual(env["public_call_status"](call_data, "caller")["status"], "active")
+        self.assertEqual(env["public_call_status"](call_data, "callee")["status"], "reconnecting")
+        self.assertEqual(env["public_call_status"](call_data, "other")["status"], "answered")
+
+    async def test_group_conversation_cannot_start_voice_call(self):
+        env = handlers()
+        env["db"].conversations.find_one.return_value = {
+            "id": "group", "type": "group", "member_ids": ["caller", "callee", "third"]
+        }
+        with self.assertRaises(HTTPException) as error:
+            await env["start_call"](
+                SimpleNamespace(conversation_id="group", mode="audio", call_id=None),
+                {"id": "caller"},
+            )
+        self.assertEqual(error.exception.status_code, 400)
+        env["db"].calls.insert_one.assert_not_awaited()
+
+    async def test_concurrent_active_call_insert_returns_conflict(self):
+        env = handlers()
+        env["db"].conversations.find_one.return_value = {
+            "id": "conversation", "type": "direct", "member_ids": ["caller", "callee"]
+        }
+        env["db"].calls.find_one.side_effect = [None, None]
+        env["db"].calls.insert_one.side_effect = DuplicateKeyError("active slot already claimed")
+        with self.assertRaises(HTTPException) as error:
+            await env["start_call"](
+                SimpleNamespace(conversation_id="conversation", mode="audio", call_id=None),
+                {"id": "caller"},
+            )
+        self.assertEqual(error.exception.status_code, 409)
+        env["expire_stale_ringing_calls_for_user"].assert_awaited_once_with("caller")
+
+    async def test_media_status_is_stored_per_participant(self):
+        env = handlers()
+        env["db"].calls.find_one.return_value = {
+            **call(), "status": "answered", "answered_at": "2026-01-01T00:00:00+00:00",
+            "lastKnownClientState": {},
+        }
+        result = await env["update_call_client_state"](
+            "call",
+            SimpleNamespace(
+                status="active", peer_connection_state="connected",
+                local_audio_enabled=True, remote_audio_connected=True,
+            ),
+            {"id": "callee"},
+        )
+        self.assertEqual(result["status"], "answered")
+        self.assertEqual(result["client_status"], "active")
+        update = env["db"].calls.update_one.await_args.args[1]["$set"]
+        self.assertNotIn("status", update)
+        self.assertEqual(update["lastKnownClientState.callee"]["status"], "active")
+
+    async def test_media_status_cannot_activate_unanswered_call(self):
+        env = handlers()
+        env["db"].calls.find_one.return_value = call()
+        with self.assertRaises(HTTPException) as error:
+            await env["update_call_client_state"](
+                "call",
+                SimpleNamespace(
+                    status="active", peer_connection_state="connected",
+                    local_audio_enabled=True, remote_audio_connected=True,
+                ),
+                {"id": "callee"},
+            )
+        self.assertEqual(error.exception.status_code, 409)
+        env["db"].calls.update_one.assert_not_awaited()
+
     async def test_missing_call_cannot_be_accepted(self):
         env = handlers()
         env['db'].calls.find_one.return_value = None
@@ -98,6 +194,19 @@ class CallTransitions(unittest.IsolatedAsyncioTestCase):
         result = await env['_finish_call']('call', {'id': 'callee'}, 'end')
         self.assertTrue(result['idempotent'])
         env['db'].calls.update_one.assert_not_awaited()
+
+    async def test_ending_call_releases_active_conversation_slot(self):
+        env = handlers()
+        env['_send_call_control_push'] = AsyncMock()
+        env['asyncio'] = SimpleNamespace(create_task=lambda task: task.close())
+        env['db'].calls.find_one.return_value = {
+            **call(), 'status': 'answered', 'answered_at': '2026-01-01T00:00:00+00:00',
+            '_active_conversation_id': 'conversation',
+        }
+        env['db'].calls.update_one.return_value = SimpleNamespace(matched_count=1)
+        await env['_finish_call']('call', {'id': 'callee'}, 'end')
+        update = env['db'].calls.update_one.await_args.args[1]
+        self.assertEqual(update['$unset'], {'_active_conversation_id': ''})
 
     async def test_other_device_cannot_accept_an_answered_call(self):
         env = handlers()

@@ -43,4 +43,4 @@ Write-Host ""
 Write-Host "Keep this window open while using the app."
 Write-Host ""
 
-.\.venv\Scripts\python.exe -m uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+.\.venv\Scripts\python.exe -m uvicorn server:app --host 0.0.0.0 --port 8000 --ws-max-size 65536 --ws-max-queue 8 --reload

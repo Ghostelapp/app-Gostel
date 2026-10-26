@@ -1,0 +1,29 @@
+   Compiling ghostel-mls v0.1.0 (/Users/patrykslonecki/app-Gostel/crypto/ghostel-mls)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.04s
+     Running unittests src/lib.rs (crypto/ghostel-mls/target/debug/deps/ghostel_mls-360b51460d6f31c8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/security.rs (crypto/ghostel-mls/target/debug/deps/security-dbebb954f7c54054)
+
+running 9 tests
+test sealed_state_is_bound_to_device_and_key ... ok
+test pin_replacement_and_trailing_bytes_are_rejected ... ok
+test reject_unverified_package_and_wrong_group_welcome ... ok
+test old_epoch_keys_are_not_retained ... ok
+test tampering_does_not_consume_receive_key ... ok
+test authenticated_exchange_replay_and_restart ... ok
+test rejected_membership_commit_rolls_back_automatically ... ok
+test update_rotates_epoch_and_survives_restart ... ok
+test removed_device_cannot_read_future_epoch ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+
+   Doc-tests ghostel_mls
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

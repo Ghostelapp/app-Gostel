@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, Menu, shell, session } = require("electron");
+const { app, BrowserWindow, dialog, Menu, shell, session, ipcMain, safeStorage } = require("electron");
 const { appendFileSync, createReadStream, existsSync, statSync } = require("node:fs");
 const { createServer } = require("node:http");
 const { tmpdir } = require("node:os");
@@ -94,6 +94,17 @@ function isLocalUrl(target) {
   }
 }
 
+function openExternalWebUrl(target) {
+  try {
+    const url = new URL(target);
+    if (["https:", "http:"].includes(url.protocol)) {
+      void shell.openExternal(url.href).catch(() => log("External browser could not open URL"));
+    }
+  } catch {
+    // Ignore malformed and privileged external protocols.
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1180,
@@ -105,6 +116,7 @@ function createWindow() {
     backgroundColor: "#0f1419",
     icon: join(__dirname, "..", "assets", "images", "icon.png"),
     webPreferences: {
+      preload: join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -124,13 +136,13 @@ function createWindow() {
     mainWindow = null;
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!isLocalUrl(url)) shell.openExternal(url);
+    if (!isLocalUrl(url)) openExternalWebUrl(url);
     return { action: "deny" };
   });
   mainWindow.webContents.on("will-navigate", (event, url) => {
     if (isLocalUrl(url)) return;
     event.preventDefault();
-    shell.openExternal(url);
+    openExternalWebUrl(url);
   });
   mainWindow.loadURL(appUrl);
 }
@@ -159,6 +171,13 @@ app.whenReady().then(async () => {
     callback(allowed);
   });
 
+  const { createVault } = require('./mls-vault.cjs');
+  const mlsVault = createVault(join(app.getPath('userData'), 'mls'), safeStorage);
+  const validateMLSFrame = event => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || !isLocalUrl(event.senderFrame.url)) throw new Error('Unauthorized MLS storage caller');
+  };
+  ipcMain.handle('mls-vault:load', (event, user) => { validateMLSFrame(event); return mlsVault.load(user); });
+  ipcMain.handle('mls-vault:save', (event, user, revision, state) => { validateMLSFrame(event); return mlsVault.save(user, revision, state); });
   await startStaticServer();
   createWindow();
 

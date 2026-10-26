@@ -152,6 +152,7 @@ export async function configureAndroidChannels() {
 }
 
 export async function registerPushNotificationsAsync(): Promise<string | null> {
+  if ((process.env.EXPO_PUBLIC_APP_VARIANT === 'staging' || Constants.expoConfig?.extra?.appVariant === 'staging') && Constants.expoConfig?.extra?.stagingPushEnabled !== true) return null;
   const diag: Record<string, any> = { platform: Platform.OS };
   try {
     if (Platform.OS === 'web') {

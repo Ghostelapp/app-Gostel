@@ -1,0 +1,20 @@
+{
+  "date": "2026-09-24",
+  "status": "PASS",
+  "build": "Release-iphonesimulator",
+  "bundleIdentifier": "app.ghostel.staging",
+  "simulator": "Ghostel MLS Staging",
+  "runtime": "iOS 26.5",
+  "checks": [
+    "native WebView/WASM exchange",
+    "SQLite + SecureStore persistence",
+    "process restart"
+  ],
+  "platform": "ios",
+  "bytes": 54000,
+  "persistedRuns": [
+    1,
+    2
+  ],
+  "runner": "scripts/test-mls-staging-ios.py"
+}

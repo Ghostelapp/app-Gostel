@@ -1,0 +1,14 @@
+test_setup_cannot_disable_enabled_mfa (test_security_audit_unit.SecurityTests) ... ok
+test_setup_does_not_overwrite_concurrent_enable (test_security_audit_unit.SecurityTests) ... ok
+test_setup_requires_password (test_security_audit_unit.SecurityTests) ... ok
+test_stale_totp_secret_cannot_enable_or_disable_new_secret (test_security_audit_unit.SecurityTests) ... Executing <Task pending name='Task-7' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x101ca6f10>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.136 seconds
+ok
+test_totp_endpoints_stop_when_rate_limited (test_security_audit_unit.SecurityTests) ... Executing <Task pending name='Task-9' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x10193dfd0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.182 seconds
+ok
+test_valid_enable_and_disable (test_security_audit_unit.SecurityTests) ... Executing <Task pending name='Task-11' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x101937e50>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.122 seconds
+ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.670s
+
+OK

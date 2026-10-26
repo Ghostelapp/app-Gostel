@@ -12,6 +12,8 @@ import { BadgeProvider } from '../src/badges';
 import { PinLockProvider } from '../src/pinLock';
 import { OnboardingProvider } from '../src/onboarding';
 import { hydrateSoundPrefs } from '../src/sounds';
+import StagingMLSCheck from '../src/mls/StagingCheck';
+import MLSRuntimeHost from '../src/mls/RuntimeHost';
 
 setNotificationHandler();
 // Eagerly load the user's in-app sound preference from storage.
@@ -47,6 +49,8 @@ export default function RootLayout() {
             <OnboardingProvider>
               <PinLockProvider>
                 <AuthProvider>
+                  <MLSRuntimeHost />
+                  {process.env.EXPO_PUBLIC_APP_VARIANT === 'staging' && process.env.EXPO_PUBLIC_MLS_SELF_TEST === '1' ? <StagingMLSCheck hidden /> : null}
                   <BadgeProvider>
                     <IncomingCallProvider>
                       {Platform.OS !== 'web' ? (

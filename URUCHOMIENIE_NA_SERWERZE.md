@@ -273,7 +273,7 @@ Test backendu:
 ```bash
 cd ~/apps/app-Gostel/backend
 . .venv/bin/activate
-python -m uvicorn server:app --host 127.0.0.1 --port 8000
+python -m uvicorn server:app --host 127.0.0.1 --port 8000 --ws-max-size 65536 --ws-max-queue 8
 ```
 
 W drugim terminalu:
@@ -305,7 +305,7 @@ After=network.target docker.service
 User=ghostel
 WorkingDirectory=/home/ghostel/apps/app-Gostel/backend
 EnvironmentFile=/home/ghostel/apps/app-Gostel/backend/.env
-ExecStart=/home/ghostel/apps/app-Gostel/backend/.venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8000
+ExecStart=/home/ghostel/apps/app-Gostel/backend/.venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8000 --ws-max-size 65536 --ws-max-queue 8
 Restart=always
 RestartSec=5
 
@@ -770,3 +770,7 @@ SSL: Certbot Let's Encrypt
 ```
 
 To wystarczy na start, testy, pierwszych uzytkownikow i publikacje aplikacji. Gdy ruch urosnie, wtedy rozdzielamy baze MongoDB na osobny serwer albo usluge managed.
+
+## Opcjonalne MLS
+
+Nowa integracja jest domyślnie wyłączona. Wymaga MongoDB z transakcjami, aktualnych klientów i nowych binarnych wydań mobilnych. Kolejność wdrożenia, weryfikację urządzeń i ograniczenia opisuje [instrukcja integracji MLS](docs/security/MLS_INTEGRACJA_PL.md). Nie włączać flagi w mieszanym wdrożeniu starych i nowych workerów.

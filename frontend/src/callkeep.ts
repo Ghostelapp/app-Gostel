@@ -27,6 +27,7 @@ const answeredCalls = new Set<string>();
 const appHandledAnswers = new Set<string>();
 const suppressedEndEvents = new Set<string>();
 const routedAnsweredCalls = new Map<string, number>();
+const mountedCallScreens = new Set<string>();
 const actionListeners = new Set<(action: CallKeepAction) => void>();
 let nativeActionQueue: Promise<void> = Promise.resolve();
 const handledAnswers = new Set<string>();
@@ -100,6 +101,12 @@ export function subscribeToCallKeepActions(
 ): () => void {
   actionListeners.add(listener);
   return () => actionListeners.delete(listener);
+}
+
+export function registerMountedCallScreen(callId: string): () => void {
+  const key = normalizeCallId(callId);
+  mountedCallScreens.add(key);
+  return () => { mountedCallScreens.delete(key); };
 }
 
 export function isIncomingCallNativeDisplayed(callId: string): boolean {
@@ -319,6 +326,7 @@ function requestAppForegroundFromCallKeep(): void {
 function navigateToAnsweredCall(href: string, callId: string, force = false): boolean {
   if (!router) return false;
   const key = normalizeCallId(callId) || href;
+  if (mountedCallScreens.has(key) || handledEnds.has(key)) return false;
   const now = Date.now();
   const lastRoutedAt = routedAnsweredCalls.get(key) || 0;
   if (!force && lastRoutedAt && now - lastRoutedAt < ANSWER_ROUTE_DEDUPE_MS) return false;
@@ -442,6 +450,10 @@ async function flushPendingAnsweredCall(): Promise<void> {
     }
   }
   if (!href) return;
+  // A lookup may finish after the screen mounted or the user ended the call.
+  // Never replace the existing media owner or reopen a terminated call.
+  if (handledEnds.has(normalizeCallId(callId)) ||
+      await getCachedTerminatedCallStatus(callId)) return;
   const routed = navigateToAnsweredCall(href, callId, true);
   if (pendingInfo) {
     reportCallKeepDiag(

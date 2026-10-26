@@ -272,14 +272,19 @@ class TestCalls:
         )
         assert state.status_code == 200, state.text
         assert state.json()["updated"] is True
-        assert state.json()["status"] == "active"
+        assert state.json()["status"] == "answered"
+        assert state.json()["client_status"] == "active"
 
         status = api_client.get(
             f"{BASE_URL}/api/calls/{call['id']}/status",
             headers=auth_headers(admin_token),
         )
         assert status.status_code == 200, status.text
-        assert status.json()["status"] == "active"
+        assert status.json()["status"] == "answered"
+        assert any(
+            client_state.get("status") == "active"
+            for client_state in status.json()["lastKnownClientState"].values()
+        )
 
         accepted_signals = api_client.get(
             f"{BASE_URL}/api/calls/{call['id']}/signals",

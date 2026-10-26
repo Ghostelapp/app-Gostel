@@ -113,3 +113,5 @@ watchfiles==1.1.1
 websockets==16.0
 yarl==1.23.0
 zipp==3.23.0
+
+psutil==7.2.2

@@ -1,0 +1,54 @@
+...Executing <Task pending name='Task-7' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x10e20ffd0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.132 seconds
+.Executing <Task pending name='Task-9' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x10dc2dee0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.209 seconds
+.Executing <Task pending name='Task-11' coro=<IsolatedAsyncioTestCase._asyncioLoopRunner() running at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:96> wait_for=<Future pending cb=[<TaskWakeupMethWrapper object at 0x10db65fd0>()] created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py:424> created at /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/async_case.py:118> took 0.147 seconds
+.................................
+----------------------------------------------------------------------
+Ran 38 tests in 2.148s
+
+OK
+✔ terminal and expired persisted calls are removed without recursive reads (101.658672ms)
+✔ cleanup for an older call leaves a different active call intact (13.95635ms)
+✔ duplicate push cannot downgrade an answered call to ringing (25.249764ms)
+✔ CallKit audio activation never answers a ringing call (58.648301ms)
+✔ background answer routes media without unlocking, duplicate answer signals once (61.282881ms)
+✔ hangup immediately after answer and unlock is honored once (46.559302ms)
+✔ remote termination reports an ended call, never a local reject transaction (39.007607ms)
+✔ cold-start answer/end events replay in order and cannot reopen ended call (55.340993ms)
+✔ cold-start audio activation is replayed even without a call UUID (37.554233ms)
+✔ system mute reaches the active media consumer (28.622311ms)
+✔ hanging diagnostics and HTTP cannot delay microphone cleanup on hangup (31.28736ms)
+✔ audio setup waits for a real native activation and survives interruption (10.90632ms)
+✔ receiver rejects attacker key under a pinned sender ID (132.947952ms)
+✔ CONFIRMED OPEN: old ciphertext decrypts with current static key and can be relabelled/replayed (40.998073ms)
+✔ static fallback refuses parent traversal (1.076101ms)
+✔ desktop opens only http(s) external URLs (1.694141ms)
+✔ pinned legitimate sender decrypts text and attachment; changed pin rejects both (33.42871ms)
+✔ plaintext downgrade never renders server content, even as a system event (24.629531ms)
+✔ attachment without encryption metadata is rejected (26.382401ms)
+✔ new contacts and legacy TOFU pins require explicit verification (26.802936ms)
+ℹ tests 20
+ℹ suites 0
+ℹ pass 20
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 846.554597
+
+> test
+> node --test *.test.mjs
+
+✔ official libsignal: signed hybrid prekey handshake and bidirectional session (12.344202ms)
+✔ official libsignal: rejects replay after successful delivery (6.038336ms)
+✔ official libsignal: tamper rejection leaves the valid packet decryptable (6.321149ms)
+✔ official libsignal: out-of-order messages are accepted once (5.205322ms)
+✔ official libsignal: forged signed prekey is rejected (1.234336ms)
+✔ official libsignal: unverified and replaced identities are rejected (1.666128ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 241.682951

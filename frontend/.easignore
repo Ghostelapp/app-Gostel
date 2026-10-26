@@ -22,3 +22,8 @@ android/app/build/
 ios/
 .tmp-*-export/
 tests/
+
+# Local cryptography evaluation and Rust build artifacts.
+../.cache/
+../tools/signal-prototype/
+../crypto/**/target/

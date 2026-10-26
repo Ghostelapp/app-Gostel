@@ -169,7 +169,8 @@ export async function startRingtone(volume = 0.85): Promise<void> {
     const Audio: any = await import('expo-audio');
     const asset = FILES.ringtone;
     if (!asset) return;
-    const player = Audio.createAudioPlayer(asset);
+    // Stopping the incoming ringtone must not deactivate CallKit's session.
+    const player = Audio.createAudioPlayer(asset, { keepAudioSessionActive: Platform.OS === 'ios' });
     if (generation !== _ringtoneGeneration) {
       player.remove?.();
       return;

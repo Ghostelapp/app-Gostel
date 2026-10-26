@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 
 module.exports = ({ config }) => {
+  const staging = process.env.APP_VARIANT === 'staging';
+  config = require('./config/staging.cjs').stagingConfig(config);
   // Use the existing opaque brand asset for the App Store icon on iOS.
   config = {
     ...config,
@@ -13,14 +15,14 @@ module.exports = ({ config }) => {
         : plugin,
     ),
   };
-  const skipFirebaseIos = process.env.EXPO_SKIP_FIREBASE_IOS === '1';
+  const skipFirebaseIos = process.env.EXPO_SKIP_FIREBASE_IOS === '1' || (staging && process.env.EXPO_STAGING_NO_PUSH === '1');
   const requireFirebaseIos = process.env.EXPO_REQUIRE_FIREBASE_IOS === '1';
   if (skipFirebaseIos && requireFirebaseIos) {
     throw new Error('Cannot require and skip Firebase for the same iOS build.');
   }
   const useJscIos = process.env.EXPO_USE_JSC_IOS === '1';
-  const iosGoogleServicesFile = './GoogleService-Info.plist';
-  const iosGoogleServicesPath = path.join(__dirname, 'GoogleService-Info.plist');
+  const iosGoogleServicesFile = staging ? process.env.STAGING_GOOGLE_SERVICES_IOS : './GoogleService-Info.plist';
+  const iosGoogleServicesPath = iosGoogleServicesFile ? path.resolve(__dirname, iosGoogleServicesFile) : '';
   const iosModularHeadersPlugin = './plugins/withIosModularHeaders';
   const hasIosGoogleServicesFile = fs.existsSync(iosGoogleServicesPath);
 

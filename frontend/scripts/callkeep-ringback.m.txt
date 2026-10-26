@@ -1,0 +1,43 @@
+// Ghostel: ringback shares CallKit's session without changing its ownership.
+RCT_EXPORT_METHOD(startGhostelRingback:(NSString *)callId
+                  uri:(NSString *)uri
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSURL *url = [NSURL URLWithString:uri];
+        if (!url.isFileURL) {
+            reject(@"ringback_asset", @"Ringback requires a local asset", nil);
+            return;
+        }
+        if ([self->_ghostelRingbackCallId isEqualToString:callId.lowercaseString] && self->_ghostelRingback.isPlaying) {
+            resolve(@YES);
+            return;
+        }
+        [self->_ghostelRingback stop];
+        NSError *error = nil;
+        self->_ghostelRingback = [[AVAudioPlayer alloc] initWithContentsOfURL:url error:&error];
+        self->_ghostelRingbackCallId = callId.lowercaseString;
+        self->_ghostelRingback.numberOfLoops = -1;
+        self->_ghostelRingback.volume = 0.8;
+        [self->_ghostelRingback prepareToPlay];
+        if (![self->_ghostelRingback play]) {
+            self->_ghostelRingback = nil;
+            self->_ghostelRingbackCallId = nil;
+            reject(@"ringback_playback", @"Ringback could not start", error);
+            return;
+        }
+        resolve(@YES);
+    });
+}
+
+RCT_EXPORT_METHOD(stopGhostelRingback:(NSString *)callId)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (![self->_ghostelRingbackCallId isEqualToString:callId.lowercaseString]) return;
+        [self->_ghostelRingback stop];
+        self->_ghostelRingback = nil;
+        self->_ghostelRingbackCallId = nil;
+    });
+}
+

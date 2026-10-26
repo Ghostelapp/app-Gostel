@@ -31,6 +31,11 @@ import threading
 import time
 from typing import Any
 
+try:
+    from .push_privacy import private_push
+except ImportError:  # uvicorn server:app from backend/
+    from push_privacy import private_push
+
 logger = logging.getLogger("ghostel.fcm")
 
 _FCM_SCOPES = ["https://www.googleapis.com/auth/firebase.messaging"]
@@ -178,6 +183,8 @@ def build_message(
       - `channel_id` must match a channel registered by the client
       - `ttl` is "30s" string per FCM v1 spec
     """
+    title, body, data = private_push(data, is_call=is_call)
+
     str_data: dict[str, str] = {}
     if data:
         for k, v in data.items():

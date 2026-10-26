@@ -17,7 +17,7 @@ import {
   Switch,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import {
   ArrowLeft,
   Lock,
@@ -50,6 +50,7 @@ import CallHistoryBanner from '../../src/CallHistoryBanner';
 import { useAuth } from '../../src/auth';
 import { api, formatApiErrorDetail } from '../../src/api';
 import { theme } from '../../src/theme';
+import { assertMLSProtocol, messagesMLS, sendMLS } from '../../src/mls/client';
 import {
   pickDocumentForUpload,
   pickImageForUpload,
@@ -63,6 +64,7 @@ import { useWebSocket } from '../../src/ws';
 import { useTranslation } from 'react-i18next';
 import { formatLastSeen, isProbablyOnline } from '../../src/presence';
 import {
+  E2EE_UNAVAILABLE_TEXT,
   decryptAttachmentForUser,
   decryptMessageForUser,
   decryptMessagesForUser,
@@ -106,6 +108,7 @@ type Conversation = {
   members: any[];
   encrypted: boolean;
   e2ee_ready?: boolean;
+  e2ee_protocol?: string;
   disappear_seconds?: number | null;
   avatar?: string | null;
 };
@@ -294,8 +297,13 @@ export default function ChatScreen() {
         api.get(`/conversations/${id}`),
         api.get(`/conversations/${id}/messages`),
       ]);
+      if (user?.id) await assertMLSProtocol(user.id, c.data);
       setConv(c.data);
-      setMessages(await decryptMessagesForUser<Message>(m.data, user?.id));
+      const history = await decryptMessagesForUser<Message>(m.data, user?.id);
+      if (c.data.e2ee_protocol === 'mls-v1' && user?.id) {
+        const current = await messagesMLS(user.id, id);
+        setMessages([...history, ...current]);
+      } else setMessages(history);
     } catch (e) {
       Alert.alert('Error', formatApiErrorDetail(e));
     } finally {
@@ -303,9 +311,7 @@ export default function ChatScreen() {
     }
   }, [id, user?.id]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useFocusEffect(useCallback(() => { void load(); }, [load]));
 
   useEffect(() => {
     let cancelled = false;
@@ -371,6 +377,7 @@ export default function ChatScreen() {
               try {
                 const nextStatus = await trustConversationKeys(conv, user.id);
                 setE2eeTrust(nextStatus);
+                await load();
               } catch (e) {
                 Alert.alert(t('common.error'), formatApiErrorDetail(e));
               }
@@ -379,7 +386,7 @@ export default function ChatScreen() {
         ],
       );
     },
-    [conv, e2eeTrust, getChangedKeyDetails, getMemberNames, t, user?.id],
+    [conv, e2eeTrust, getChangedKeyDetails, getMemberNames, load, t, user?.id],
   );
 
   const ensureTrustedEncryption = useCallback(async (): Promise<boolean> => {
@@ -403,7 +410,9 @@ export default function ChatScreen() {
   useWebSocket(
     useCallback(
       (msg: any) => {
-        if (msg?.type === 'message' && msg.data?.conversation_id === id) {
+        if (msg?.type === 'mls:event' && msg.data?.conversation_id === id) { void load(); return; }
+        if (conv?.e2ee_protocol === 'mls-v1') return;
+        if (conv?.e2ee_protocol !== 'mls-v1' && msg?.type === 'message' && msg.data?.conversation_id === id) {
           decryptMessageForUser<Message>(msg.data, user?.id).then((displayMessage) => {
             setMessages((prev) => {
               if (prev.find((m) => m.id === displayMessage.id)) return prev;
@@ -468,7 +477,7 @@ export default function ChatScreen() {
           );
         }
       },
-      [id, scrollToLatest, user?.id]
+      [id, scrollToLatest, user?.id, conv?.e2ee_protocol, load]
     )
   );
 
@@ -494,9 +503,14 @@ export default function ChatScreen() {
     if (!id) return;
     const t = setInterval(async () => {
       try {
+        const { data: current } = await api.get(`/conversations/${id}`);
+        if (user?.id) await assertMLSProtocol(user.id, current);
+        setConv(current);
         const { data } = await api.get(`/conversations/${id}/messages`);
-        const decrypted = await decryptMessagesForUser<Message>(data, user?.id);
+        const history = await decryptMessagesForUser<Message>(data, user?.id);
+        const decrypted = current.e2ee_protocol === 'mls-v1' && user?.id ? [...history, ...await messagesMLS(user.id, id)] : history;
         setMessages((prev) => {
+          if (current.e2ee_protocol === 'mls-v1') return messageSignature(prev) === messageSignature(decrypted) ? prev : decrypted;
           // Merge: keep optimistic ones; replace by id if server has newer copy
           const byId = new Map(prev.map((m) => [m.id, m]));
           decrypted.forEach((m) => byId.set(m.id, m));
@@ -527,7 +541,14 @@ export default function ChatScreen() {
         Alert.alert(t('common.error'), t('chat.e2e_required'));
         return false;
       }
+      await assertMLSProtocol(user.id, conv);
       if (!(await ensureTrustedEncryption())) return false;
+      if (conv.e2ee_protocol === 'mls-v1') {
+        if (oneTimeSeconds) throw new Error('One-time viewing is not supported in MLS conversations yet');
+        const displayMessage = await sendMLS(user.id, id, { content, kind, attachment_id: attachmentId, duration_ms: durationMs, e2ee_attachment: e2eeAttachment });
+        if (displayMessage) setMessages(prev => prev.some(m => m.id === displayMessage.id) ? prev : [...prev, displayMessage]);
+        scrollToLatest(true); return true;
+      }
 
       let payload: any = {
         conversation_id: id,
@@ -635,13 +656,15 @@ export default function ChatScreen() {
                 // Optimistic UI
                 setMessages((prev) => prev.filter((m) => m.id !== msg.id));
                 try {
-                  await api.delete(`/messages/${msg.id}`);
+                  if (conv?.e2ee_protocol === 'mls-v1' && user?.id && id) {
+                    if (msg.e2ee_version !== 2) throw new Error('Archived messages are read-only');
+                    await sendMLS(user.id, id, { kind: 'delete', content: '', target_id: msg.id });
+                  } else await api.delete(`/messages/${msg.id}`);
                 } catch (e) {
                   Alert.alert(t('common.error'), formatApiErrorDetail(e));
                   // Re-fetch to restore on failure
                   try {
-                    const { data } = await api.get(`/conversations/${id}/messages`);
-                    setMessages(data);
+                    await load();
                   } catch {
                     /* ignore */
                   }
@@ -787,8 +810,16 @@ export default function ChatScreen() {
 
   const react = async (msg: Message, emoji: string) => {
     try {
+      if (conv?.e2ee_protocol === 'mls-v1' && user?.id && id) {
+        if (msg.e2ee_version !== 2) throw new Error('Archived messages are read-only');
+        const active = !(msg.reactions?.[emoji] || []).includes(user.id);
+        await sendMLS(user.id, id, { kind: 'reaction', content: emoji, target_id: msg.id, active });
+        const current = await messagesMLS(user.id, id);
+        setMessages(prev => [...prev.filter(m => m.e2ee_version !== 2), ...current]); return;
+      }
       const { data } = await api.post(`/messages/${msg.id}/reactions`, { emoji });
-      setMessages((prev) => prev.map((m) => (m.id === msg.id ? data : m)));
+      const verified = await decryptMessageForUser<Message>(data, user?.id);
+      setMessages((prev) => prev.map((m) => (m.id === msg.id ? verified : m)));
     } catch (e) {
       Alert.alert('Error', formatApiErrorDetail(e));
     } finally {
@@ -850,7 +881,7 @@ export default function ChatScreen() {
       <View style={[styles.msgRow, isMine ? styles.msgRight : styles.msgLeft]}>
         {!isMine && (
           <Avatar
-            name={item.sender_name}
+            name={(conv?.members.find(m => m.id === item.sender_id)?.name || item.sender_name)}
             size={26}
             color={sender?.avatar_color || theme.colors.primary}
             photo={sender?.avatar}
@@ -858,7 +889,7 @@ export default function ChatScreen() {
         )}
         <View style={{ maxWidth: '80%' }}>
           {!isMine && conv?.type === 'group' && (
-            <Text style={styles.senderName}>{item.sender_name}</Text>
+            <Text style={styles.senderName}>{(conv?.members.find(m => m.id === item.sender_id)?.name || item.sender_name)}</Text>
           )}
           <TouchableOpacity
             testID={`message-${item.id}`}
@@ -866,6 +897,7 @@ export default function ChatScreen() {
             onLongPress={() => openMessageActions(item)}
             style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleOther]}
           >
+            {conv?.e2ee_protocol === 'mls-v1' && item.e2ee_version !== 2 && <Text style={styles.senderName}>{t('chat.mls_legacy_archive')}</Text>}
             <MessageBody msg={item} isMine={isMine} />
             <View style={styles.bubbleMeta}>
               <Lock
@@ -994,7 +1026,7 @@ export default function ChatScreen() {
         </View>
         {isMine && (
           <Avatar
-            name={user?.name || item.sender_name}
+            name={user?.name || (conv?.members.find(m => m.id === item.sender_id)?.name || item.sender_name)}
             size={26}
             color={user?.avatar_color || theme.colors.primary}
             photo={user?.avatar}
@@ -1517,6 +1549,9 @@ export default function ChatScreen() {
 }
 
 function MessageBody({ msg, isMine }: { msg: Message; isMine: boolean }) {
+  if (msg.e2ee_decrypted !== true) {
+    return <LinkedMessageText content={E2EE_UNAVAILABLE_TEXT} isMine={isMine} />;
+  }
   if (msg.kind === 'image' && msg.attachment_id) {
     return <ImagePreview msg={msg} isMine={isMine} />;
   }
@@ -1561,9 +1596,7 @@ function ImagePreview({ msg, isMine }: { msg: Message; isMine: boolean }) {
 
   const loadImage = useCallback(async () => {
     const { data } = await api.get(`/uploads/${msg.attachment_id}`);
-    const attachment = msg.e2ee_attachment
-      ? await decryptAttachmentForUser(data.data, msg.e2ee_attachment, msg, user?.id)
-      : { data: data.data, mime: data.mime };
+    const attachment = await decryptAttachmentForUser(data.data, msg.e2ee_attachment, msg, user?.id);
     if (!attachment) return null;
     const uri = `data:${attachment.mime};base64,${attachment.data}`;
     setSrc(uri);
@@ -1712,9 +1745,7 @@ function VoicePlayer({ msg, isMine }: { msg: Message; isMine: boolean }) {
       .get(`/uploads/${msg.attachment_id}`)
       .then(async ({ data }) => {
         if (cancelled) return;
-        const attachment = msg.e2ee_attachment
-          ? await decryptAttachmentForUser(data.data, msg.e2ee_attachment, msg, user?.id)
-          : { data: data.data, mime: data.mime };
+        const attachment = await decryptAttachmentForUser(data.data, msg.e2ee_attachment, msg, user?.id);
         if (!attachment || cancelled) return;
         setSrc(`data:${attachment.mime};base64,${attachment.data}`);
         setMime(attachment.mime);

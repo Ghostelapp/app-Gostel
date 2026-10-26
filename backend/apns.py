@@ -8,6 +8,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    from .push_privacy import private_push
+except ImportError:  # uvicorn server:app from backend/
+    from push_privacy import private_push
+
 import httpx
 import jwt
 
@@ -70,6 +75,7 @@ def _authorization_header() -> str:
 
 
 def build_voip_payload(data: dict[str, Any]) -> dict[str, Any]:
+    _, _, data = private_push(data, is_call=True)
     call_id = str(data.get("call_id") or data.get("message_id") or "")
     payload_type = str(data.get("type") or "incoming_call")
     if payload_type == "call_control":

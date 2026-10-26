@@ -2,7 +2,7 @@
     "expo":  {
                  "name":  "ghostel.app",
                  "slug":  "ghostel",
-                 "version":  "1.4.54",
+                 "version":  "1.4.56",
                  "platforms": [
                      "ios",
                      "android",
@@ -16,7 +16,7 @@
                  "ios":  {
                              "supportsTablet":  true,
                              "bundleIdentifier":  "app.ghostel",
-                             "buildNumber":  "56",
+                             "buildNumber":  "74",
                              "infoPlist":  {
                                                "ITSAppUsesNonExemptEncryption":  false,
                                                "NSMicrophoneUsageDescription":  "Make encrypted voice calls and record voice messages",
@@ -57,7 +57,7 @@
                                                             "android.permission.READ_EXTERNAL_STORAGE",
                                                             "android.permission.WRITE_EXTERNAL_STORAGE"
                                                         ],
-                                 "versionCode":  54
+                                 "versionCode":  55
                              },
                  "web":  {
                              "bundler":  "metro",

@@ -223,3 +223,138 @@ test('audio setup waits for a real native activation and survives interruption',
   assert.equal(await audio.waitForWebRtcAudioSession(5), false);
   assert.equal(deactivates, 1);
 });
+
+test('a delayed answer-route retry cannot replace an already mounted call screen', async () => {
+  const h = harness(); const keep = h.load('./callkeep');
+  const router = { replace: href => h.routes.push(href) };
+  keep.bindCallKeepBridge({ router, wsSend() {} });
+  await keep.hydrateIncomingCallNative(info); await keep.setupCallKeep();
+  h.events.get('answerCall')({ callUUID: id }); await h.settle();
+  assert.equal(h.routes.length, 1);
+  let completeLookup;
+  h.api.get = () => new Promise(resolve => { completeLookup = resolve; });
+  keep.bindCallKeepBridge({ router, wsSend() {} }); await h.settle();
+  assert.equal(typeof completeLookup, 'function');
+  const unmount = keep.registerMountedCallScreen(id);
+  completeLookup({ data: { status: 'answered' } }); await h.settle();
+  assert.equal(h.routes.length, 1);
+  unmount();
+});
+
+test('an in-flight route lookup cannot reopen a call terminated while it was pending', async () => {
+  const h = harness(); const keep = h.load('./callkeep');
+  const router = { replace: href => h.routes.push(href) };
+  keep.bindCallKeepBridge({ router, wsSend() {} });
+  await keep.hydrateIncomingCallNative(info); await keep.setupCallKeep();
+  h.events.get('answerCall')({ callUUID: id }); await h.settle();
+  let completeLookup;
+  h.api.get = () => new Promise(resolve => { completeLookup = resolve; });
+  keep.bindCallKeepBridge({ router, wsSend() {} }); await h.settle();
+  await h.load('./callState').cacheTerminatedCallId(id, 'ENDED');
+  completeLookup({ data: { status: 'answered' } }); await h.settle();
+  assert.equal(h.routes.length, 1);
+});
+
+test('stopping iOS ringback leaves the CallKit audio session active', () => {
+  const source = ts.transpileModule(fs.readFileSync(path.resolve(__dirname, '../src/callRingback.ts'), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  for (const platform of ['ios', 'android']) {
+    let audioActive = true; let pauses = 0; let nativeStops = 0;
+    const module = { exports: {} };
+    vm.runInNewContext(source, { module, exports: module.exports, require: name => {
+      if (name === 'react') return { useCallback: fn => fn, useRef: value => ({ current: value }), useMemo: fn => fn(), useEffect() {} };
+      if (name === './iosRingback') return { createIosRingback: () => ({ start: async () => {}, stop: () => { nativeStops++; } }) };
+      if (name === 'react-native') return { Platform: { OS: platform } };
+      if (name === 'expo-audio') return { useAudioPlayer: (_, options) => ({
+        play() {}, seekTo() {}, pause() { pauses++; if (!options?.keepAudioSessionActive) audioActive = false; },
+      }) };
+      throw Error(name);
+    } });
+    const ringback = module.exports.useCallRingback('ringtone', true, 'call');
+    ringback.startRingback(); ringback.stopRingback(); ringback.stopRingback();
+    assert.equal(pauses, platform === 'ios' ? 0 : 1);
+    assert.equal(nativeStops, platform === 'ios' ? 2 : 0);
+    assert.equal(audioActive, platform === 'ios');
+  }
+});
+
+test('cold-start auth must finish before mounting the one-shot call media owner', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../app/call/[id].tsx'), 'utf8');
+  const tree = ts.createSourceFile('call.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declaration = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'CallScreen');
+  const script = ts.transpileModule(declaration.getText(tree).replace('export default ', '') + '\nglobalThis.render = CallScreen;', {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React },
+  }).outputText;
+  let loading = true;
+  const context = vm.createContext({ useAuth: () => ({ loading }), React: { createElement: (type) => ({ type }) },
+    SafeAreaView: 'safe', ActivityIndicator: 'loading', AuthenticatedCallScreen: 'media-owner', styles: { safe: {} } });
+  vm.runInContext(script, context);
+  assert.equal(context.render().type, 'safe');
+  loading = false;
+  assert.equal(context.render().type, 'media-owner');
+});
+
+test('native CallKit patch configures audio without manually activating it and is idempotent', () => {
+  const { patchCallKeepIos } = require('../scripts/patch-callkeep-ios');
+  const native = fs.readFileSync(path.resolve(__dirname, '../node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.m'), 'utf8');
+  const unpatched = native.replace('    // Ghostel: CallKit alone activates the configured audio session.', '    [audioSession setActive:TRUE error:nil];');
+  const patched = patchCallKeepIos(unpatched);
+  const configuration = patched.slice(patched.indexOf('- (void)configureAudioSession\n{')).split('\n}\n')[0];
+  assert.ok(configuration.includes('setCategory:AVAudioSessionCategoryPlayAndRecord'));
+  assert.ok(configuration.includes('setMode:mode'));
+  assert.equal(configuration.includes('setActive:'), false);
+  assert.ok(patched.includes('sendEventWithNameWrapper:RNCallKeepDidActivateAudioSession'));
+  assert.equal(patchCallKeepIos(patched), patched);
+});
+
+test('existing iOS keys migrate accessibility without changing key bytes or biometric access', () => {
+  if (process.platform !== 'darwin') return;
+  const { patchSecureStoreIos } = require('../scripts/patch-secure-store-ios');
+  const native = fs.readFileSync(path.resolve(__dirname, '../node_modules/expo-secure-store/ios/SecureStoreModule.swift'), 'utf8');
+  const patched = patchSecureStoreIos(native);
+  assert.equal(patchSecureStoreIos(patched), patched);
+  const start = patched.indexOf('  private func update(');
+  const end = patched.indexOf('  private func searchKeyChain(', start);
+  assert.ok(start >= 0 && end > start);
+  const fixture = fs.readFileSync(path.join(__dirname, 'secure-store-migration.swift'), 'utf8');
+  const run = require('node:child_process').spawnSync('swift', ['-'], {
+    input: fixture.replace('  // UPDATE_METHOD', patched.slice(start, end)), encoding: 'utf8', timeout: 60000,
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /Existing key migrated/);
+});
+
+test('native ringback cancels delayed loads after answer and can play on the next call', async () => {
+  const requests = []; const starts = []; const stops = [];
+  const module = { exports: {} };
+  const js = ts.transpileModule(fs.readFileSync(path.resolve(__dirname, '../src/iosRingback.ts'), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  vm.runInNewContext(js, { module, exports: module.exports, console, require: name => {
+    if (name === 'expo-asset') return { Asset: { fromModule: () => ({ downloadAsync: () => new Promise(resolve => requests.push(resolve)) }) } };
+    if (name === 'react-native') return { NativeModules: { RNCallKeep: {
+      startGhostelRingback: async (...args) => starts.push(args), stopGhostelRingback: id => stops.push(id),
+    } } };
+    throw Error(name);
+  } });
+  const tone = module.exports.createIosRingback('asset', 'first');
+  const pending = tone.start(); await tone.start();
+  assert.equal(requests.length, 1);
+  tone.stop(); requests.shift()({ localUri: 'file:///tone.mp3' }); await pending;
+  assert.equal(starts.length, 0, 'answer must cancel an unresolved asset load');
+  const second = module.exports.createIosRingback('asset', 'second');
+  const next = second.start(); requests.shift()({ localUri: 'file:///tone.mp3' }); await next;
+  assert.deepEqual(starts, [['second', 'file:///tone.mp3']]);
+  tone.stop(); assert.equal(stops.at(-1), 'first', 'old cleanup is scoped to the old call');
+  second.stop(); assert.equal(stops.at(-1), 'second');
+});
+
+test('native ringback never changes CallKit session activation, category or mode', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../scripts/callkeep-ringback.m.txt'), 'utf8');
+  assert.doesNotMatch(source, /setActive|setCategory|setMode/);
+  assert.match(source, /AVAudioPlayer alloc/);
+  assert.match(source, /numberOfLoops = -1/);
+  assert.match(source, /isEqualToString:callId.lowercaseString/);
+  assert.match(source, /url.isFileURL/);
+});
